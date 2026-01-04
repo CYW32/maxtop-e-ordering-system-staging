@@ -19,14 +19,29 @@
                 <div class="p-6 text-gray-900">
 
                     {{-- Header with Add Button --}}
-                    <div class="flex justify-between items-center mb-6">
-                        <h3 class="text-lg font-bold">All Users</h3>
+                    <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
 
-                        {{-- CHECKER: Only show this button if they have specific permission --}}
+                        {{-- THE TOOLBAR --}}
+                        <x-filter-toolbar placeholder="Search name, ID...">
+
+                            {{-- INJECTING THE EXTRA FILTER (The Slot) --}}
+                            <select name="role"
+                                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                                <option value="">All Roles</option>
+                                @foreach ($roles as $roleName)
+                                    <option value="{{ $roleName }}"
+                                        {{ request('role') == $roleName ? 'selected' : '' }}>
+                                        {{ ucfirst(str_replace('_', ' ', $roleName)) }}
+                                    </option>
+                                @endforeach
+                            </select>
+
+                        </x-filter-toolbar>
+
                         @can('create_users')
                             <a href="{{ route('users.create') }}"
-                                class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-                                + Create New User
+                                class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-center whitespace-nowrap h-[38px] flex items-center">
+                                + Create User
                             </a>
                         @endcan
                     </div>

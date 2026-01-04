@@ -11,13 +11,21 @@ use Spatie\Permission\Models\Role;
 class UserController extends Controller
 {
     // 1. LIST USERS
-    public function index()
+    public function index(Request $request)
     {
-        // Get all users with their roles attached
-        // paginate(10) means show 10 users per page
-        $users = User::with('roles')->paginate(10);
+        // Get Roles for the filter dropdown
+        // plucking name/name creates an array like ['admin' => 'admin']
+        $roles = Role::pluck('name', 'name');
 
-        return view('users.index', compact('users'));
+        $users = User::with('roles')
+            ->search($request->search) // <--- Magic happens here(The 'search()' method now exists automatically!)
+            ->filterByDate() // <--- Date Filter (Defaults to created_at)
+            ->filterByRole()
+            ->latest()
+            ->paginate(10)
+            ->withQueryString(); // Keep the search term when changing pages
+
+        return view('users.index', compact('users', 'roles'));
     }
 
     // 2. SHOW CREATE FORM

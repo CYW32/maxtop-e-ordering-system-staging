@@ -3,6 +3,9 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Traits\DateFilterable;
+use App\Traits\RoleFilterable;
+use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -11,7 +14,7 @@ use Spatie\Permission\Traits\HasRoles;
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, HasRoles, Notifiable;
+    use DateFilterable, HasFactory, HasRoles, Notifiable, RoleFilterable, Searchable;
 
     /**
      * The attributes that are mass assignable.
@@ -24,6 +27,12 @@ class User extends Authenticatable
         'email',
         'password',
         'status',
+    ];
+
+    protected $searchable = [
+        'name',
+        'email',
+        'login_id',
     ];
 
     /**

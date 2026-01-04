@@ -60,10 +60,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v1)
+## Update details(v2)
 
-* Added the dynamic role & feature on/off.
-* Added the create user.
-* Added the user list.
-* Added the edit user.
-* Change the Admin role are unable to unthick all the feature.
+* Added dynamic search & date range & role function.
