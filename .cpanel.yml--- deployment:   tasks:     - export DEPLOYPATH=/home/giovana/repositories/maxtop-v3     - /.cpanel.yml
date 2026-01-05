@@ -1,5 +1,0 @@
----
-deployment:
-  tasks:
-    - export DEPLOYPATH=/home/giovana/staging.jinfinity.my
-    - /bin/cp -R * $DEPLOYPATH
