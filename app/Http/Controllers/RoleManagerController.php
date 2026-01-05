@@ -31,13 +31,13 @@ class RoleManagerController extends Controller
         $roles = Role::all();
 
         foreach ($roles as $role) {
-            // Get the list of permission IDs checked for this specific role
+            // 新增：如果是 admin 角色，跳过权限同步，确保其始终拥有最高权限 [1, 6]
+            if ($role->name === 'admin') {
+                continue;
+            }
+
             $permissionsForRole = $matrix[$role->id] ?? [];
-
-            // Get names based on IDs
             $permissionNames = Permission::whereIn('id', $permissionsForRole)->pluck('name');
-
-            // Sync the permissions
             $role->syncPermissions($permissionNames);
         }
 

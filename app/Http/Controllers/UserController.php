@@ -80,9 +80,11 @@ class UserController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email,'.$user->id,
+            'login_id' => 'required|string|unique:users,login_id,'.$user->id, // 新增：后端防御性验证 [5]
             'role' => 'required|exists:roles,name',
             'status' => 'required|in:active,deactive',
-            'password' => 'nullable|min:8', // <--- Allow null, but if present must be 8+
+            'password' => 'nullable|min:8',
+            'parent_id' => 'nullable|exists:users,id', // 新增：分支架构支持
         ]);
 
         // 1. Prepare data to update

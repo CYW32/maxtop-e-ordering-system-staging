@@ -27,12 +27,14 @@ class User extends Authenticatable
         'email',
         'password',
         'status',
+        'parent_id',
     ];
 
     protected $searchable = [
         'name',
         'email',
         'login_id',
+        'parent_id',
     ];
 
     /**
@@ -56,5 +58,17 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    // 新增：获取所属总店
+    public function parent()
+    {
+        return $this->belongsTo(User::class, 'parent_id');
+    }
+
+    // 新增：获取下属分店
+    public function branches()
+    {
+        return $this->hasMany(User::class, 'parent_id');
     }
 }

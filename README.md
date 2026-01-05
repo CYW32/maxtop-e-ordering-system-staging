@@ -60,6 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v2)
+## Update details(v3)
 
-* Added dynamic search & date range & role function.
+* Change and improve small of the logic advice from Notebooklm.
+> Laravel E-Ordering System - 项目需求大纲(v1).txt
+> project_for_ai(v1).txt
