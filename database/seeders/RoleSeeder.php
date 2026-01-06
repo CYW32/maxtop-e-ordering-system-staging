@@ -17,7 +17,10 @@ class RoleSeeder extends Seeder
         // We use firstOrCreate to prevent errors if you run seed multiple times
         Permission::firstOrCreate(['name' => 'view_users']);
         Permission::firstOrCreate(['name' => 'create_users']);
-        Permission::firstOrCreate(['name' => 'edit_users']); // <--- NEW PERMISSION
+        Permission::firstOrCreate(['name' => 'edit_users']);
+        Permission::firstOrCreate(['name' => 'view_assigned_customers']);
+        Permission::firstOrCreate(['name' => 'edit_assigned_customers']);
+        Permission::firstOrCreate(['name' => 'reassign_customers']);
 
         // 3. Create Roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
@@ -32,13 +35,27 @@ class RoleSeeder extends Seeder
             'view_users',
             'create_users',
             'edit_users',
+            'view_assigned_customers',
+            'edit_assigned_customers',
+            'reassign_customers',
         ]);
 
         // CS LEADER: Can view the list (but maybe not create/edit by default)
         // You can change this later in your "Feature Settings" page.
-        $leader->syncPermissions(['view_users']);
+        $leader->syncPermissions([
+            'view_users',
+            'create_users',
+            'edit_users',
+            'view_assigned_customers',
+            'edit_assigned_customers',
+            'reassign_customers',
+        ]);
 
         // CS STAFF: Starts with nothing (or add 'view_users' if you prefer)
         // $staff->syncPermissions(['view_users']);
+        $staff->syncPermissions([
+            'view_assigned_customers',
+            'edit_assigned_customers',
+        ]);
     }
 }

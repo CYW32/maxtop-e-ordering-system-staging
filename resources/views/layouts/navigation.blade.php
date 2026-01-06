@@ -44,6 +44,12 @@
                 </x-nav-link>
             @endcan
 
+            @can('view_assigned_customers')
+                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
+                    {{ __('My Customers') }}
+                </x-nav-link>
+            @endcan
+
         </div>
     </div>
 

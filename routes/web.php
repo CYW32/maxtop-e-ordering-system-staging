@@ -23,10 +23,10 @@ require __DIR__.'/auth.php';
 */
 Route::middleware(['auth', 'verified'])->group(function () {
 
-    // 1. DASHBOARD
+    // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
-    // 2. USER MANAGEMENT
+    // USER MANAGEMENT
     // We split this because viewing and creating require different permissions.
     Route::prefix('users')->name('users.')->group(function () {
 
@@ -42,13 +42,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
 
         // EDIT USER (Requires 'edit_users' permission)
-        Route::middleware('permission:edit_users')->group(function () {
+        Route::middleware('permission:edit_users|edit_assigned_customers')->group(function () {
             Route::get('/{user}/edit', [UserController::class, 'edit'])->name('edit');
             Route::put('/{user}', [UserController::class, 'update'])->name('update');
         });
     });
 
-    // 3. SYSTEM SETTINGS (Strict Admin Only)
+    // MY CUSTOMER
+    Route::get('/my-customers', [UserController::class, 'assignedIndex'])
+        ->middleware('permission:view_assigned_customers')
+        ->name('users.assigned');
+
+    // SYSTEM SETTINGS (Strict Admin Only)
     // Only 'admin' role can touch these, regardless of permissions.
     Route::middleware('role:admin')->prefix('admin')->name('roles.')->group(function () {
 

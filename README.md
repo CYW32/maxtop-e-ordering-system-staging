@@ -60,8 +60,36 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v3)
+## Update details(v4)
 
-* Change and improve small of the logic advice from Notebooklm.
-> Laravel E-Ordering System - 项目需求大纲(v1).txt
-> project_for_ai(v1).txt
+* Updated the default acc for all role when running "php artisan migrate:fresh --seed":
+Admin :
+User ID : admin001
+Password : password
+
+CS Leader :
+User ID : csleader001
+Password : password
+
+CS Staff :
+User ID : csstaff001
+Password : password
+
+Customer A :
+User ID : customer001
+Password : password
+
+Customer A branch :
+User ID : branch001
+Password : password
+
+* Added "customer_details" table to store the company info.
+
+* Added below listed "Permission Matrix":
+- View assigned customers				
+- Edit assigned customers				
+- Reassign customers
+
+* Improve the logic of:
+- CS Staff unable to change the "Assigned CS Representative".
+- CS Leader is unable to view the role that equal or higher then own if given to view the all user list.

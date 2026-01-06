@@ -28,13 +28,16 @@ class User extends Authenticatable
         'password',
         'status',
         'parent_id',
+        'assigned_cs_id',
     ];
 
     protected $searchable = [
         'name',
-        'email',
         'login_id',
+        'email',
+        'status',
         'parent_id',
+        'assigned_cs_id',
     ];
 
     /**
@@ -70,5 +73,23 @@ class User extends Authenticatable
     public function branches()
     {
         return $this->hasMany(User::class, 'parent_id');
+    }
+
+    public function details()
+    {
+        // A user has one set of customer details
+        return $this->hasOne(CustomerDetail::class);
+    }
+
+    // For CS Staff: Get all customers they handle
+    public function assignedCustomers()
+    {
+        return $this->hasMany(User::class, 'assigned_cs_id');
+    }
+
+    // For Customers: Get their assigned CS Staff
+    public function assignedStaff()
+    {
+        return $this->belongsTo(User::class, 'assigned_cs_id');
     }
 }
