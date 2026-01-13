@@ -32,23 +32,41 @@
                             :value="$user->email" required />
                     </div>
 
+                    <!-- ROLE SECTION -->
                     <div class="mb-4">
                         <x-input-label for="role" :value="__('Role')" />
-                        <select name="role" class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                        <select name="role" id="role"
+                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                            @if ($user->hasRole('admin')) disabled @endif>
                             @foreach ($roles as $role)
                                 <option value="{{ $role->name }}" @if ($user->hasRole($role->name)) selected @endif>
-                                    {{ ucfirst($role->name) }}
+                                    {{ ucfirst(str_replace('_', ' ', $role->name)) }}
                                 </option>
                             @endforeach
                         </select>
+                        {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
+                        @if ($user->hasRole('admin'))
+                            <p class="text-xs text-red-500 mt-1 italic">Reason: The System Admin role is permanent to
+                                ensure developer-level access.</p>
+                            <input type="hidden" name="role" value="admin">
+                        @endif
                     </div>
 
+                    <!-- STATUS SECTION -->
                     <div class="mb-4">
                         <x-input-label for="status" :value="__('Status')" />
-                        <select name="status" class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                        <select name="status" id="status"
+                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                            @if ($user->hasRole('admin')) disabled @endif>
                             <option value="active" @if ($user->status === 'active') selected @endif>Active</option>
                             <option value="deactive" @if ($user->status === 'deactive') selected @endif>Deactive</option>
                         </select>
+                        {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
+                        @if ($user->hasRole('admin'))
+                            <p class="text-xs text-red-500 mt-1 italic">Reason: System Admin must remain active to
+                                prevent management lockout.</p>
+                            <input type="hidden" name="status" value="active">
+                        @endif
                     </div>
 
                     @if ($user->hasRole('customer'))
@@ -108,19 +126,26 @@
                         </div>
                     @endif
 
+                    <!-- ASSIGNED CS REPRESENTATIVE SECTION -->
                     @can('reassign_customers')
                         <div class="mb-4">
                             <x-input-label for="assigned_cs_id" :value="__('Assigned CS Representative')" />
                             <select name="assigned_cs_id" id="assigned_cs_id"
-                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">
+                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                                @if ($user->hasRole('admin')) disabled @endif>
                                 <option value="">-- No CS Assigned --</option>
                                 @foreach ($csStaffMembers as $staff)
                                     <option value="{{ $staff->id }}"
                                         {{ $user->assigned_cs_id == $staff->id ? 'selected' : '' }}>
-                                        {{ $staff->name }} ({{ $staff->roles->first()->name }})
+                                        {{ $staff->name }} ({{ $staff->roles->first()->name ?? 'No Role' }})
                                     </option>
                                 @endforeach
                             </select>
+                            {{-- CRITICAL: Reason for Admin --}}
+                            @if ($user->hasRole('admin'))
+                                <p class="text-xs text-red-500 mt-1 italic">Reason: Admins cannot be assigned to CS Staff
+                                    as they oversee the entire system.</p>
+                            @endif
                         </div>
                     @endcan
 

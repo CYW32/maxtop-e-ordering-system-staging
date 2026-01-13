@@ -9,12 +9,14 @@ use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use DateFilterable, HasFactory, HasRoles, Notifiable, RoleFilterable, Searchable;
+    use DateFilterable, HasFactory, HasRoles, LogsActivity, Notifiable, RoleFilterable, Searchable;
 
     /**
      * The attributes that are mass assignable.
@@ -91,5 +93,13 @@ class User extends Authenticatable
     public function assignedStaff()
     {
         return $this->belongsTo(User::class, 'assigned_cs_id');
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logFillable() // Automatically logs all fields in $fillable [3]
+            ->logOnlyDirty() // Only log fields that actually changed
+            ->dontSubmitEmptyLogs();
     }
 }

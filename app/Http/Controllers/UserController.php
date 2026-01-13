@@ -157,15 +157,23 @@ class UserController extends Controller
             'state' => 'nullable|string|max:100',
         ]);
 
-        // Update User Account Data
+        // Start with basic info that is ALWAYS editable
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
-            'status' => $request->status,
         ];
 
-        if (auth()->user()->hasPermissionTo('reassign_customers')) {
-            $userData['assigned_cs_id'] = $request->assigned_cs_id;
+        // BACKEND SECURITY LOCK:
+        // Only allow changing Status, Role, and Assignment if the target is NOT an admin.
+        if (! $user->hasRole('admin')) {
+            $userData['status'] = $request->status;
+
+            if (auth()->user()->hasPermissionTo('reassign_customers')) {
+                $userData['assigned_cs_id'] = $request->assigned_cs_id;
+            }
+
+            // Only sync roles for non-admins
+            $user->syncRoles([$request->role]);
         }
 
         if ($request->filled('password')) {

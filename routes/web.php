@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\RoleManagerController;
 use App\Http\Controllers\UserController;
@@ -60,8 +61,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
         Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
 
-        // You can add 'Activity Log' routes here later
-        // Route::get('/activity', ...);
+        // Activity Log Route
+        Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
 });

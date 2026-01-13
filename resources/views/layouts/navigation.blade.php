@@ -16,19 +16,22 @@
 
             {{-- ADMIN / STAFF TOOLS --}}
             @hasanyrole('admin|cs_leader')
-                <div class="px-6 mt-6 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Management
+                <div class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    {{ __('Management') }}
                 </div>
 
-                {{-- Feature: Activity Log (Admin Only) --}}
+                {{-- Feature Settings (Admin Only) --}}
                 @role('admin')
-                    <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')" class="px-6 py-2 block border-l-4">
+                    <a href="{{ route('roles.matrix') }}"
+                        class="px-6 py-2 block border-l-4 {{ request()->routeIs('roles.matrix') ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-800' }}">
                         {{ __('Feature Settings') }}
-                    </x-nav-link>
+                    </a>
 
-                    <x-nav-link href="#" class="px-6 py-2 block border-l-4 border-transparent hover:bg-gray-50">
+                    {{-- NEW: Activity Log Link --}}
+                    <a href="{{ route('roles.activity.index') }}"
+                        class="px-6 py-2 block border-l-4 {{ request()->routeIs('roles.activity.index') ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-800' }}">
                         {{ __('Activity Log') }}
-                    </x-nav-link>
+                    </a>
                 @endrole
             @endhasanyrole
 
