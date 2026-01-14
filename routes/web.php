@@ -65,12 +65,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
-    // ITEM MANAGEMENT (CS Staff, Leader, and Admin)
+    // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
-        ->middleware('role:admin|cs_leader|cs_staff');
+        ->middleware(['auth', 'verified']);
 
-    // CATALOG MANAGEMENT (CS Staff, Leader, and Admin)
+    // CATALOG MANAGEMENT
     Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
         ->middleware(['auth', 'verified']);
+
+    // CUSTOMER PRODUCT VIEWING
+    Route::get('/products', [\App\Http\Controllers\Customer\ProductCatalogController::class, 'index'])
+        ->name('customer.products.index')
+        ->middleware('role:customer'); // Restrict to customer roles
 
 });

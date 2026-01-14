@@ -18,6 +18,12 @@
                 {{ __('My Orders') }}
             </x-nav-link>
 
+            @role('customer')
+                <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
+                    {{ __('Order Products') }}
+                </x-nav-link>
+            @endrole
+
             <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
             @hasanyrole('admin|cs_leader|cs_staff')
                 <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
@@ -25,9 +31,11 @@
                 </div>
 
                 <!-- Product Management -->
-                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
-                    {{ __('Product Items') }}
-                </x-nav-link>
+                @can('view_items')
+                    <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                        {{ __('Product Items') }}
+                    </x-nav-link>
+                @endcan
 
                 <!-- Catalog Folders -->
                 @can('view_catalogs')

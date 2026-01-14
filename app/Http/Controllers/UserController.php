@@ -147,7 +147,7 @@ class UserController extends Controller
             'assigned_cs_id' => 'nullable|exists:users,id',
             'password' => 'nullable|min:8',
             'parent_id' => 'nullable|exists:users,id',
-            // NEW: Validation for customer_details
+            'catalog_id' => 'nullable|exists:catalogs,id',
             'company_name' => 'nullable|string|max:255',
             'company_reg_no' => 'nullable|string|max:255',
             'pic_name' => 'nullable|string|max:255',
@@ -162,6 +162,8 @@ class UserController extends Controller
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
+            'parent_id' => $request->parent_id, // Ensure hierarchy is saved
+            'catalog_id' => $request->catalog_id, // Fulfills Single Catalog Policy
         ];
 
         // BACKEND SECURITY LOCK:

@@ -31,6 +31,7 @@ class User extends Authenticatable
         'status',
         'parent_id',
         'assigned_cs_id',
+        'catalog_id',
     ];
 
     protected $searchable = [
@@ -40,6 +41,7 @@ class User extends Authenticatable
         'status',
         'parent_id',
         'assigned_cs_id',
+        'catalog_id',
     ];
 
     /**

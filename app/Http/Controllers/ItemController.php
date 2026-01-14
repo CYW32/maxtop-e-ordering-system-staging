@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Item;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 
 // Note: For actual compression, you would typically use 'Intervention Image' library
@@ -13,8 +14,9 @@ class ItemController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Item::query();
+        Gate::authorize('view_items'); // Minimum requirement [9]
 
+        $query = Item::query();
         if ($request->filled('search')) {
             $query->where('name', 'like', "%{$request->search}%")
                 ->orWhere('sku', 'like', "%{$request->search}%");
@@ -27,11 +29,18 @@ class ItemController extends Controller
 
     public function create()
     {
+        // Requirement: Needs View AND Create
+        if (! auth()->user()->can('view_items') || ! auth()->user()->can('create_items')) {
+            abort(403, 'Unauthorized creation access.');
+        }
+
         return view('admin.items.create');
     }
 
     public function store(Request $request)
     {
+        Gate::authorize('create_items');
+
         $validated = $request->validate([
             'sku' => 'required|unique:items,sku',
             'name' => 'required|string|max:255',
@@ -54,11 +63,20 @@ class ItemController extends Controller
 
     public function edit(Item $item)
     {
+        // Requirement: Needs View AND Create AND Edit
+        if (! auth()->user()->can('view_items') ||
+            ! auth()->user()->can('create_items') ||
+            ! auth()->user()->can('edit_items')) {
+            abort(403, 'Unauthorized edit access.');
+        }
+
         return view('admin.items.edit', compact('item'));
     }
 
     public function update(Request $request, Item $item)
     {
+        Gate::authorize('edit_items');
+
         $validated = $request->validate([
             'sku' => 'required|unique:items,sku,'.$item->id,
             'name' => 'required|string|max:255',

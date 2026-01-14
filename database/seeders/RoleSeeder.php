@@ -24,6 +24,9 @@ class RoleSeeder extends Seeder
         Permission::firstOrCreate(['name' => 'view_catalogs']);
         Permission::firstOrCreate(['name' => 'create_catalogs']);
         Permission::firstOrCreate(['name' => 'edit_catalogs']);
+        Permission::firstOrCreate(['name' => 'view_items']);
+        Permission::firstOrCreate(['name' => 'create_items']);
+        Permission::firstOrCreate(['name' => 'edit_items']);
 
         // 3. Create Roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
@@ -33,17 +36,18 @@ class RoleSeeder extends Seeder
 
         // 4. Assign Permissions
         // ADMIN: Gets access to everything
-        $admin->syncPermissions([
-            'view_users',
-            'create_users',
-            'edit_users',
-            'view_assigned_customers',
-            'edit_assigned_customers',
-            'reassign_customers',
-            'view_catalogs',
-            'create_catalogs',
-            'edit_catalogs',
-        ]);
+        // $admin->syncPermissions([
+        //     'view_users',
+        //     'create_users',
+        //     'edit_users',
+        //     'view_assigned_customers',
+        //     'edit_assigned_customers',
+        //     'reassign_customers',
+        //     'view_catalogs',
+        //     'create_catalogs',
+        //     'edit_catalogs',
+        // ]);
+        $admin->givePermissionTo(Permission::all());
 
         // CS LEADER: Can view the list (but maybe not create/edit by default)
         // You can change this later in your "Feature Settings" page.
@@ -57,6 +61,9 @@ class RoleSeeder extends Seeder
             'view_catalogs',
             'create_catalogs',
             'edit_catalogs',
+            'view_items',
+            'create_items',
+            'edit_items',
         ]);
 
         // CS STAFF: Starts with nothing (or add 'view_users' if you prefer)
@@ -64,6 +71,12 @@ class RoleSeeder extends Seeder
         $staff->syncPermissions([
             'view_assigned_customers',
             'edit_assigned_customers',
+            'view_catalogs',
+            'create_catalogs',
+            'edit_catalogs',
+            'view_items',
+            'create_items',
+            'edit_items',
         ]);
     }
 }
