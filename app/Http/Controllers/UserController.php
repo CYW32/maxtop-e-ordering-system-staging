@@ -132,8 +132,9 @@ class UserController extends Controller
 
         $roles = Role::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
+        $catalogs = \App\Models\Catalog::all();
 
-        return view('users.edit', compact('user', 'roles', 'csStaffMembers'));
+        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'catalogs'));
     }
 
     public function update(Request $request, User $user)

@@ -29,6 +29,12 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
+        // Manual Log for Login Activity
+        activity('auth')
+            ->performedOn(auth()->user())
+            ->causedBy(auth()->user())
+            ->log('User logged into the system');
+
         return redirect()->intended(route('dashboard', absolute: false));
     }
 
@@ -324,6 +330,65 @@ class VerifyEmailController extends Controller
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\ActivityLogController.php ---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Spatie\Activitylog\Models\Activity;
+use Spatie\Permission\Models\Role;
+
+class ActivityLogController extends Controller
+{
+    public function index(Request $request)
+    {
+        $query = Activity::with(['causer', 'subject']);
+
+        // 1. Filter by Date Range (using logic from your DateFilterable trait [1])
+        if ($request->filled('start_date')) {
+            $query->whereDate('created_at', '>=', $request->start_date);
+        }
+        if ($request->filled('end_date')) {
+            $query->whereDate('created_at', '<=', $request->end_date);
+        }
+
+        // 2. Filter by Action Type (description column [2])
+        if ($request->filled('action_type')) {
+            $query->where('description', $request->action_type);
+        }
+
+        // 3. Dynamic Search: Name or Login ID (filtered through the 'causer' relationship)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->whereHasMorph('causer', [User::class], function ($q) use ($term) {
+                $q->where('name', 'like', "%{$term}%")
+                    ->orWhere('login_id', 'like', "%{$term}%");
+            });
+        }
+
+        // 4. Filter by Role of the Causer
+        if ($request->filled('role')) {
+            $query->whereHasMorph('causer', [User::class], function ($q) use ($request) {
+                $q->role($request->role);
+            });
+        }
+
+        $logs = $query->latest()->paginate(20)->withQueryString();
+
+        // Fetch roles for the dropdown [3]
+        $roles = Role::pluck('name', 'name');
+
+        // Define common action types for the dropdown
+        $actionTypes = ['created', 'updated', 'deleted', 'auth'];
+
+        return view('admin.activity.index', compact('logs', 'roles', 'actionTypes'));
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Controller.php ---
 <?php
 
@@ -608,8 +673,9 @@ class UserController extends Controller
 
         $roles = Role::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
+        $catalogs = \App\Models\Catalog::all();
 
-        return view('users.edit', compact('user', 'roles', 'csStaffMembers'));
+        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'catalogs'));
     }
 
     public function update(Request $request, User $user)
@@ -633,15 +699,23 @@ class UserController extends Controller
             'state' => 'nullable|string|max:100',
         ]);
 
-        // Update User Account Data
+        // Start with basic info that is ALWAYS editable
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
-            'status' => $request->status,
         ];
 
-        if (auth()->user()->hasPermissionTo('reassign_customers')) {
-            $userData['assigned_cs_id'] = $request->assigned_cs_id;
+        // BACKEND SECURITY LOCK:
+        // Only allow changing Status, Role, and Assignment if the target is NOT an admin.
+        if (! $user->hasRole('admin')) {
+            $userData['status'] = $request->status;
+
+            if (auth()->user()->hasPermissionTo('reassign_customers')) {
+                $userData['assigned_cs_id'] = $request->assigned_cs_id;
+            }
+
+            // Only sync roles for non-admins
+            $user->syncRoles([$request->role]);
         }
 
         if ($request->filled('password')) {
@@ -794,15 +868,47 @@ class ProfileUpdateRequest extends FormRequest
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Catalog.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Catalog extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['name'];
+
+    public function items()
+    {
+        return $this->belongsToMany(Item::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\CustomerDetail.php ---
 <?php
 
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 class CustomerDetail extends Model
 {
+    use LogsActivity;
+
     protected $fillable = [
         'user_id',
         'company_name',
@@ -818,6 +924,49 @@ class CustomerDetail extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logFillable() // Logs company name, reg no, PIC info, etc. [4]
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Item.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Item extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path'];
+
+    public function catalogs()
+    {
+        return $this->belongsToMany(Catalog::class);
+    }
+
+    // Logic for Deletion Restriction [2]
+    public function canBeDeleted(): bool
+    {
+        // For now, returns true. Later, we will check if any OrderItems exist.
+        return true;
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 }
 
@@ -835,12 +984,14 @@ use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use DateFilterable, HasFactory, HasRoles, Notifiable, RoleFilterable, Searchable;
+    use DateFilterable, HasFactory, HasRoles, LogsActivity, Notifiable, RoleFilterable, Searchable;
 
     /**
      * The attributes that are mass assignable.
@@ -917,6 +1068,39 @@ class User extends Authenticatable
     public function assignedStaff()
     {
         return $this->belongsTo(User::class, 'assigned_cs_id');
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logFillable() // Automatically logs all fields in $fillable [3]
+            ->logOnlyDirty() // Only log fields that actually changed
+            ->dontSubmitEmptyLogs();
+    }
+
+    // Get the effective catalog (Directly assigned OR inherited from parent) [1]
+    public function getEffectiveCatalogId()
+    {
+        if ($this->catalog_id) {
+            return $this->catalog_id;
+        }
+
+        // Inheritance Logic: If no catalog, check parent (Main Store) [1]
+        return $this->parent?->catalog_id;
+    }
+
+    // Fetch only items available to this customer based on their catalog [2]
+    public function getVisibleItems()
+    {
+        $catalogId = $this->getEffectiveCatalogId();
+
+        if (! $catalogId) {
+            return collect(); // Empty if unassigned [2]
+        }
+
+        return Item::whereHas('catalogs', function ($q) use ($catalogId) {
+            $q->where('catalogs.id', $catalogId);
+        })->get();
     }
 }
 
@@ -2656,6 +2840,7 @@ return new class extends Migration
             $table->string('password');
             $table->enum('status', ['active', 'deactive']);
             $table->foreignId('parent_id')->nullable()->constrained('users')->onDelete('set null');
+            $table->foreignId('catalog_id')->nullable()->constrained('catalogs')->onDelete('set null');
 
             $table->rememberToken();
             $table->timestamps();
@@ -3008,6 +3193,189 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_08_034023_create_activity_log_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class CreateActivityLogTable extends Migration
+{
+    public function up()
+    {
+        Schema::connection(config('activitylog.database_connection'))->create(config('activitylog.table_name'), function (Blueprint $table) {
+            $table->bigIncrements('id');
+            $table->string('log_name')->nullable();
+            $table->text('description');
+            $table->nullableMorphs('subject', 'subject');
+            $table->nullableMorphs('causer', 'causer');
+            $table->json('properties')->nullable();
+            $table->timestamps();
+            $table->index('log_name');
+        });
+    }
+
+    public function down()
+    {
+        Schema::connection(config('activitylog.database_connection'))->dropIfExists(config('activitylog.table_name'));
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_08_034024_add_event_column_to_activity_log_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class AddEventColumnToActivityLogTable extends Migration
+{
+    public function up()
+    {
+        Schema::connection(config('activitylog.database_connection'))->table(config('activitylog.table_name'), function (Blueprint $table) {
+            $table->string('event')->nullable()->after('subject_type');
+        });
+    }
+
+    public function down()
+    {
+        Schema::connection(config('activitylog.database_connection'))->table(config('activitylog.table_name'), function (Blueprint $table) {
+            $table->dropColumn('event');
+        });
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_08_034025_add_batch_uuid_column_to_activity_log_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class AddBatchUuidColumnToActivityLogTable extends Migration
+{
+    public function up()
+    {
+        Schema::connection(config('activitylog.database_connection'))->table(config('activitylog.table_name'), function (Blueprint $table) {
+            $table->uuid('batch_uuid')->nullable()->after('properties');
+        });
+    }
+
+    public function down()
+    {
+        Schema::connection(config('activitylog.database_connection'))->table(config('activitylog.table_name'), function (Blueprint $table) {
+            $table->dropColumn('batch_uuid');
+        });
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121020_create_catalogs_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('catalogs', function (Blueprint $table) {
+            $table->id();
+            $table->string('name'); // e.g., "General", "East Malaysia", "VIP"
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('catalogs');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121039_create_items_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('items', function (Blueprint $table) {
+            $table->id();
+            $table->string('sku')->unique();
+            $table->string('name');
+            $table->text('description')->nullable();
+            $table->decimal('price', 10, 2)->default(0.00);
+            $table->string('image_path')->nullable(); // For automated compression later [3]
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('items');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121101_create_catalog_item_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('catalog_item', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('catalog_id')->constrained()->onDelete('cascade');
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('catalog_item');
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
@@ -3158,6 +3526,128 @@ class RoleSeeder extends Seeder
         ]);
     }
 }
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\activity\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('System Activity Log') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+
+                {{-- THE DYNAMIC SEARCH TOOLBAR [4] --}}
+                <div class="mb-6">
+                    <x-filter-toolbar :placeholder="__('Search Name or Login ID...')">
+                        {{-- Action Type Dropdown --}}
+                        <select name="action_type"
+                            class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Actions') }}</option>
+                            @foreach ($actionTypes as $type)
+                                <option value="{{ $type }}"
+                                    {{ request('action_type') == $type ? 'selected' : '' }}>
+                                    {{ ucfirst($type) }}
+                                </option>
+                            @endforeach
+                        </select>
+
+                        {{-- Role Dropdown --}}
+                        <select name="role"
+                            class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Roles') }}</option>
+                            @foreach ($roles as $roleName)
+                                <option value="{{ $roleName }}"
+                                    {{ request('role') == $roleName ? 'selected' : '' }}>
+                                    {{ ucfirst(str_replace('_', ' ', $roleName)) }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </x-filter-toolbar>
+                </div>
+
+                {{-- LOG TABLE --}}
+                {{-- LOG TABLE --}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Time</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    User (Causer)</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Action</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Target (Subject)</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Changes</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            @foreach ($logs as $log)
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ $log->created_at->format('Y-m-d H:i:s') }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                        {{ $log->causer->name ?? 'System' }}
+                                        <span
+                                            class="text-xs text-gray-400">({{ $log->causer->login_id ?? 'N/A' }})</span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                        <span
+                                            class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                            {{ $log->description === 'updated' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800' }}">
+                                            {{ ucfirst($log->description) }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                        {{ class_basename($log->subject_type) }} (ID: {{ $log->subject_id }})
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500">
+                                        {{-- Displaying Old vs New values from the 'properties' JSON --}}
+                                        @if (isset($log->properties['attributes']))
+                                            <div class="text-xs">
+                                                <strong>New:</strong>
+                                                @foreach ($log->properties['attributes'] as $key => $value)
+                                                    {{ $key }}:
+                                                    {{ is_array($value) ? json_encode($value) : $value }},
+                                                @endforeach
+                                            </div>
+                                        @endif
+                                        @if (isset($log->properties['old']))
+                                            <div class="text-xs mt-1 text-red-400">
+                                                <strong>Old:</strong>
+                                                @foreach ($log->properties['old'] as $key => $value)
+                                                    {{ $key }}:
+                                                    {{ is_array($value) ? json_encode($value) : $value }},
+                                                @endforeach
+                                            </div>
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mt-4">
+                    {{ $logs->links() }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
 
 --- END_FILE ---
 
@@ -3980,19 +4470,22 @@ $classes = ($active ?? false)
 
             {{-- ADMIN / STAFF TOOLS --}}
             @hasanyrole('admin|cs_leader')
-                <div class="px-6 mt-6 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Management
+                <div class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    {{ __('Management') }}
                 </div>
 
-                {{-- Feature: Activity Log (Admin Only) --}}
+                {{-- Feature Settings (Admin Only) --}}
                 @role('admin')
-                    <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')" class="px-6 py-2 block border-l-4">
+                    <a href="{{ route('roles.matrix') }}"
+                        class="px-6 py-2 block border-l-4 {{ request()->routeIs('roles.matrix') ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-800' }}">
                         {{ __('Feature Settings') }}
-                    </x-nav-link>
+                    </a>
 
-                    <x-nav-link href="#" class="px-6 py-2 block border-l-4 border-transparent hover:bg-gray-50">
+                    {{-- NEW: Activity Log Link --}}
+                    <a href="{{ route('roles.activity.index') }}"
+                        class="px-6 py-2 block border-l-4 {{ request()->routeIs('roles.activity.index') ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-800' }}">
                         {{ __('Activity Log') }}
-                    </x-nav-link>
+                    </a>
                 @endrole
             @endhasanyrole
 
@@ -4467,23 +4960,41 @@ $classes = ($active ?? false)
                             :value="$user->email" required />
                     </div>
 
+                    <!-- ROLE SECTION -->
                     <div class="mb-4">
                         <x-input-label for="role" :value="__('Role')" />
-                        <select name="role" class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                        <select name="role" id="role"
+                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                            @if ($user->hasRole('admin')) disabled @endif>
                             @foreach ($roles as $role)
                                 <option value="{{ $role->name }}" @if ($user->hasRole($role->name)) selected @endif>
-                                    {{ ucfirst($role->name) }}
+                                    {{ ucfirst(str_replace('_', ' ', $role->name)) }}
                                 </option>
                             @endforeach
                         </select>
+                        {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
+                        @if ($user->hasRole('admin'))
+                            <p class="text-xs text-red-500 mt-1 italic">Reason: The System Admin role is permanent to
+                                ensure developer-level access.</p>
+                            <input type="hidden" name="role" value="admin">
+                        @endif
                     </div>
 
+                    <!-- STATUS SECTION -->
                     <div class="mb-4">
                         <x-input-label for="status" :value="__('Status')" />
-                        <select name="status" class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                        <select name="status" id="status"
+                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                            @if ($user->hasRole('admin')) disabled @endif>
                             <option value="active" @if ($user->status === 'active') selected @endif>Active</option>
                             <option value="deactive" @if ($user->status === 'deactive') selected @endif>Deactive</option>
                         </select>
+                        {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
+                        @if ($user->hasRole('admin'))
+                            <p class="text-xs text-red-500 mt-1 italic">Reason: System Admin must remain active to
+                                prevent management lockout.</p>
+                            <input type="hidden" name="status" value="active">
+                        @endif
                     </div>
 
                     @if ($user->hasRole('customer'))
@@ -4543,21 +5054,45 @@ $classes = ($active ?? false)
                         </div>
                     @endif
 
+                    <!-- ASSIGNED CS REPRESENTATIVE SECTION -->
                     @can('reassign_customers')
                         <div class="mb-4">
                             <x-input-label for="assigned_cs_id" :value="__('Assigned CS Representative')" />
                             <select name="assigned_cs_id" id="assigned_cs_id"
-                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">
+                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                                @if ($user->hasRole('admin')) disabled @endif>
                                 <option value="">-- No CS Assigned --</option>
                                 @foreach ($csStaffMembers as $staff)
                                     <option value="{{ $staff->id }}"
                                         {{ $user->assigned_cs_id == $staff->id ? 'selected' : '' }}>
-                                        {{ $staff->name }} ({{ $staff->roles->first()->name }})
+                                        {{ $staff->name }} ({{ $staff->roles->first()->name ?? 'No Role' }})
+                                    </option>
+                                @endforeach
+                            </select>
+                            {{-- CRITICAL: Reason for Admin --}}
+                            @if ($user->hasRole('admin'))
+                                <p class="text-xs text-red-500 mt-1 italic">Reason: Admins cannot be assigned to CS Staff
+                                    as they oversee the entire system.</p>
+                            @endif
+                        </div>
+                    @endcan
+
+                    @if ($user->hasRole('customer'))
+                        <div class="mt-4">
+                            <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
+                            <select name="catalog_id" id="catalog_id"
+                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                                <option value="">{{ __('-- No Catalog (Will inherit from Parent) --') }}
+                                </option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}"
+                                        {{ $user->catalog_id == $catalog->id ? 'selected' : '' }}>
+                                        {{ $catalog->name }}
                                     </option>
                                 @endforeach
                             </select>
                         </div>
-                    @endcan
+                    @endif
 
                     <div class="mb-4">
                         <x-input-label for="password" :value="__('New Password (Optional)')" />
@@ -6775,6 +7310,7 @@ Artisan::command('inspire', function () {
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\routes\web.php ---
 <?php
 
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\RoleManagerController;
 use App\Http\Controllers\UserController;
@@ -6835,8 +7371,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
         Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
 
-        // You can add 'Activity Log' routes here later
-        // Route::get('/activity', ...);
+        // Activity Log Route
+        Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
 });
@@ -6855,6 +7391,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         "php": "^8.2",
         "laravel/framework": "^12.0",
         "laravel/tinker": "^2.10.1",
+        "spatie/laravel-activitylog": "^4.10",
         "spatie/laravel-permission": "^6.24"
     },
     "require-dev": {
@@ -10232,39 +10769,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v4)
+## Update details(v6)
 
-* Updated the default acc for all role when running "php artisan migrate:fresh --seed":
-Admin :
-User ID : admin001
-Password : password
-
-CS Leader :
-User ID : csleader001
-Password : password
-
-CS Staff :
-User ID : csstaff001
-Password : password
-
-Customer A :
-User ID : customer001
-Password : password
-
-Customer A branch :
-User ID : branch001
-Password : password
-
-* Added "customer_details" table to store the company info.
-
-* Added below listed "Permission Matrix":
-- View assigned customers				
-- Edit assigned customers				
-- Reassign customers
-
-* Improve the logic of:
-- CS Staff unable to change the "Assigned CS Representative".
-- CS Leader is unable to view the role that equal or higher then own if given to view the all user list.
+* 
 
 --- END_FILE ---
 

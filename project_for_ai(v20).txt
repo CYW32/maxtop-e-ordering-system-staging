@@ -867,6 +867,34 @@ class ProfileUpdateRequest extends FormRequest
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Catalog.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Catalog extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['name'];
+
+    public function items()
+    {
+        return $this->belongsToMany(Item::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\CustomerDetail.php ---
 <?php
 
@@ -903,6 +931,41 @@ class CustomerDetail extends Model
             ->logFillable() // Logs company name, reg no, PIC info, etc. [4]
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs();
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Item.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Item extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path'];
+
+    public function catalogs()
+    {
+        return $this->belongsToMany(Catalog::class);
+    }
+
+    // Logic for Deletion Restriction [2]
+    public function canBeDeleted(): bool
+    {
+        // For now, returns true. Later, we will check if any OrderItems exist.
+        return true;
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 }
 
@@ -1012,6 +1075,31 @@ class User extends Authenticatable
             ->logFillable() // Automatically logs all fields in $fillable [3]
             ->logOnlyDirty() // Only log fields that actually changed
             ->dontSubmitEmptyLogs();
+    }
+
+    // Get the effective catalog (Directly assigned OR inherited from parent) [1]
+    public function getEffectiveCatalogId()
+    {
+        if ($this->catalog_id) {
+            return $this->catalog_id;
+        }
+
+        // Inheritance Logic: If no catalog, check parent (Main Store) [1]
+        return $this->parent?->catalog_id;
+    }
+
+    // Fetch only items available to this customer based on their catalog [2]
+    public function getVisibleItems()
+    {
+        $catalogId = $this->getEffectiveCatalogId();
+
+        if (! $catalogId) {
+            return collect(); // Empty if unassigned [2]
+        }
+
+        return Item::whereHas('catalogs', function ($q) use ($catalogId) {
+            $q->where('catalogs.id', $catalogId);
+        })->get();
     }
 }
 
@@ -2751,6 +2839,7 @@ return new class extends Migration
             $table->string('password');
             $table->enum('status', ['active', 'deactive']);
             $table->foreignId('parent_id')->nullable()->constrained('users')->onDelete('set null');
+            $table->foreignId('catalog_id')->nullable()->constrained('catalogs')->onDelete('set null');
 
             $table->rememberToken();
             $table->timestamps();
@@ -3183,6 +3272,138 @@ class AddBatchUuidColumnToActivityLogTable extends Migration
         });
     }
 }
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121020_create_catalogs_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('catalogs', function (Blueprint $table) {
+            $table->id();
+            $table->string('name'); // e.g., "General", "East Malaysia", "VIP"
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('catalogs');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121039_create_items_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('items', function (Blueprint $table) {
+            $table->id();
+            $table->string('sku')->unique();
+            $table->string('name');
+            $table->text('description')->nullable();
+            $table->decimal('price', 10, 2)->default(0.00);
+            $table->string('image_path')->nullable(); // For automated compression later [3]
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('items');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121101_create_catalog_item_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('catalog_item', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('catalog_id')->constrained()->onDelete('cascade');
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('catalog_item');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121125_add_catalog_id_to_users_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            //
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            //
+        });
+    }
+};
 
 --- END_FILE ---
 
@@ -10562,9 +10783,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v5)
+## Update details(v6)
 
-* Added the "Activity Log" page and all current feature tracking.
+* 
 
 --- END_FILE ---
 

@@ -21,6 +21,9 @@ class RoleSeeder extends Seeder
         Permission::firstOrCreate(['name' => 'view_assigned_customers']);
         Permission::firstOrCreate(['name' => 'edit_assigned_customers']);
         Permission::firstOrCreate(['name' => 'reassign_customers']);
+        Permission::firstOrCreate(['name' => 'view_catalogs']);
+        Permission::firstOrCreate(['name' => 'create_catalogs']);
+        Permission::firstOrCreate(['name' => 'edit_catalogs']);
 
         // 3. Create Roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
@@ -29,7 +32,6 @@ class RoleSeeder extends Seeder
         $customer = Role::firstOrCreate(['name' => 'customer']);
 
         // 4. Assign Permissions
-
         // ADMIN: Gets access to everything
         $admin->syncPermissions([
             'view_users',
@@ -38,6 +40,9 @@ class RoleSeeder extends Seeder
             'view_assigned_customers',
             'edit_assigned_customers',
             'reassign_customers',
+            'view_catalogs',
+            'create_catalogs',
+            'edit_catalogs',
         ]);
 
         // CS LEADER: Can view the list (but maybe not create/edit by default)
@@ -49,6 +54,9 @@ class RoleSeeder extends Seeder
             'view_assigned_customers',
             'edit_assigned_customers',
             'reassign_customers',
+            'view_catalogs',
+            'create_catalogs',
+            'edit_catalogs',
         ]);
 
         // CS STAFF: Starts with nothing (or add 'view_users' if you prefer)

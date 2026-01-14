@@ -102,4 +102,29 @@ class User extends Authenticatable
             ->logOnlyDirty() // Only log fields that actually changed
             ->dontSubmitEmptyLogs();
     }
+
+    // Get the effective catalog (Directly assigned OR inherited from parent) [1]
+    public function getEffectiveCatalogId()
+    {
+        if ($this->catalog_id) {
+            return $this->catalog_id;
+        }
+
+        // Inheritance Logic: If no catalog, check parent (Main Store) [1]
+        return $this->parent?->catalog_id;
+    }
+
+    // Fetch only items available to this customer based on their catalog [2]
+    public function getVisibleItems()
+    {
+        $catalogId = $this->getEffectiveCatalogId();
+
+        if (! $catalogId) {
+            return collect(); // Empty if unassigned [2]
+        }
+
+        return Item::whereHas('catalogs', function ($q) use ($catalogId) {
+            $q->where('catalogs.id', $catalogId);
+        })->get();
+    }
 }

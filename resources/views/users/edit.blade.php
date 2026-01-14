@@ -149,6 +149,23 @@
                         </div>
                     @endcan
 
+                    @if ($user->hasRole('customer'))
+                        <div class="mt-4">
+                            <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
+                            <select name="catalog_id" id="catalog_id"
+                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                                <option value="">{{ __('-- No Catalog (Will inherit from Parent) --') }}
+                                </option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}"
+                                        {{ $user->catalog_id == $catalog->id ? 'selected' : '' }}>
+                                        {{ $catalog->name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                    @endif
+
                     <div class="mb-4">
                         <x-input-label for="password" :value="__('New Password (Optional)')" />
                         <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"

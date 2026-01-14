@@ -65,4 +65,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
+    // ITEM MANAGEMENT (CS Staff, Leader, and Admin)
+    Route::resource('items', \App\Http\Controllers\ItemController::class)
+        ->middleware('role:admin|cs_leader|cs_staff');
+
+    // CATALOG MANAGEMENT (CS Staff, Leader, and Admin)
+    Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
+        ->middleware(['auth', 'verified']);
+
 });

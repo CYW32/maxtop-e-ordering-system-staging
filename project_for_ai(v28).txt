@@ -335,17 +335,132 @@ class VerifyEmailController extends Controller
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
+use Illuminate\Http\Request;
 use Spatie\Activitylog\Models\Activity;
+use Spatie\Permission\Models\Role;
 
 class ActivityLogController extends Controller
 {
+    public function index(Request $request)
+    {
+        $query = Activity::with(['causer', 'subject']);
+
+        // 1. Filter by Date Range (using logic from your DateFilterable trait [1])
+        if ($request->filled('start_date')) {
+            $query->whereDate('created_at', '>=', $request->start_date);
+        }
+        if ($request->filled('end_date')) {
+            $query->whereDate('created_at', '<=', $request->end_date);
+        }
+
+        // 2. Filter by Action Type (description column [2])
+        if ($request->filled('action_type')) {
+            $query->where('description', $request->action_type);
+        }
+
+        // 3. Dynamic Search: Name or Login ID (filtered through the 'causer' relationship)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->whereHasMorph('causer', [User::class], function ($q) use ($term) {
+                $q->where('name', 'like', "%{$term}%")
+                    ->orWhere('login_id', 'like', "%{$term}%");
+            });
+        }
+
+        // 4. Filter by Role of the Causer
+        if ($request->filled('role')) {
+            $query->whereHasMorph('causer', [User::class], function ($q) use ($request) {
+                $q->role($request->role);
+            });
+        }
+
+        $logs = $query->latest()->paginate(20)->withQueryString();
+
+        // Fetch roles for the dropdown [3]
+        $roles = Role::pluck('name', 'name');
+
+        // Define common action types for the dropdown
+        $actionTypes = ['created', 'updated', 'deleted', 'auth'];
+
+        return view('admin.activity.index', compact('logs', 'roles', 'actionTypes'));
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\CatalogController.php ---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Catalog;
+use App\Models\Item;
+use Illuminate\Http\Request;
+
+class CatalogController extends Controller
+{
     public function index()
     {
-        // Fetch logs with the user who caused the action (causer)
-        // and the object that was changed (subject)
-        $logs = Activity::with(['causer', 'subject'])->latest()->paginate(20);
+        // Lists all catalogs (e.g., General, VIP, East Malaysia) [5]
+        $catalogs = Catalog::withCount('items')->latest()->paginate(10);
 
-        return view('admin.activity.index', compact('logs'));
+        return view('admin.catalogs.index', compact('catalogs'));
+    }
+
+    public function create()
+    {
+        return view('admin.catalogs.create');
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255|unique:catalogs,name',
+        ]);
+
+        Catalog::create($validated);
+
+        return redirect()->route('catalogs.index')->with('success', 'Catalog created successfully.');
+    }
+
+    public function edit(Catalog $catalog)
+    {
+        // Fetch all items to populate the Whitelist Interface [2]
+        $items = Item::orderBy('name')->get();
+
+        // Get IDs of items already in this catalog for checkbox states
+        $assignedItemIds = $catalog->items()->pluck('items.id')->toArray();
+
+        return view('admin.catalogs.edit', compact('catalog', 'items', 'assignedItemIds'));
+    }
+
+    public function update(Request $request, Catalog $catalog)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255|unique:catalogs,name,'.$catalog->id,
+            'items' => 'nullable|array',
+            'items.*' => 'exists:items,id',
+        ]);
+
+        $catalog->update(['name' => $validated['name']]);
+
+        // Fulfills Whitelist Logic: Sync checkboxes to the pivot table [2, 4]
+        $catalog->items()->sync($request->input('items', []));
+
+        return redirect()->route('catalogs.index')->with('success', 'Catalog items updated.');
+    }
+
+    public function destroy(Catalog $catalog)
+    {
+        // Prevent deletion if customers are currently assigned (Single Catalog Policy) [6]
+        if (\App\Models\User::where('catalog_id', $catalog->id)->exists()) {
+            return redirect()->back()->with('error', 'Cannot delete catalog while customers are assigned to it.');
+        }
+
+        $catalog->delete();
+
+        return redirect()->route('catalogs.index')->with('success', 'Catalog removed.');
     }
 }
 
@@ -381,6 +496,107 @@ class DashboardController extends Controller
         // Example: If user is Customer, fetch their order history.
 
         return view('dashboard');
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\ItemController.php ---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+
+// Note: For actual compression, you would typically use 'Intervention Image' library
+// composer require intervention/image
+
+class ItemController extends Controller
+{
+    public function index(Request $request)
+    {
+        $query = Item::query();
+
+        if ($request->filled('search')) {
+            $query->where('name', 'like', "%{$request->search}%")
+                ->orWhere('sku', 'like', "%{$request->search}%");
+        }
+
+        $items = $query->latest()->paginate(15)->withQueryString();
+
+        return view('admin.items.index', compact('items'));
+    }
+
+    public function create()
+    {
+        return view('admin.items.create');
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'sku' => 'required|unique:items,sku',
+            'name' => 'required|string|max:255',
+            'price' => 'required|numeric|min:0',
+            'description' => 'nullable|string',
+            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048', // 2MB max
+        ]);
+
+        if ($request->hasFile('image')) {
+            // Requirement 7: Automated image compression placeholder [3]
+            // For now, we store it in the public disk
+            $path = $request->file('image')->store('items', 'public');
+            $validated['image_path'] = $path;
+        }
+
+        Item::create($validated);
+
+        return redirect()->route('items.index')->with('success', 'Item created successfully.');
+    }
+
+    public function edit(Item $item)
+    {
+        return view('admin.items.edit', compact('item'));
+    }
+
+    public function update(Request $request, Item $item)
+    {
+        $validated = $request->validate([
+            'sku' => 'required|unique:items,sku,'.$item->id,
+            'name' => 'required|string|max:255',
+            'price' => 'required|numeric|min:0',
+            'description' => 'nullable|string',
+            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+        ]);
+
+        if ($request->hasFile('image')) {
+            if ($item->image_path) {
+                Storage::disk('public')->delete($item->image_path);
+            }
+            $validated['image_path'] = $request->file('image')->store('items', 'public');
+        }
+
+        $item->update($validated);
+
+        return redirect()->route('items.index')->with('success', 'Item updated successfully.');
+    }
+
+    public function destroy(Item $item)
+    {
+        // Requirement 3C: Deletion Restriction Logic [2]
+        if (! $item->canBeDeleted()) {
+            return redirect()->back()->with('error', 'Item has transactions and cannot be deleted.');
+        }
+
+        if ($item->image_path) {
+            Storage::disk('public')->delete($item->image_path);
+        }
+
+        $item->delete();
+
+        return redirect()->route('items.index')->with('success', 'Item deleted successfully.');
     }
 }
 
@@ -635,8 +851,9 @@ class UserController extends Controller
 
         $roles = Role::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
+        $catalogs = \App\Models\Catalog::all();
 
-        return view('users.edit', compact('user', 'roles', 'csStaffMembers'));
+        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'catalogs'));
     }
 
     public function update(Request $request, User $user)
@@ -829,6 +1046,34 @@ class ProfileUpdateRequest extends FormRequest
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Catalog.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Catalog extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['name'];
+
+    public function items()
+    {
+        return $this->belongsToMany(Item::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\CustomerDetail.php ---
 <?php
 
@@ -865,6 +1110,44 @@ class CustomerDetail extends Model
             ->logFillable() // Logs company name, reg no, PIC info, etc. [4]
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs();
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Item.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Item extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path'];
+
+    public function catalogs()
+    {
+        return $this->belongsToMany(Catalog::class);
+    }
+
+    // Logic for Deletion Restriction [2]
+    public function canBeDeleted(): bool
+    {
+        // Check if item exists in any order_items (to be built next)
+        // return !$this->orderItems()->exists();
+
+        // TEMPORARY: Return true until Order logic is added
+        return true;
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 }
 
@@ -974,6 +1257,31 @@ class User extends Authenticatable
             ->logFillable() // Automatically logs all fields in $fillable [3]
             ->logOnlyDirty() // Only log fields that actually changed
             ->dontSubmitEmptyLogs();
+    }
+
+    // Get the effective catalog (Directly assigned OR inherited from parent) [1]
+    public function getEffectiveCatalogId()
+    {
+        if ($this->catalog_id) {
+            return $this->catalog_id;
+        }
+
+        // Inheritance Logic: If no catalog, check parent (Main Store) [1]
+        return $this->parent?->catalog_id;
+    }
+
+    // Fetch only items available to this customer based on their catalog [2]
+    public function getVisibleItems()
+    {
+        $catalogId = $this->getEffectiveCatalogId();
+
+        if (! $catalogId) {
+            return collect(); // Empty if unassigned [2]
+        }
+
+        return Item::whereHas('catalogs', function ($q) use ($catalogId) {
+            $q->where('catalogs.id', $catalogId);
+        })->get();
     }
 }
 
@@ -2713,6 +3021,7 @@ return new class extends Migration
             $table->string('password');
             $table->enum('status', ['active', 'deactive']);
             $table->foreignId('parent_id')->nullable()->constrained('users')->onDelete('set null');
+            $table->foreignId('catalog_id')->nullable()->constrained('catalogs')->onDelete('set null');
 
             $table->rememberToken();
             $table->timestamps();
@@ -3148,6 +3457,106 @@ class AddBatchUuidColumnToActivityLogTable extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121020_create_catalogs_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('catalogs', function (Blueprint $table) {
+            $table->id();
+            $table->string('name'); // e.g., "General", "East Malaysia", "VIP"
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('catalogs');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121039_create_items_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('items', function (Blueprint $table) {
+            $table->id();
+            $table->string('sku')->unique();
+            $table->string('name');
+            $table->text('description')->nullable();
+            $table->decimal('price', 10, 2)->default(0.00);
+            $table->string('image_path')->nullable(); // For automated compression later [3]
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('items');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_13_121101_create_catalog_item_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('catalog_item', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('catalog_id')->constrained()->onDelete('cascade');
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('catalog_item');
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
@@ -3298,6 +3707,326 @@ class RoleSeeder extends Seeder
         ]);
     }
 }
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\activity\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('System Activity Log') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+
+                {{-- THE DYNAMIC SEARCH TOOLBAR [4] --}}
+                <div class="mb-6">
+                    <x-filter-toolbar :placeholder="__('Search Name or Login ID...')">
+                        {{-- Action Type Dropdown --}}
+                        <select name="action_type"
+                            class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Actions') }}</option>
+                            @foreach ($actionTypes as $type)
+                                <option value="{{ $type }}"
+                                    {{ request('action_type') == $type ? 'selected' : '' }}>
+                                    {{ ucfirst($type) }}
+                                </option>
+                            @endforeach
+                        </select>
+
+                        {{-- Role Dropdown --}}
+                        <select name="role"
+                            class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Roles') }}</option>
+                            @foreach ($roles as $roleName)
+                                <option value="{{ $roleName }}"
+                                    {{ request('role') == $roleName ? 'selected' : '' }}>
+                                    {{ ucfirst(str_replace('_', ' ', $roleName)) }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </x-filter-toolbar>
+                </div>
+
+                {{-- LOG TABLE --}}
+                {{-- LOG TABLE --}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Time</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    User (Causer)</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Action</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Target (Subject)</th>
+                                <th
+                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Changes</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            @foreach ($logs as $log)
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ $log->created_at->format('Y-m-d H:i:s') }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                        {{ $log->causer->name ?? 'System' }}
+                                        <span
+                                            class="text-xs text-gray-400">({{ $log->causer->login_id ?? 'N/A' }})</span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                        <span
+                                            class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                            {{ $log->description === 'updated' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800' }}">
+                                            {{ ucfirst($log->description) }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                        {{ class_basename($log->subject_type) }} (ID: {{ $log->subject_id }})
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500">
+                                        {{-- Displaying Old vs New values from the 'properties' JSON --}}
+                                        @if (isset($log->properties['attributes']))
+                                            <div class="text-xs">
+                                                <strong>New:</strong>
+                                                @foreach ($log->properties['attributes'] as $key => $value)
+                                                    {{ $key }}:
+                                                    {{ is_array($value) ? json_encode($value) : $value }},
+                                                @endforeach
+                                            </div>
+                                        @endif
+                                        @if (isset($log->properties['old']))
+                                            <div class="text-xs mt-1 text-red-400">
+                                                <strong>Old:</strong>
+                                                @foreach ($log->properties['old'] as $key => $value)
+                                                    {{ $key }}:
+                                                    {{ is_array($value) ? json_encode($value) : $value }},
+                                                @endforeach
+                                            </div>
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mt-4">
+                    {{ $logs->links() }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\catalogs\create.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">{{ __('Create New Catalog') }}</h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                <form method="POST" action="{{ route('catalogs.store') }}">
+                    @csrf
+                    <div>
+                        <x-input-label for="name" :value="__('Catalog Name')" />
+                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full md:w-1/2"
+                            required autofocus />
+                        <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                    </div>
+
+                    <div class="flex items-center mt-6">
+                        <x-primary-button>{{ __('Create Catalog') }}</x-primary-button>
+                        <a href="{{ route('catalogs.index') }}"
+                            class="ml-4 text-sm text-gray-600 underline">{{ __('Cancel') }}</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\catalogs\edit.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Edit Catalog: ') . $catalog->name }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+
+                <form method="POST" action="{{ route('catalogs.update', $catalog->id) }}">
+                    @csrf
+                    @method('PUT')
+
+                    <!-- Catalog Name -->
+                    <div class="mb-8">
+                        <x-input-label for="name" :value="__('Catalog Name')" />
+                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full md:w-1/2"
+                            :value="old('name', $catalog->name)" required />
+                        <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                        <p class="mt-1 text-sm text-gray-500">
+                            {{ __('Changing this name will affect all customers assigned to this catalog.') }}</p>
+                    </div>
+
+                    <hr class="my-8 border-gray-200">
+
+                    <!-- Whitelist Logic Interface -->
+                    <div class="mb-6">
+                        <h3 class="text-lg font-medium text-gray-900">{{ __('Item Whitelist Selection') }}</h3>
+                        <p class="text-sm text-gray-600 mb-4">
+                            {{ __('Select the products that should be visible to customers assigned to this catalog. Unchecked items will be hidden from their view.') }}
+                        </p>
+
+                        @if ($items->isEmpty())
+                            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+                                <p class="text-sm text-yellow-700">
+                                    {{ __('No items found in the system. Please create items first.') }}
+                                </p>
+                            </div>
+                        @else
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                @foreach ($items as $item)
+                                    <div
+                                        class="relative flex items-start p-4 border rounded-lg hover:bg-gray-50 transition-colors">
+                                        <div class="flex items-center h-5">
+                                            <input id="item_{{ $item->id }}" name="items[]"
+                                                value="{{ $item->id }}" type="checkbox"
+                                                {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}
+                                                class="focus:ring-indigo-500 h-5 w-5 text-indigo-600 border-gray-300 rounded">
+                                        </div>
+                                        <div class="ml-3 text-sm">
+                                            <label for="item_{{ $item->id }}"
+                                                class="font-medium text-gray-700 cursor-pointer">
+                                                <span class="block">{{ $item->name }}</span>
+                                                <span class="text-gray-500 text-xs uppercase tracking-tighter">SKU:
+                                                    {{ $item->sku }}</span>
+                                            </label>
+                                            <div class="mt-1 text-xs font-semibold text-indigo-600">
+                                                RM {{ number_format($item->price, 2) }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+                    </div>
+
+                    <div class="flex items-center justify-end mt-8 border-t pt-6">
+                        <a href="{{ route('catalogs.index') }}"
+                            class="text-sm text-gray-600 hover:text-gray-900 underline mr-4">
+                            {{ __('Cancel') }}
+                        </a>
+                        <x-primary-button>
+                            {{ __('Update Catalog & Whitelist') }}
+                        </x-primary-button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\catalogs\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Catalog Management') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            @if (session('success'))
+                <div class="mb-4 p-4 bg-green-100 text-green-700 rounded-lg">
+                    {{ session('success') }}
+                </div>
+            @endif
+            @if (session('error'))
+                <div class="mb-4 p-4 bg-red-100 text-red-700 rounded-lg">
+                    {{ session('error') }}
+                </div>
+            @endif
+
+            <div class="flex justify-end mb-4">
+                <a href="{{ route('catalogs.create') }}"
+                    class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">
+                    + {{ __('Create New Catalog') }}
+                </a>
+            </div>
+
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                {{ __('Catalog Name') }}</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                {{ __('Items Whitelisted') }}</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                {{ __('Actions') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        @foreach ($catalogs as $catalog)
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                    {{ $catalog->name }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <span
+                                        class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-indigo-100 text-indigo-800">
+                                        {{ $catalog->items_count }} {{ __('Items') }}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <a href="{{ route('catalogs.edit', $catalog->id) }}"
+                                        class="text-indigo-600 hover:text-indigo-900 mr-4">
+                                        {{ __('Manage Whitelist') }}
+                                    </a>
+                                    <form action="{{ route('catalogs.destroy', $catalog->id) }}" method="POST"
+                                        class="inline">
+                                        @csrf
+                                        @method('DELETE')
+                                        <button type="submit" class="text-red-600 hover:text-red-900"
+                                            onclick="return confirm('Delete this catalog?')">
+                                            {{ __('Delete') }}
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+                <div class="p-4">
+                    {{ $catalogs->links() }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
 
 --- END_FILE ---
 
@@ -4111,48 +4840,61 @@ $classes = ($active ?? false)
             </a>
         </div>
 
-        <div class="flex flex-col space-y-1 mt-8">
-
-            {{-- Dashboard (For Everyone) --}}
-            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')" class="px-6 py-2 block border-l-4">
+        <!-- Primary Navigation Menu -->
+        <div class="flex flex-col h-full py-4">
+            <!-- Section 1: General (Everyone) -->
+            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
                 {{ __('Dashboard') }}
             </x-nav-link>
 
-            {{-- ADMIN / STAFF TOOLS --}}
-            @hasanyrole('admin|cs_leader')
-                <div class="px-6 mt-6 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Management
-                </div>
-
-                {{-- Feature: Activity Log (Admin Only) --}}
-                @role('admin')
-                    <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')" class="px-6 py-2 block border-l-4">
-                        {{ __('Feature Settings') }}
-                    </x-nav-link>
-
-                    <x-nav-link href="#" class="px-6 py-2 block border-l-4 border-transparent hover:bg-gray-50">
-                        {{ __('Activity Log') }}
-                    </x-nav-link>
-                @endrole
-            @endhasanyrole
-
-            {{-- Orders (For Everyone) --}}
-            <x-nav-link href="#" class="px-6 py-2 block border-l-4 border-transparent hover:bg-gray-50">
+            <x-nav-link :href="route('dashboard')" :active="false">
                 {{ __('My Orders') }}
             </x-nav-link>
 
-            {{-- Feature: User List (View Only) --}}
-            @can('view_users')
-                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')" class="px-6 py-2 block border-l-4">
-                    {{ __('User Management') }}
-                </x-nav-link>
-            @endcan
+            <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
+            @hasanyrole('admin|cs_leader|cs_staff')
+                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    {{ __('Office Operations') }}
+                </div>
 
-            @can('view_assigned_customers')
-                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
-                    {{ __('My Customers') }}
+                <!-- Product Management -->
+                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                    {{ __('Product Items') }}
                 </x-nav-link>
-            @endcan
+
+                <!-- NEW LINK: Catalog Folders -->
+                <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
+                    {{ __('Catalog Folders') }}
+                </x-nav-link>
+
+                <!-- User/Customer Management -->
+                @can('view_users')
+                    <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
+                        {{ __('User Management') }}
+                    </x-nav-link>
+                @endcan
+
+                @can('view_assigned_customers')
+                    <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
+                        {{ __('My Customers') }}
+                    </x-nav-link>
+                @endcan
+            @endhasanyrole
+
+            <!-- Section 3: System Controls (Strict Admin Only) -->
+            @role('admin')
+                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    {{ __('System Control') }}
+                </div>
+
+                <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
+                    {{ __('Feature Settings') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('roles.activity.index')" :active="request()->routeIs('roles.activity.index')">
+                    {{ __('Activity Log') }}
+                </x-nav-link>
+            @endrole
 
         </div>
     </div>
@@ -4723,6 +5465,23 @@ $classes = ($active ?? false)
                             @endif
                         </div>
                     @endcan
+
+                    @if ($user->hasRole('customer'))
+                        <div class="mt-4">
+                            <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
+                            <select name="catalog_id" id="catalog_id"
+                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                                <option value="">{{ __('-- No Catalog (Will inherit from Parent) --') }}
+                                </option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}"
+                                        {{ $user->catalog_id == $catalog->id ? 'selected' : '' }}>
+                                        {{ $catalog->name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                    @endif
 
                     <div class="mb-4">
                         <x-input-label for="password" :value="__('New Password (Optional)')" />
@@ -7004,6 +7763,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         // Activity Log Route
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
+
+    // ITEM MANAGEMENT (CS Staff, Leader, and Admin)
+    Route::resource('items', \App\Http\Controllers\ItemController::class)
+        ->middleware('role:admin|cs_leader|cs_staff');
+
+    // CATALOG MANAGEMENT (CS Staff, Leader, and Admin)
+    Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
+        ->middleware('role:admin|cs_leader|cs_staff');
 
 });
 
@@ -10399,39 +11166,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v4)
+## Update details(v6)
 
-* Updated the default acc for all role when running "php artisan migrate:fresh --seed":
-Admin :
-User ID : admin001
-Password : password
-
-CS Leader :
-User ID : csleader001
-Password : password
-
-CS Staff :
-User ID : csstaff001
-Password : password
-
-Customer A :
-User ID : customer001
-Password : password
-
-Customer A branch :
-User ID : branch001
-Password : password
-
-* Added "customer_details" table to store the company info.
-
-* Added below listed "Permission Matrix":
-- View assigned customers				
-- Edit assigned customers				
-- Reassign customers
-
-* Improve the logic of:
-- CS Staff unable to change the "Assigned CS Representative".
-- CS Leader is unable to view the role that equal or higher then own if given to view the all user list.
+* Added the items & catalogs table.
+* Reorder the navigation bar.
+* Added the catalog folder page, for create the catalog group.
 
 --- END_FILE ---
 

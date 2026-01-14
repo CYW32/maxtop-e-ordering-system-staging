@@ -20,6 +20,7 @@ return new class extends Migration
             $table->string('password');
             $table->enum('status', ['active', 'deactive']);
             $table->foreignId('parent_id')->nullable()->constrained('users')->onDelete('set null');
+            $table->unsignedBigInteger('catalog_id')->nullable();
 
             $table->rememberToken();
             $table->timestamps();

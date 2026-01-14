@@ -60,6 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v5)
+## Update details(v6)
 
-* Added the "Activity Log" page and all current feature tracking.
+* Added the items & catalogs table.
+* Reorder the navigation bar.
+* Added the catalog folder page, for create the catalog group.
+* Added the "Permission Matrix" of catalog for admin modify who can view/create/edit the catalog.

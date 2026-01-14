@@ -7,51 +7,63 @@
             </a>
         </div>
 
-        <div class="flex flex-col space-y-1 mt-8">
-
-            {{-- Dashboard (For Everyone) --}}
-            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')" class="px-6 py-2 block border-l-4">
+        <!-- Primary Navigation Menu -->
+        <div class="flex flex-col h-full py-4">
+            <!-- Section 1: General (Everyone) -->
+            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
                 {{ __('Dashboard') }}
             </x-nav-link>
 
-            {{-- ADMIN / STAFF TOOLS --}}
-            @hasanyrole('admin|cs_leader')
-                <div class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('Management') }}
-                </div>
-
-                {{-- Feature Settings (Admin Only) --}}
-                @role('admin')
-                    <a href="{{ route('roles.matrix') }}"
-                        class="px-6 py-2 block border-l-4 {{ request()->routeIs('roles.matrix') ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-800' }}">
-                        {{ __('Feature Settings') }}
-                    </a>
-
-                    {{-- NEW: Activity Log Link --}}
-                    <a href="{{ route('roles.activity.index') }}"
-                        class="px-6 py-2 block border-l-4 {{ request()->routeIs('roles.activity.index') ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-800' }}">
-                        {{ __('Activity Log') }}
-                    </a>
-                @endrole
-            @endhasanyrole
-
-            {{-- Orders (For Everyone) --}}
-            <x-nav-link href="#" class="px-6 py-2 block border-l-4 border-transparent hover:bg-gray-50">
+            <x-nav-link :href="route('dashboard')" :active="false">
                 {{ __('My Orders') }}
             </x-nav-link>
 
-            {{-- Feature: User List (View Only) --}}
-            @can('view_users')
-                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')" class="px-6 py-2 block border-l-4">
-                    {{ __('User Management') }}
-                </x-nav-link>
-            @endcan
+            <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
+            @hasanyrole('admin|cs_leader|cs_staff')
+                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    {{ __('Office Operations') }}
+                </div>
 
-            @can('view_assigned_customers')
-                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
-                    {{ __('My Customers') }}
+                <!-- Product Management -->
+                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                    {{ __('Product Items') }}
                 </x-nav-link>
-            @endcan
+
+                <!-- Catalog Folders -->
+                @can('view_catalogs')
+                    <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
+                        {{ __('Catalog Folders') }}
+                    </x-nav-link>
+                @endcan
+
+                <!-- User/Customer Management -->
+                @can('view_users')
+                    <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
+                        {{ __('User Management') }}
+                    </x-nav-link>
+                @endcan
+
+                @can('view_assigned_customers')
+                    <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
+                        {{ __('My Customers') }}
+                    </x-nav-link>
+                @endcan
+            @endhasanyrole
+
+            <!-- Section 3: System Controls (Strict Admin Only) -->
+            @role('admin')
+                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    {{ __('System Control') }}
+                </div>
+
+                <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
+                    {{ __('Feature Settings') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('roles.activity.index')" :active="request()->routeIs('roles.activity.index')">
+                    {{ __('Activity Log') }}
+                </x-nav-link>
+            @endrole
 
         </div>
     </div>
