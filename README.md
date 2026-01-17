@@ -60,8 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v7)
+## Update details(v8)
 
-* Added the view/create/edit item "Permission Matrix" in admin role.
-* Added the view/create/edit item UI page.
-* Added the item page(list) for customer.
+* Updated the backbone "Laravel E-Ordering System - 项目需求大纲(v7) - EN.txt".
+* Clean up the unnecessary feature like email confirmation & password confirmation that build in in Laravel.
+* Added the create_orders table.

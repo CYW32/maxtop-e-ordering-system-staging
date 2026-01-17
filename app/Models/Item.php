@@ -17,14 +17,22 @@ class Item extends Model
         return $this->belongsToMany(Catalog::class);
     }
 
-    // Logic for Deletion Restriction [2]
+    public function orderItems()
+    {
+        return $this->hasMany(\App\Models\OrderItem::class);
+    }
+
+    /**
+     * Fulfills Section 3C: Deletion & Draft Protection
+     * Items with ANY transaction record (including Drafts and Pending) cannot be deleted. [1]
+     */
     public function canBeDeleted(): bool
     {
-        // Check if item exists in any order_items (to be built next)
-        // return !$this->orderItems()->exists();
-
-        // TEMPORARY: Return true until Order logic is added
-        return true;
+        return ! $this->orderItems()
+            ->whereHas('order', function ($q) {
+                // Updated to include 'draft' and 'pending' per Section 3C [1]
+                $q->whereIn('status', ['draft', 'pending', 'approved', 'in_transit', 'completed']);
+            })->exists();
     }
 
     public function getActivitylogOptions(): LogOptions

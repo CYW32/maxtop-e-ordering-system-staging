@@ -22,7 +22,7 @@ require __DIR__.'/auth.php';
 | Protected Routes (Logged In Users)
 |--------------------------------------------------------------------------
 */
-Route::middleware(['auth', 'verified'])->group(function () {
+Route::middleware(['auth'])->group(function () {
 
     // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -77,5 +77,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/products', [\App\Http\Controllers\Customer\ProductCatalogController::class, 'index'])
         ->name('customer.products.index')
         ->middleware('role:customer'); // Restrict to customer roles
+
+    Route::middleware('role:customer')->prefix('reservation')->name('reservation.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Customer\ReservationController::class, 'index'])->name('index');
+        Route::post('/add', [\App\Http\Controllers\Customer\ReservationController::class, 'store'])->name('store');
+        Route::put('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'update'])->name('update');
+        Route::delete('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'destroy'])->name('destroy');
+        Route::post('/submit', [\App\Http\Controllers\Customer\ReservationController::class, 'submit'])->name('submit');
+    });
 
 });

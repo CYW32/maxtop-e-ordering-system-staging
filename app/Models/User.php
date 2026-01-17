@@ -105,28 +105,77 @@ class User extends Authenticatable
             ->dontSubmitEmptyLogs();
     }
 
-    // Get the effective catalog (Directly assigned OR inherited from parent) [1]
+    /**
+     * Fulfills Single Catalog Policy
+     * Standard Eloquent relationship for the assigned catalog.
+     */
+    public function catalog()
+    {
+        return $this->belongsTo(Catalog::class, 'catalog_id');
+    }
+
+    /**
+     * Inheritance Logic: Get the effective catalog ID
+     * If the branch has no catalog, it looks up the parent (Main) catalog.
+     */
     public function getEffectiveCatalogId()
     {
+        // 1. Direct Assignment
         if ($this->catalog_id) {
             return $this->catalog_id;
         }
 
-        // Inheritance Logic: If no catalog, check parent (Main Store) [1]
-        return $this->parent?->catalog_id;
+        // 2. Inheritance: If Branch, check Main Store
+        if ($this->parent_id) {
+            return $this->parent?->catalog_id;
+        }
+
+        return null;
     }
 
-    // Fetch only items available to this customer based on their catalog [2]
+    /**
+     * Whitelist Logic: Restricted Item Visibility
+     * Ensures customers only see items in their specific assigned (or inherited) catalog.
+     */
     public function getVisibleItems()
     {
         $catalogId = $this->getEffectiveCatalogId();
 
         if (! $catalogId) {
-            return collect(); // Empty if unassigned [2]
+            return collect(); // Return empty if no catalog is assigned to the chain
         }
 
         return Item::whereHas('catalogs', function ($q) use ($catalogId) {
             $q->where('catalogs.id', $catalogId);
         })->get();
+    }
+
+    public function orders()
+    {
+        return $this->hasMany(\App\Models\Order::class);
+    }
+
+    /**
+     * Fulfills Section 4.1: Single Draft Policy
+     * Retrieves the current active draft or returns null.
+     */
+    public function currentDraft()
+    {
+        return $this->orders()->where('status', 'draft')->first();
+    }
+
+    /**
+     * Fulfills Section 3A & 3B: Ordering Scope
+     * Direct Ordering: Orders are always tied to the logged-in user.
+     */
+    public function getOrCreateDraft()
+    {
+        $draft = $this->currentDraft();
+
+        if (! $draft) {
+            $draft = $this->orders()->create(['status' => 'draft']);
+        }
+
+        return $draft;
     }
 }

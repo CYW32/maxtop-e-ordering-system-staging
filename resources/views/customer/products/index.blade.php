@@ -34,10 +34,18 @@
                                 </p>
 
                                 <div class="mt-4">
-                                    <button
-                                        class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition">
-                                        {{ __('Add to Reservation') }}
-                                    </button>
+                                    <form action="{{ route('reservation.store') }}" method="POST">
+                                        @csrf
+                                        <input type="hidden" name="item_id" value="{{ $item->id }}">
+                                        <div class="flex items-center gap-2">
+                                            <input type="number" name="quantity" value="1" min="1"
+                                                class="w-20 rounded border-gray-300 text-sm">
+                                            <button type="submit"
+                                                class="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition text-sm font-bold">
+                                                {{ __('Add to Reservation') }}
+                                            </button>
+                                        </div>
+                                    </form>
                                 </div>
                             </div>
                         </div>
