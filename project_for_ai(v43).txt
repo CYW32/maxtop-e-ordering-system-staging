@@ -202,6 +202,129 @@ class PasswordResetLinkController extends Controller
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\CS\OrderManagementController.php ---
+<?php
+
+namespace App\Http\Controllers\CS;
+
+use App\Http\Controllers\Controller;
+use App\Models\Order;
+
+class OrderManagementController extends Controller
+{
+    /**
+     * Dashboard for CS to see pending/available orders.
+     */
+    public function index()
+    {
+        $user = auth()->user();
+
+        // 1. Unassigned Orders (Claiming Queue) [3]
+        $unassigned = Order::where('status', 'pending')
+            ->whereNull('handler_id')
+            ->latest()
+            ->get();
+
+        // 2. My Active Orders [3]
+        $myOrders = Order::where('handler_id', $user->id)
+            ->whereIn('status', ['pending', 'approved', 'in_transit'])
+            ->latest()
+            ->paginate(15);
+
+        return view('cs.orders.index', compact('unassigned', 'myOrders'));
+    }
+
+    /**
+     * Fulfills Ownership Logic: Claiming an order [3]
+     */
+    public function claim(Order $order)
+    {
+        if ($order->handler_id) {
+            return redirect()->back()->with('error', 'This order has already been claimed.');
+        }
+
+        $order->update(['handler_id' => auth()->id()]);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log('Order claimed by CS Staff');
+
+        return redirect()->back()->with('success', 'Order claimed. You are now the current handler.');
+    }
+
+    /**
+     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger
+     */
+    public function approve(Order $order)
+    {
+        // Security: Only the claimed handler or an admin/leader can approve
+        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+            abort(403, 'You are not the handler for this order.');
+        }
+
+        if ($order->status !== 'pending') {
+            return redirect()->back()->with('error', 'Only pending orders can be approved.');
+        }
+
+        \DB::transaction(function () use ($order) {
+            // Fulfills Section 3C: Item Name Synchronization (One last sync before freezing)
+            foreach ($order->items as $orderItem) {
+                $orderItem->update([
+                    'snapshot_name' => $orderItem->item->name, // Permanent Snapshot [6]
+                    'price_at_order' => $orderItem->item->price,
+                ]);
+            }
+
+            $order->update(['status' => 'approved']);
+        });
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log('Order approved and item names snapshotted');
+
+        return redirect()->route('office.orders.index')->with('success', 'Order approved. Item names are now locked.');
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Customer\OrderHistoryController.php ---
+<?php
+
+namespace App\Http\Controllers\Customer;
+
+use App\Http\Controllers\Controller;
+
+class OrderHistoryController extends Controller
+{
+    public function index()
+    {
+        // Fulfills Direct Ordering: Tied strictly to auth()->id() [1, 2]
+        $orders = auth()->user()->orders()
+            ->where('status', '!=', 'draft') // Drafts are managed in ReservationController
+            ->latest()
+            ->paginate(10);
+
+        return view('customer.orders.index', compact('orders'));
+    }
+
+    public function show(\App\Models\Order $order)
+    {
+        // Security: Ensure owner [1]
+        if ($order->user_id !== auth()->id()) {
+            abort(403);
+        }
+
+        $order->load('items.item');
+
+        return view('customer.orders.show', compact('order'));
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Customer\ProductCatalogController.php ---
 <?php
 
@@ -251,6 +374,35 @@ class ReservationController extends Controller
         $items = $draft ? $draft->items()->with('item')->get() : collect();
 
         return view('customer.reservation.index', compact('draft', 'items'));
+    }
+
+    /**
+     * Submit the reservation, moving it from Draft to Pending status. [3]
+     */
+    public function submit(Request $request)
+    {
+        $user = auth()->user();
+        $draft = $user->currentDraft();
+
+        // Validate draft is not empty [3]
+        if (! $draft || $draft->items()->count() === 0) {
+            return redirect()->back()->with('error', 'Your reservation is empty.');
+        }
+
+        // Generate Order Number and update status to Pending Review [3]
+        $draft->update([
+            'status' => 'pending',
+            'order_number' => 'ORD-'.strtoupper(uniqid()),
+            'created_at' => now(), // Reset timestamp to the actual submission time
+        ]);
+
+        // Manual Log for Submission Activity [4]
+        activity('order')
+            ->performedOn($draft)
+            ->causedBy($user)
+            ->log('Customer submitted reservation for review');
+
+        return redirect()->route('dashboard')->with('success', 'Order submitted for CS review.');
     }
 
     /**
@@ -1202,14 +1354,15 @@ class Item extends Model
     }
 
     /**
-     * Fulfills Section 3C: Deletion Restriction
-     * Items with transaction records (Approved or Completed) cannot be deleted.
+     * Fulfills Section 3C: Deletion & Draft Protection
+     * Items with ANY transaction record (including Drafts and Pending) cannot be deleted. [1]
      */
     public function canBeDeleted(): bool
     {
         return ! $this->orderItems()
             ->whereHas('order', function ($q) {
-                $q->whereIn('status', ['approved', 'in_transit', 'completed']);
+                // Updated to include 'draft' and 'pending' per Section 3C [1]
+                $q->whereIn('status', ['draft', 'pending', 'approved', 'in_transit', 'completed']);
             })->exists();
     }
 
@@ -5315,6 +5468,115 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\customer\reservation\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('My Reservation Draft') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if (session('success'))
+                    <div class="mb-4 text-green-600 font-bold">{{ session('success') }}</div>
+                @endif
+
+                @if (!$draft || $items->isEmpty())
+                    <div class="text-center py-8">
+                        <p class="text-gray-500 mb-4">{{ __('Your reservation draft is currently empty.') }}</p>
+                        <a href="{{ route('customer.products.index') }}" class="text-blue-600 underline">
+                            {{ __('Browse Products to add items') }}
+                        </a>
+                    </div>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="border-b bg-gray-50">
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600">{{ __('Item') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-center">
+                                        {{ __('Quantity') }}</th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Unit Price') }}</th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Subtotal') }}</th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @php $grandTotal = 0; @endphp
+                                @foreach ($items as $orderItem)
+                                    @php
+                                        $subtotal = $orderItem->quantity * $orderItem->price_at_order;
+                                        $grandTotal += $subtotal;
+                                    @endphp
+                                    <tr class="border-b hover:bg-gray-50">
+                                        <td class="px-4 py-4">
+                                            <div class="font-bold text-gray-900">{{ $orderItem->item->name }}</div>
+                                            <div class="text-xs text-gray-500">SKU: {{ $orderItem->item->sku }}</div>
+                                        </td>
+                                        <td class="px-4 py-4">
+                                            <form action="{{ route('reservation.update', $orderItem) }}" method="POST"
+                                                class="flex items-center justify-center gap-2">
+                                                @csrf
+                                                @method('PUT')
+                                                <input type="number" name="quantity"
+                                                    value="{{ $orderItem->quantity }}" min="1" max="999"
+                                                    class="w-20 rounded border-gray-300 text-sm">
+                                                <button type="submit"
+                                                    class="text-blue-600 hover:text-blue-800 text-xs font-bold uppercase">{{ __('Update') }}</button>
+                                            </form>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">RM
+                                            {{ number_format($orderItem->price_at_order, 2) }}</td>
+                                        <td class="px-4 py-4 text-right font-semibold">RM
+                                            {{ number_format($subtotal, 2) }}</td>
+                                        <td class="px-4 py-4 text-right">
+                                            <form action="{{ route('reservation.destroy', $orderItem) }}"
+                                                method="POST" onsubmit="return confirm('Remove this item?');">
+                                                @csrf
+                                                @method('DELETE')
+                                                <button type="submit"
+                                                    class="text-red-600 hover:text-red-800 text-xs font-bold uppercase">{{ __('Remove') }}</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                            <tfoot>
+                                <tr>
+                                    <td colspan="3" class="px-4 py-6 text-right font-bold text-lg text-gray-600">
+                                        {{ __('Estimated Total:') }}</td>
+                                    <td class="px-4 py-6 text-right font-black text-xl text-blue-700">RM
+                                        {{ number_format($grandTotal, 2) }}</td>
+                                    <td></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+
+                    <div class="mt-8 flex justify-end">
+                        <form action="{{ route('reservation.submit') }}" method="POST"
+                            onsubmit="return confirm('Submit this reservation for review? You can still edit it while in Pending status.');">
+                            @csrf
+                            <button type="submit"
+                                class="bg-green-600 text-white px-10 py-4 rounded-xl font-black text-lg hover:bg-green-700 transition shadow-lg">
+                                {{ __('SUBMIT ORDER') }}
+                            </button>
+                        </form>
+                    </div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\layouts\app.blade.php ---
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
@@ -5433,6 +5695,14 @@ $classes = ($active ?? false)
                 <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
                     {{ __('Order Products') }}
                 </x-nav-link>
+
+                <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">
+                    {{ __('My Order History') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
+                    {{ __('My Reservation Draft') }}
+                </x-nav-link>
             @endrole
 
             <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
@@ -5467,6 +5737,10 @@ $classes = ($active ?? false)
                         {{ __('My Customers') }}
                     </x-nav-link>
                 @endcan
+
+                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.*')">
+                    {{ __('Order Management Queue') }}
+                </x-nav-link>
             @endhasanyrole
 
             <!-- Section 3: System Controls (Strict Admin Only) -->
@@ -8333,6 +8607,14 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
+    // Only Admin & CS accessible
+    Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
+        Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
+        Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
+        Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
+
+    });
+
     // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
         ->middleware(['auth', 'verified']);
@@ -8351,6 +8633,11 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/add', [\App\Http\Controllers\Customer\ReservationController::class, 'store'])->name('store');
         Route::put('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'update'])->name('update');
         Route::delete('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'destroy'])->name('destroy');
+        Route::post('/submit', [\App\Http\Controllers\Customer\ReservationController::class, 'submit'])->name('submit');
+
+        Route::get('/my-orders', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'index'])->name('customer.orders.index');
+        Route::get('/my-orders/{order}', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'show'])->name('customer.orders.show');
+
     });
 
 });

@@ -22,6 +22,14 @@
                 <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
                     {{ __('Order Products') }}
                 </x-nav-link>
+
+                <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">
+                    {{ __('My Order History') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
+                    {{ __('My Reservation Draft') }}
+                </x-nav-link>
             @endrole
 
             <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
@@ -56,6 +64,10 @@
                         {{ __('My Customers') }}
                     </x-nav-link>
                 @endcan
+
+                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.*')">
+                    {{ __('Order Management Queue') }}
+                </x-nav-link>
             @endhasanyrole
 
             <!-- Section 3: System Controls (Strict Admin Only) -->

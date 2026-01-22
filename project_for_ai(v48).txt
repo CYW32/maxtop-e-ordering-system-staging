@@ -55,103 +55,6 @@ class AuthenticatedSessionController extends Controller
 
 --- END_FILE ---
 
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Auth\ConfirmablePasswordController.php ---
-<?php
-
-namespace App\Http\Controllers\Auth;
-
-use App\Http\Controllers\Controller;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Validation\ValidationException;
-use Illuminate\View\View;
-
-class ConfirmablePasswordController extends Controller
-{
-    /**
-     * Show the confirm password view.
-     */
-    public function show(): View
-    {
-        return view('auth.confirm-password');
-    }
-
-    /**
-     * Confirm the user's password.
-     */
-    public function store(Request $request): RedirectResponse
-    {
-        if (! Auth::guard('web')->validate([
-            'email' => $request->user()->email,
-            'password' => $request->password,
-        ])) {
-            throw ValidationException::withMessages([
-                'password' => __('auth.password'),
-            ]);
-        }
-
-        $request->session()->put('auth.password_confirmed_at', time());
-
-        return redirect()->intended(route('dashboard', absolute: false));
-    }
-}
-
---- END_FILE ---
-
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Auth\EmailVerificationNotificationController.php ---
-<?php
-
-namespace App\Http\Controllers\Auth;
-
-use App\Http\Controllers\Controller;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
-
-class EmailVerificationNotificationController extends Controller
-{
-    /**
-     * Send a new email verification notification.
-     */
-    public function store(Request $request): RedirectResponse
-    {
-        if ($request->user()->hasVerifiedEmail()) {
-            return redirect()->intended(route('dashboard', absolute: false));
-        }
-
-        $request->user()->sendEmailVerificationNotification();
-
-        return back()->with('status', 'verification-link-sent');
-    }
-}
-
---- END_FILE ---
-
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Auth\EmailVerificationPromptController.php ---
-<?php
-
-namespace App\Http\Controllers\Auth;
-
-use App\Http\Controllers\Controller;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
-use Illuminate\View\View;
-
-class EmailVerificationPromptController extends Controller
-{
-    /**
-     * Display the email verification prompt.
-     */
-    public function __invoke(Request $request): RedirectResponse|View
-    {
-        return $request->user()->hasVerifiedEmail()
-                    ? redirect()->intended(route('dashboard', absolute: false))
-                    : view('auth.verify-email');
-    }
-}
-
---- END_FILE ---
-
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Auth\NewPasswordController.php ---
 <?php
 
@@ -299,32 +202,362 @@ class PasswordResetLinkController extends Controller
 
 --- END_FILE ---
 
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Auth\VerifyEmailController.php ---
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\CS\OrderManagementController.php ---
 <?php
 
-namespace App\Http\Controllers\Auth;
+namespace App\Http\Controllers\CS;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Auth\Events\Verified;
-use Illuminate\Foundation\Auth\EmailVerificationRequest;
-use Illuminate\Http\RedirectResponse;
+use App\Models\Order;
 
-class VerifyEmailController extends Controller
+class OrderManagementController extends Controller
 {
     /**
-     * Mark the authenticated user's email address as verified.
+     * Dashboard for CS to see pending/available orders.
      */
-    public function __invoke(EmailVerificationRequest $request): RedirectResponse
+    public function index()
     {
-        if ($request->user()->hasVerifiedEmail()) {
-            return redirect()->intended(route('dashboard', absolute: false).'?verified=1');
+        $user = auth()->user();
+
+        // 1. Unassigned Orders (Claiming Queue) [3]
+        $unassigned = Order::where('status', 'pending')
+            ->whereNull('handler_id')
+            ->latest()
+            ->get();
+
+        // 2. My Active Orders [3]
+        $myOrders = Order::where('handler_id', $user->id)
+            ->whereIn('status', ['pending', 'approved', 'in_transit'])
+            ->latest()
+            ->paginate(15);
+
+        return view('cs.orders.index', compact('unassigned', 'myOrders'));
+    }
+
+    /**
+     * Fulfills Section 5: Handler Visibility & Handover Context
+     */
+    public function show(Order $order)
+    {
+        $order->load(['items.item', 'user.details', 'handler']);
+
+        // Fetch eligible staff for handover (Admin, Leaders, and CS Staff)
+        $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
+            ->where('id', '!=', auth()->id())
+            ->where('status', 'active')
+            ->get();
+
+        return view('cs.orders.show', compact('order', 'eligibleStaff'));
+    }
+
+    /**
+     * Fulfills Section 5: Handover Protocol (CS A to CS B)
+     */
+    public function handover(Request $request, Order $order)
+    {
+        $request->validate([
+            'new_handler_id' => 'required|exists:users,id',
+        ]);
+
+        $oldHandlerName = $order->handler->name ?? 'Unassigned';
+        $newHandler = User::findOrFail($request->new_handler_id);
+
+        // Security: Only the current handler or a Leader/Admin can initiate handover
+        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+            abort(403, 'Unauthorized handover attempt.');
         }
 
-        if ($request->user()->markEmailAsVerified()) {
-            event(new Verified($request->user()));
+        $order->update(['handler_id' => $newHandler->id]);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log("Order handed over from {$oldHandlerName} to {$newHandler->name}");
+
+        return redirect()->route('office.orders.index')->with('success', "Order handed over to {$newHandler->name}.");
+    }
+
+    /**
+     * Fulfills Ownership Logic: Claiming an order [3]
+     */
+    public function claim(Order $order)
+    {
+        if ($order->handler_id) {
+            return redirect()->back()->with('error', 'This order has already been claimed.');
         }
 
-        return redirect()->intended(route('dashboard', absolute: false).'?verified=1');
+        $order->update(['handler_id' => auth()->id()]);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log('Order claimed by CS Staff');
+
+        return redirect()->back()->with('success', 'Order claimed. You are now the current handler.');
+    }
+
+    /**
+     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger
+     */
+    public function approve(Order $order)
+    {
+        // Security: Only the claimed handler or an admin/leader can approve
+        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+            abort(403, 'You are not the handler for this order.');
+        }
+
+        if ($order->status !== 'pending') {
+            return redirect()->back()->with('error', 'Only pending orders can be approved.');
+        }
+
+        \DB::transaction(function () use ($order) {
+            // Fulfills Section 3C: Item Name Synchronization (One last sync before freezing)
+            foreach ($order->items as $orderItem) {
+                $orderItem->update([
+                    'snapshot_name' => $orderItem->item->name, // Permanent Snapshot [6]
+                    'price_at_order' => $orderItem->item->price,
+                ]);
+            }
+
+            $order->update(['status' => 'approved']);
+        });
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log('Order approved and item names snapshotted');
+
+        return redirect()->route('office.orders.index')->with('success', 'Order approved. Item names are now locked.');
+    }
+
+    /**
+     * Fulfills Section 4.6: Order Cancellation with Mandatory Reason
+     */
+    public function cancel(\App\Http\Requests\CS\CancelOrderRequest $request, \App\Models\Order $order)
+    {
+        // Security check: only handler or admin/leader
+        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+            abort(403);
+        }
+
+        if ($order->status === 'completed') {
+            return redirect()->back()->with('error', 'Completed orders cannot be cancelled.');
+        }
+
+        $order->update([
+            'status' => 'cancelled',
+            'cancellation_reason' => $request->cancellation_reason,
+        ]);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->withProperties(['reason' => $request->cancellation_reason])
+            ->log('Order was cancelled');
+
+        return redirect()->route('office.orders.index')->with('success', 'Order has been cancelled.');
+    }
+
+    /**
+     * Fulfills Section 4.4 & 6: In Transit Status & Internal Notes
+     */
+    public function updateStatus(Request $request, Order $order)
+    {
+        // Security: Only handler or CS Leader
+        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasRole('cs_leader')) {
+            abort(403);
+        }
+
+        $validated = $request->validate([
+            'status' => 'required|in:approved,in_transit,completed',
+            'internal_notes' => 'nullable|string',
+            'tracking_number' => 'required_if:status,in_transit|nullable|string',
+            'logistics_carrier' => 'required_if:status,in_transit|nullable|string',
+        ]);
+
+        $order->update($validated);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log("Order status updated to {$request->status}");
+
+        return redirect()->back()->with('success', 'Order updated successfully.');
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Customer\OrderHistoryController.php ---
+<?php
+
+namespace App\Http\Controllers\Customer;
+
+use App\Http\Controllers\Controller;
+
+class OrderHistoryController extends Controller
+{
+    public function index()
+    {
+        // Fulfills Direct Ordering: Tied strictly to auth()->id() [1, 2]
+        $orders = auth()->user()->orders()
+            ->where('status', '!=', 'draft') // Drafts are managed in ReservationController
+            ->latest()
+            ->paginate(10);
+
+        return view('customer.orders.index', compact('orders'));
+    }
+
+    public function show(\App\Models\Order $order)
+    {
+        // Security: Ensure owner [1]
+        if ($order->user_id !== auth()->id()) {
+            abort(403);
+        }
+
+        $order->load('items.item');
+
+        return view('customer.orders.show', compact('order'));
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Customer\ProductCatalogController.php ---
+<?php
+
+namespace App\Http\Controllers\Customer;
+
+use App\Http\Controllers\Controller;
+
+class ProductCatalogController extends Controller
+{
+    /**
+     * Display the whitelisted products for the logged-in customer.
+     */
+    public function index()
+    {
+        $user = auth()->user();
+
+        // Fulfills Whitelist Logic: Uses the User model method to fetch items [2, 3]
+        $items = $user->getVisibleItems();
+
+        // Fulfills Inheritance: getVisibleItems() automatically checks parent catalog if branch is unassigned [2, 3]
+
+        return view('customer.products.index', compact('items'));
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Customer\ReservationController.php ---
+<?php
+
+namespace App\Http\Controllers\Customer;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Customer\AddToCartRequest;
+use App\Models\Item;
+use App\Models\OrderItem;
+use Illuminate\Http\Request;
+
+class ReservationController extends Controller
+{
+    /**
+     * View the current draft contents.
+     */
+    public function index()
+    {
+        $draft = auth()->user()->currentDraft();
+        $items = $draft ? $draft->items()->with('item')->get() : collect();
+
+        return view('customer.reservation.index', compact('draft', 'items'));
+    }
+
+    /**
+     * Submit the reservation, moving it from Draft to Pending status. [3]
+     */
+    public function submit(Request $request)
+    {
+        $user = auth()->user();
+        $draft = $user->currentDraft();
+
+        // Validate draft is not empty [3]
+        if (! $draft || $draft->items()->count() === 0) {
+            return redirect()->back()->with('error', 'Your reservation is empty.');
+        }
+
+        // Generate Order Number and update status to Pending Review [3]
+        $draft->update([
+            'status' => 'pending',
+            'order_number' => 'ORD-'.strtoupper(uniqid()),
+            'created_at' => now(), // Reset timestamp to the actual submission time
+        ]);
+
+        // Manual Log for Submission Activity [4]
+        activity('order')
+            ->performedOn($draft)
+            ->causedBy($user)
+            ->log('Customer submitted reservation for review');
+
+        return redirect()->route('dashboard')->with('success', 'Order submitted for CS review.');
+    }
+
+    /**
+     * Add an item to the single allowed draft.
+     */
+    public function store(AddToCartRequest $request)
+    {
+        $user = auth()->user();
+        $draft = $user->getOrCreateDraft();
+        $item = Item::findOrFail($request->item_id);
+
+        // Check if item already exists in draft
+        $orderItem = $draft->items()->where('item_id', $item->id)->first();
+
+        if ($orderItem) {
+            $orderItem->increment('quantity', $request->quantity);
+        } else {
+            $draft->items()->create([
+                'item_id' => $item->id,
+                'snapshot_name' => $item->name, // Initial snapshot
+                'quantity' => $request->quantity,
+                'price_at_order' => $item->price,
+            ]);
+        }
+
+        return redirect()->back()->with('success', 'Item added to your reservation draft.');
+    }
+
+    /**
+     * Update quantity or remove item from draft/pending order.
+     * Fulfills Section 4.1 & 4.2
+     */
+    public function update(Request $request, OrderItem $orderItem)
+    {
+        // Security: Allow editing if status is draft OR pending
+        if ($orderItem->order->user_id !== auth()->id() ||
+            ! in_array($orderItem->order->status, ['draft', 'pending'])) {
+            abort(403, 'This order is locked and cannot be edited.');
+        }
+
+        $request->validate(['quantity' => 'required|integer|min:1|max:999']);
+        $orderItem->update(['quantity' => $request->quantity]);
+
+        return redirect()->back()->with('success', 'Reservation updated.');
+    }
+
+    public function destroy(OrderItem $orderItem)
+    {
+        // Security: Allow removal if status is draft OR pending
+        if ($orderItem->order->user_id !== auth()->id() ||
+            ! in_array($orderItem->order->status, ['draft', 'pending'])) {
+            abort(403, 'This order is locked.');
+        }
+
+        $orderItem->delete();
+
+        return redirect()->back()->with('success', 'Item removed.');
     }
 }
 
@@ -535,6 +768,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Item;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 
 // Note: For actual compression, you would typically use 'Intervention Image' library
@@ -544,8 +778,9 @@ class ItemController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Item::query();
+        Gate::authorize('view_items'); // Minimum requirement [9]
 
+        $query = Item::query();
         if ($request->filled('search')) {
             $query->where('name', 'like', "%{$request->search}%")
                 ->orWhere('sku', 'like', "%{$request->search}%");
@@ -558,11 +793,18 @@ class ItemController extends Controller
 
     public function create()
     {
+        // Requirement: Needs View AND Create
+        if (! auth()->user()->can('view_items') || ! auth()->user()->can('create_items')) {
+            abort(403, 'Unauthorized creation access.');
+        }
+
         return view('admin.items.create');
     }
 
     public function store(Request $request)
     {
+        Gate::authorize('create_items');
+
         $validated = $request->validate([
             'sku' => 'required|unique:items,sku',
             'name' => 'required|string|max:255',
@@ -585,11 +827,20 @@ class ItemController extends Controller
 
     public function edit(Item $item)
     {
+        // Requirement: Needs View AND Create AND Edit
+        if (! auth()->user()->can('view_items') ||
+            ! auth()->user()->can('create_items') ||
+            ! auth()->user()->can('edit_items')) {
+            abort(403, 'Unauthorized edit access.');
+        }
+
         return view('admin.items.edit', compact('item'));
     }
 
     public function update(Request $request, Item $item)
     {
+        Gate::authorize('edit_items');
+
         $validated = $request->validate([
             'sku' => 'required|unique:items,sku,'.$item->id,
             'name' => 'required|string|max:255',
@@ -893,7 +1144,7 @@ class UserController extends Controller
             'assigned_cs_id' => 'nullable|exists:users,id',
             'password' => 'nullable|min:8',
             'parent_id' => 'nullable|exists:users,id',
-            // NEW: Validation for customer_details
+            'catalog_id' => 'nullable|exists:catalogs,id',
             'company_name' => 'nullable|string|max:255',
             'company_reg_no' => 'nullable|string|max:255',
             'pic_name' => 'nullable|string|max:255',
@@ -908,6 +1159,8 @@ class UserController extends Controller
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
+            'parent_id' => $request->parent_id, // Ensure hierarchy is saved
+            'catalog_id' => $request->catalog_id, // Fulfills Single Catalog Policy
         ];
 
         // BACKEND SECURITY LOCK:
@@ -1039,6 +1292,66 @@ class LoginRequest extends FormRequest
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Requests\CS\CancelOrderRequest.php ---
+<?php
+
+namespace App\Http\Requests\CS;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class CancelOrderRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        // Only handlers, leaders, or admins can cancel
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'cancellation_reason' => 'required|string|min:5|max:1000',
+        ];
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Requests\Customer\AddToCartRequest.php ---
+<?php
+
+namespace App\Http\Requests\Customer;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class AddToCartRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return auth()->user()->hasRole('customer');
+    }
+
+    public function rules(): array
+    {
+        return [
+            'item_id' => [
+                'required',
+                'exists:items,id',
+                function ($attribute, $value, $fail) {
+                    $user = auth()->user();
+                    $visibleItemIds = $user->getVisibleItems()->pluck('id')->toArray();
+                    if (! in_array($value, $visibleItemIds)) {
+                        $fail('This item is not available in your assigned catalog.');
+                    }
+                },
+            ],
+            'quantity' => 'required|integer|min:1|max:999',
+        ];
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Requests\ProfileUpdateRequest.php ---
 <?php
 
@@ -1162,19 +1475,124 @@ class Item extends Model
         return $this->belongsToMany(Catalog::class);
     }
 
-    // Logic for Deletion Restriction [2]
+    public function orderItems()
+    {
+        return $this->hasMany(\App\Models\OrderItem::class);
+    }
+
+    /**
+     * Fulfills Section 3C: Deletion & Draft Protection
+     * Items with ANY transaction record (including Drafts and Pending) cannot be deleted. [1]
+     */
     public function canBeDeleted(): bool
     {
-        // Check if item exists in any order_items (to be built next)
-        // return !$this->orderItems()->exists();
-
-        // TEMPORARY: Return true until Order logic is added
-        return true;
+        return ! $this->orderItems()
+            ->whereHas('order', function ($q) {
+                // Updated to include 'draft' and 'pending' per Section 3C [1]
+                $q->whereIn('status', ['draft', 'pending', 'approved', 'in_transit', 'completed']);
+            })->exists();
     }
 
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Order.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Order extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = [
+        'order_number',
+        'user_id',
+        'handler_id',
+        'status',
+        'cancellation_reason',
+        'internal_notes',
+    ];
+
+    /**
+     * Relationship: The Customer who owns the order/draft.
+     */
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Relationship: The CS Staff currently handling the order.
+     * Fulfills Section 5: Ownership logic [6].
+     */
+    public function handler(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'handler_id');
+    }
+
+    /**
+     * Relationship: The items contained within this order.
+     */
+    public function items(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logFillable()
+            ->logOnlyDirty()
+            ->setDescriptionForEvent(fn (string $eventName) => "Order has been {$eventName}");
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\OrderItem.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class OrderItem extends Model
+{
+    protected $fillable = [
+        'order_id',
+        'item_id',
+        'snapshot_name',
+        'quantity',
+        'price_at_order',
+    ];
+
+    /**
+     * Relationship: The parent order.
+     */
+    public function order(): BelongsTo
+    {
+        return $this->belongsTo(Order::class);
+    }
+
+    /**
+     * Relationship: The original product item.
+     */
+    public function item(): BelongsTo
+    {
+        return $this->belongsTo(Item::class);
     }
 }
 
@@ -1214,6 +1632,7 @@ class User extends Authenticatable
         'status',
         'parent_id',
         'assigned_cs_id',
+        'catalog_id',
     ];
 
     protected $searchable = [
@@ -1223,6 +1642,7 @@ class User extends Authenticatable
         'status',
         'parent_id',
         'assigned_cs_id',
+        'catalog_id',
     ];
 
     /**
@@ -1286,29 +1706,78 @@ class User extends Authenticatable
             ->dontSubmitEmptyLogs();
     }
 
-    // Get the effective catalog (Directly assigned OR inherited from parent) [1]
+    /**
+     * Fulfills Single Catalog Policy
+     * Standard Eloquent relationship for the assigned catalog.
+     */
+    public function catalog()
+    {
+        return $this->belongsTo(Catalog::class, 'catalog_id');
+    }
+
+    /**
+     * Inheritance Logic: Get the effective catalog ID
+     * If the branch has no catalog, it looks up the parent (Main) catalog.
+     */
     public function getEffectiveCatalogId()
     {
+        // 1. Direct Assignment
         if ($this->catalog_id) {
             return $this->catalog_id;
         }
 
-        // Inheritance Logic: If no catalog, check parent (Main Store) [1]
-        return $this->parent?->catalog_id;
+        // 2. Inheritance: If Branch, check Main Store
+        if ($this->parent_id) {
+            return $this->parent?->catalog_id;
+        }
+
+        return null;
     }
 
-    // Fetch only items available to this customer based on their catalog [2]
+    /**
+     * Whitelist Logic: Restricted Item Visibility
+     * Ensures customers only see items in their specific assigned (or inherited) catalog.
+     */
     public function getVisibleItems()
     {
         $catalogId = $this->getEffectiveCatalogId();
 
         if (! $catalogId) {
-            return collect(); // Empty if unassigned [2]
+            return collect(); // Return empty if no catalog is assigned to the chain
         }
 
         return Item::whereHas('catalogs', function ($q) use ($catalogId) {
             $q->where('catalogs.id', $catalogId);
         })->get();
+    }
+
+    public function orders()
+    {
+        return $this->hasMany(\App\Models\Order::class);
+    }
+
+    /**
+     * Fulfills Section 4.1: Single Draft Policy
+     * Retrieves the current active draft or returns null.
+     */
+    public function currentDraft()
+    {
+        return $this->orders()->where('status', 'draft')->first();
+    }
+
+    /**
+     * Fulfills Section 3A & 3B: Ordering Scope
+     * Direct Ordering: Orders are always tied to the logged-in user.
+     */
+    public function getOrCreateDraft()
+    {
+        $draft = $this->currentDraft();
+
+        if (! $draft) {
+            $draft = $this->orders()->create(['status' => 'draft']);
+        }
+
+        return $draft;
     }
 }
 
@@ -3614,6 +4083,83 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_20_000001_create_orders_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('orders', function (Blueprint $table) {
+            $table->id();
+            $table->string('order_number')->nullable()->unique();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->foreignId('handler_id')->nullable()->constrained('users')->onDelete('set null');
+
+            // Fulfills Section 4: Lifecycle Statuses
+            $table->enum('status', ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'])->default('draft');
+
+            // Fulfills Section 4.6 & 6: Cancellation and Notes
+            $table->text('cancellation_reason')->nullable();
+            $table->text('internal_notes')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('order_items', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('order_id')->constrained()->onDelete('cascade');
+            $table->foreignId('item_id')->constrained()->onDelete('restrict');
+
+            // Fulfills Section 3C: Item Name Snapshot Logic
+            // This stores the name at the moment of approval/submission
+            $table->string('snapshot_name');
+
+            $table->integer('quantity');
+            $table->decimal('price_at_order', 10, 2);
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('order_items');
+        Schema::dropIfExists('orders');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_01_21_000001_add_logistics_to_orders_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('orders', function (Blueprint $table) {
+            $table->string('tracking_number')->nullable()->after('status');
+            $table->string('logistics_carrier')->nullable()->after('tracking_number');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('orders', function (Blueprint $table) {
+            $table->dropColumn(['tracking_number', 'logistics_carrier']);
+        });
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
@@ -3729,6 +4275,9 @@ class RoleSeeder extends Seeder
         Permission::firstOrCreate(['name' => 'view_catalogs']);
         Permission::firstOrCreate(['name' => 'create_catalogs']);
         Permission::firstOrCreate(['name' => 'edit_catalogs']);
+        Permission::firstOrCreate(['name' => 'view_items']);
+        Permission::firstOrCreate(['name' => 'create_items']);
+        Permission::firstOrCreate(['name' => 'edit_items']);
 
         // 3. Create Roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
@@ -3738,17 +4287,18 @@ class RoleSeeder extends Seeder
 
         // 4. Assign Permissions
         // ADMIN: Gets access to everything
-        $admin->syncPermissions([
-            'view_users',
-            'create_users',
-            'edit_users',
-            'view_assigned_customers',
-            'edit_assigned_customers',
-            'reassign_customers',
-            'view_catalogs',
-            'create_catalogs',
-            'edit_catalogs',
-        ]);
+        // $admin->syncPermissions([
+        //     'view_users',
+        //     'create_users',
+        //     'edit_users',
+        //     'view_assigned_customers',
+        //     'edit_assigned_customers',
+        //     'reassign_customers',
+        //     'view_catalogs',
+        //     'create_catalogs',
+        //     'edit_catalogs',
+        // ]);
+        $admin->givePermissionTo(Permission::all());
 
         // CS LEADER: Can view the list (but maybe not create/edit by default)
         // You can change this later in your "Feature Settings" page.
@@ -3762,6 +4312,9 @@ class RoleSeeder extends Seeder
             'view_catalogs',
             'create_catalogs',
             'edit_catalogs',
+            'view_items',
+            'create_items',
+            'edit_items',
         ]);
 
         // CS STAFF: Starts with nothing (or add 'view_users' if you prefer)
@@ -3769,6 +4322,12 @@ class RoleSeeder extends Seeder
         $staff->syncPermissions([
             'view_assigned_customers',
             'edit_assigned_customers',
+            'view_catalogs',
+            'create_catalogs',
+            'edit_catalogs',
+            'view_items',
+            'create_items',
+            'edit_items',
         ]);
     }
 }
@@ -4099,6 +4658,268 @@ class RoleSeeder extends Seeder
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\items\create.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Create New Product Item') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                <form action="{{ route('items.store') }}" method="POST" enctype="multipart/form-data">
+                    @csrf
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- SKU -->
+                        <div>
+                            <x-input-label for="sku" :value="__('Item SKU')" />
+                            <x-text-input id="sku" name="sku" type="text"
+                                class="mt-1 block w-full uppercase" :value="old('sku')" required autofocus />
+                            <x-input-error class="mt-2" :messages="$errors->get('sku')" />
+                        </div>
+
+                        <!-- Name -->
+                        <div>
+                            <x-input-label for="name" :value="__('Item Name')" />
+                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                :value="old('name')" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('name')" />
+                        </div>
+
+                        <!-- Price -->
+                        <div>
+                            <x-input-label for="price" :value="__('Base Price (RM)')" />
+                            <x-text-input id="price" name="price" type="number" step="0.01"
+                                class="mt-1 block w-full" :value="old('price', '0.00')" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('price')" />
+                        </div>
+
+                        <!-- Image Upload -->
+                        <div>
+                            <x-input-label for="image" :value="__('Product Image (Auto-compressed)')" />
+                            <input type="file" name="image" id="image"
+                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm"
+                                accept="image/*">
+                            <p class="text-xs text-gray-500 mt-1">Max 2MB. Supports JPG, PNG.</p>
+                            <x-input-error class="mt-2" :messages="$errors->get('image')" />
+                        </div>
+                    </div>
+
+                    <!-- Description -->
+                    <div class="mt-6">
+                        <x-input-label for="description" :value="__('Description')" />
+                        <textarea id="description" name="description" rows="4"
+                            class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">{{ old('description') }}</textarea>
+                        <x-input-error class="mt-2" :messages="$errors->get('description')" />
+                    </div>
+
+                    <div class="flex items-center justify-end mt-6 border-t pt-4">
+                        <a href="{{ route('items.index') }}"
+                            class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
+                        <x-primary-button>
+                            {{ __('Save Product Item') }}
+                        </x-primary-button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\items\edit.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Edit Product Item: ') . $item->sku }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                <!-- Requirement 7: Assets must handle multipart for image storage [3] -->
+                <form action="{{ route('items.update', $item->id) }}" method="POST" enctype="multipart/form-data">
+                    @csrf
+                    @method('PUT')
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- SKU (Unique Check handled by Controller [1]) -->
+                        <div>
+                            <x-input-label for="sku" :value="__('Item SKU')" />
+                            <x-text-input id="sku" name="sku" type="text"
+                                class="mt-1 block w-full uppercase" :value="old('sku', $item->sku)" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('sku')" />
+                        </div>
+
+                        <!-- Name -->
+                        <div>
+                            <x-input-label for="name" :value="__('Item Name')" />
+                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                :value="old('name', $item->name)" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('name')" />
+                        </div>
+
+                        <!-- Price -->
+                        <div>
+                            <x-input-label for="price" :value="__('Base Price (RM)')" />
+                            <x-text-input id="price" name="price" type="number" step="0.01"
+                                class="mt-1 block w-full" :value="old('price', $item->price)" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('price')" />
+                        </div>
+
+                        <!-- Image Upload & Preview -->
+                        <div>
+                            <x-input-label for="image" :value="__('Product Image')" />
+
+                            @if ($item->image_path)
+                                <div class="mb-2">
+                                    <p class="text-xs text-gray-500 mb-1">Current Image:</p>
+                                    <img src="{{ asset('storage/' . $item->image_path) }}"
+                                        class="h-20 w-20 object-cover rounded border">
+                                </div>
+                            @endif
+
+                            <input type="file" name="image" id="image"
+                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm"
+                                accept="image/*">
+                            <p class="text-xs text-gray-500 mt-1">Max 2MB. Uploading a new image will replace the old
+                                one [2].</p>
+                            <x-input-error class="mt-2" :messages="$errors->get('image')" />
+                        </div>
+                    </div>
+
+                    <!-- Description -->
+                    <div class="mt-6">
+                        <x-input-label for="description" :value="__('Description')" />
+                        <textarea id="description" name="description" rows="4"
+                            class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">{{ old('description', $item->description) }}</textarea>
+                        <x-input-error class="mt-2" :messages="$errors->get('description')" />
+                    </div>
+
+                    <div class="flex items-center justify-end mt-6 border-t pt-4">
+                        <a href="{{ route('items.index') }}"
+                            class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
+                        <x-primary-button>
+                            {{ __('Update Product Item') }}
+                        </x-primary-button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\items\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <div class="flex justify-between items-center">
+            <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+                {{ __('Product Item Master List') }}
+            </h2>
+
+            {{-- <!-- Requirement: Show Create btn ONLY if View AND Create are ticked -->
+            @if (auth()->user()->can('view_items') && auth()->user()->can('create_items'))
+                <a href="{{ route('items.create') }}"
+                    class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">
+                    + {{ __('Create New Item') }}
+                </a>
+            @endif --}}
+        </div>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+
+            @can('create_items')
+                <div class="flex justify-end mb-4">
+                    <a href="{{ route('items.create') }}"
+                        class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">
+                        + {{ __('Create New Item') }}
+                    </a>
+                </div>
+            @endcan
+
+            <!-- Search Toolbar -->
+            <div class="mb-6">
+                <form method="GET" action="{{ route('items.index') }}" class="flex gap-4">
+                    <x-text-input name="search" placeholder="Search SKU or Name..." class="w-full" :value="request('search')" />
+                    <x-primary-button>{{ __('Filter') }}</x-primary-button>
+                    @if (request('search'))
+                        <a href="{{ route('items.index') }}"
+                            class="bg-gray-200 px-4 py-2 rounded flex items-center text-sm">Clear</a>
+                    @endif
+                </form>
+            </div>
+
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                {{ __('Image') }}</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                {{ __('SKU / Name') }}</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                {{ __('Price') }}</th>
+                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                {{ __('Actions') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        @foreach ($items as $item)
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    @if ($item->image_path)
+                                        <img src="{{ asset('storage/' . $item->image_path) }}"
+                                            class="h-12 w-12 object-cover rounded border">
+                                    @else
+                                        <div
+                                            class="h-12 w-12 bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+                                            No Image</div>
+                                    @endif
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm font-bold text-indigo-600">{{ $item->sku }}</div>
+                                    <div class="text-sm text-gray-900">{{ $item->name }}</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    RM {{ number_format($item->price, 2) }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <!-- Requirement: Show Edit ONLY if View, Create, AND Edit are ticked -->
+                                    @if (auth()->user()->can('view_items') && auth()->user()->can('create_items') && auth()->user()->can('edit_items'))
+                                        <a href="{{ route('items.edit', $item->id) }}"
+                                            class="text-indigo-600 hover:text-indigo-900 mr-4">
+                                            {{ __('Edit') }}
+                                        </a>
+                                    @endif
+
+                                    {{-- @role('admin')
+                                        <form action="{{ route('items.destroy', $item->id) }}" method="POST" class="inline" onsubmit="return confirm('Delete this item?')">
+                                            @csrf @method('DELETE')
+                                            <button type="submit" class="text-red-600 hover:text-red-900">{{ __('Delete') }}</button>
+                                        </form>
+                                    @endrole --}}
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+                <div class="p-4">{{ $items->links() }}</div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\roles\matrix.blade.php ---
 <x-app-layout>
     <x-slot name="header">
@@ -4196,37 +5017,6 @@ class RoleSeeder extends Seeder
         </div>
     </div>
 </x-app-layout>
-
---- END_FILE ---
-
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\auth\confirm-password.blade.php ---
-<x-guest-layout>
-    <div class="mb-4 text-sm text-gray-600">
-        {{ __('This is a secure area of the application. Please confirm your password before continuing.') }}
-    </div>
-
-    <form method="POST" action="{{ route('password.confirm') }}">
-        @csrf
-
-        <!-- Password -->
-        <div>
-            <x-input-label for="password" :value="__('Password')" />
-
-            <x-text-input id="password" class="block mt-1 w-full"
-                            type="password"
-                            name="password"
-                            required autocomplete="current-password" />
-
-            <x-input-error :messages="$errors->get('password')" class="mt-2" />
-        </div>
-
-        <div class="flex justify-end mt-4">
-            <x-primary-button>
-                {{ __('Confirm') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
 
 --- END_FILE ---
 
@@ -4484,41 +5274,6 @@ class RoleSeeder extends Seeder
             </x-primary-button>
         </div>
     </form>
-</x-guest-layout>
-
---- END_FILE ---
-
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\auth\verify-email.blade.php ---
-<x-guest-layout>
-    <div class="mb-4 text-sm text-gray-600">
-        {{ __('Thanks for signing up! Before getting started, could you verify your email address by clicking on the link we just emailed to you? If you didn\'t receive the email, we will gladly send you another.') }}
-    </div>
-
-    @if (session('status') == 'verification-link-sent')
-        <div class="mb-4 font-medium text-sm text-green-600">
-            {{ __('A new verification link has been sent to the email address you provided during registration.') }}
-        </div>
-    @endif
-
-    <div class="mt-4 flex items-center justify-between">
-        <form method="POST" action="{{ route('verification.send') }}">
-            @csrf
-
-            <div>
-                <x-primary-button>
-                    {{ __('Resend Verification Email') }}
-                </x-primary-button>
-            </div>
-        </form>
-
-        <form method="POST" action="{{ route('logout') }}">
-            @csrf
-
-            <button type="submit" class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                {{ __('Log Out') }}
-            </button>
-        </form>
-    </div>
 </x-guest-layout>
 
 --- END_FILE ---
@@ -4806,6 +5561,468 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Order Management Dashboard') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+
+            {{-- Section 1: Unassigned Orders (Claiming Queue) [3] --}}
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
+                <h3 class="font-black text-lg text-orange-700 uppercase tracking-wider mb-4">
+                    {{ __('âš ï¸ Claiming Queue (Unassigned Orders)') }}
+                </h3>
+
+                @if ($unassigned->isEmpty())
+                    <p class="text-gray-500 italic">{{ __('No new orders awaiting assignment.') }}</p>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
+                                        {{ __('Company / Customer') }}</th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
+                                        {{ __('Date Submitted') }}</th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Action') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($unassigned as $order)
+                                    <tr class="border-b hover:bg-orange-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono font-bold text-sm text-blue-600">
+                                            {{ $order->order_number }}</td>
+                                        <td class="px-4 py-4">
+                                            <div class="font-bold text-gray-900">
+                                                {{ $order->user->details->company_name ?? $order->user->name }}</div>
+                                            <div class="text-xs text-gray-500">{{ $order->user->email }}</div>
+                                        </td>
+                                        <td class="px-4 py-4 text-sm text-gray-600">
+                                            {{ $order->created_at->format('Y-m-d H:i') }}</td>
+                                        <td class="px-4 py-4 text-right">
+                                            <form action="{{ route('office.orders.claim', $order) }}" method="POST">
+                                                @csrf
+                                                <button type="submit"
+                                                    class="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-md">
+                                                    {{ __('Claim Order') }}
+                                                </button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                @endif
+            </div>
+
+            {{-- Section 2: My Active Orders (Claimed) [5] --}}
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                <h3 class="font-black text-lg text-gray-800 uppercase tracking-wider mb-4">
+                    {{ __('ðŸ“‹ My Active Orders') }}
+                </h3>
+
+                @if ($myOrders->isEmpty())
+                    <p class="text-gray-500 italic">{{ __('You are not currently handling any active orders.') }}</p>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
+                                        {{ __('Customer') }}</th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($myOrders as $order)
+                                    <tr class="border-b hover:bg-gray-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono text-sm">{{ $order->order_number }}</td>
+                                        <td class="px-4 py-4 text-sm">
+                                            <span class="font-bold text-gray-800">{{ $order->user->name }}</span>
+                                        </td>
+                                        <td class="px-4 py-4">
+                                            <span
+                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase shadow-sm
+                                                {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-blue-100 text-blue-800 border border-blue-300' }}">
+                                                {{ $order->status }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">
+                                            <a href="{{ route('office.orders.show', $order) }}"
+                                                class="inline-block bg-blue-50 text-blue-700 hover:bg-blue-700 hover:text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-blue-200">
+                                                {{ __('View & Process') }}
+                                            </a>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-4">
+                        {{ $myOrders->links() }}
+                    </div>
+                @endif
+            </div>
+
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\show.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <div class="flex justify-between items-center">
+            <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+                {{ __('Order Fulfillment: ') }} {{ $order->order_number }}
+            </h2>
+            <span
+                class="px-4 py-1 rounded-full text-sm font-black uppercase bg-blue-100 text-blue-800 border border-blue-300">
+                {{ $order->status }}
+            </span>
+        </div>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
+
+            {{-- Ownership Alert: Section 5 Handover Logic --}}
+            @if ($order->handler_id !== auth()->id())
+                <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+                    <p class="text-sm text-yellow-700 font-bold">
+                        {{ __('âš ï¸ READ-ONLY MODE: You are not the current handler. Only ') . ($order->handler->name ?? 'Unassigned') . __(' can process this order.') }}
+                    </p>
+                </div>
+            @endif
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {{-- Left: Order Items & Snapshot Verification --}}
+                <div class="md:col-span-2 space-y-6">
+                    <div class="bg-white shadow rounded-lg p-6">
+                        <h3 class="font-black text-gray-700 uppercase mb-4">{{ __('Order Items') }}</h3>
+                        <table class="w-full text-left">
+                            <thead class="border-b">
+                                <tr>
+                                    <th class="py-2 text-xs font-bold text-gray-500 uppercase">{{ __('Item Name') }}
+                                    </th>
+                                    <th class="py-2 text-xs font-bold text-gray-500 uppercase text-center">
+                                        {{ __('Qty') }}</th>
+                                    <th class="py-2 text-xs font-bold text-gray-500 uppercase text-right">
+                                        {{ __('Price') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($order->items as $item)
+                                    <tr class="border-b last:border-none">
+                                        <td class="py-4">
+                                            <div class="font-bold">
+                                                {{ $order->status === 'pending' ? $item->item->name : $item->snapshot_name }}
+                                            </div>
+                                            <div class="text-xs text-gray-400">SKU: {{ $item->item->sku }}</div>
+                                        </td>
+                                        <td class="py-4 text-center">{{ $item->quantity }}</td>
+                                        <td class="py-4 text-right">RM {{ number_format($item->price_at_order, 2) }}
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {{-- Internal Notes: Section 6 --}}
+                    <div class="bg-white shadow rounded-lg p-6">
+                        <h3 class="font-black text-gray-700 uppercase mb-4">{{ __('Internal Office Notes (Private)') }}
+                        </h3>
+                        <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST">
+                            @csrf @method('PUT')
+                            <input type="hidden" name="status" value="{{ $order->status }}">
+                            <textarea name="internal_notes" rows="4" class="w-full rounded-md border-gray-300"
+                                placeholder="Add notes visible only to CS/Admin...">{{ $order->internal_notes }}</textarea>
+                            <button type="submit"
+                                class="mt-2 bg-gray-800 text-white px-4 py-2 rounded text-xs font-bold uppercase">
+                                {{ __('Save Notes') }}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                {{-- Right: Fulfillment Controls --}}
+                <div class="space-y-6">
+                    {{-- Customer Details Card --}}
+                    <div class="bg-white shadow rounded-lg p-6">
+                        <h3 class="font-black text-gray-700 uppercase mb-2">{{ __('Customer Info') }}</h3>
+                        <p class="text-sm font-bold">{{ $order->user->details->company_name ?? $order->user->name }}
+                        </p>
+                        <p class="text-xs text-gray-500">{{ $order->user->details->delivery_address }}</p>
+                    </div>
+
+                    {{-- Status Controls: Fulfills Section 4 lifecycle --}}
+                    <div class="bg-gray-50 shadow rounded-lg p-6 border-t-4 border-blue-600">
+                        <h3 class="font-black text-gray-700 uppercase mb-4">{{ __('Fulfillment Actions') }}</h3>
+
+                        @if ($order->status === 'pending' && $order->handler_id === auth()->id())
+                            <form action="{{ route('office.orders.approve', $order) }}" method="POST"
+                                onsubmit="return confirm('Freeze item names and prices now?');">
+                                @csrf
+                                <button type="submit"
+                                    class="w-full bg-green-600 text-white py-3 rounded-lg font-black uppercase shadow hover:bg-green-700 mb-4">
+                                    {{ __('âœ… Approve & Snapshot') }} [14]
+                                </button>
+                            </form>
+                        @endif
+
+                        @if ($order->status === 'approved' && $order->handler_id === auth()->id())
+                            <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST"
+                                class="space-y-4">
+                                @csrf @method('PUT')
+                                <input type="hidden" name="status" value="in_transit">
+                                <div>
+                                    <label
+                                        class="text-xs font-bold uppercase text-gray-500">{{ __('Carrier') }}</label>
+                                    <input type="text" name="logistics_carrier" required
+                                        class="w-full text-sm rounded border-gray-300">
+                                </div>
+                                <div>
+                                    <label
+                                        class="text-xs font-bold uppercase text-gray-500">{{ __('Tracking #') }}</label>
+                                    <input type="text" name="tracking_number" required
+                                        class="w-full text-sm rounded border-gray-300">
+                                </div>
+                                <button type="submit"
+                                    class="w-full bg-blue-600 text-white py-3 rounded-lg font-black uppercase shadow hover:bg-blue-700">
+                                    {{ __('ðŸšš Mark In Transit') }} [12]
+                                </button>
+                            </form>
+                        @endif
+
+                        @if ($order->status !== 'completed' && $order->status !== 'cancelled' && $order->handler_id === auth()->id())
+                            <hr class="my-4">
+                            <h4 class="text-xs font-black text-red-600 uppercase mb-2">{{ __('Danger Zone') }}</h4>
+                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
+                                @csrf
+                                <textarea name="cancellation_reason" required class="w-full text-xs rounded border-gray-300 mb-2"
+                                    placeholder="Mandatory cancellation reason..."></textarea> [12]
+                                <button type="submit"
+                                    class="w-full border border-red-600 text-red-600 py-2 rounded text-xs font-black uppercase hover:bg-red-50">
+                                    {{ __('Cancel Order') }}
+                                </button>
+                            </form>
+                        @endif
+                    </div>
+
+                    {{-- Handover Protocol: Section 5 --}}
+                    @if (auth()->user()->hasAnyRole(['admin', 'cs_leader']) || $order->handler_id === auth()->id())
+                        <div class="bg-white shadow rounded-lg p-6">
+                            <h3 class="font-black text-gray-700 uppercase mb-4 text-xs">{{ __('Handover Ownership') }}
+                            </h3>
+                            <form action="{{ route('office.orders.handover', $order) }}" method="POST">
+                                @csrf
+                                <select name="new_handler_id" class="w-full text-sm rounded border-gray-300 mb-2">
+                                    @foreach ($eligibleStaff as $staff)
+                                        <option value="{{ $staff->id }}">{{ $staff->name }}
+                                            ({{ $staff->roles->first()->name }})</option>
+                                    @endforeach
+                                </select>
+                                <button type="submit"
+                                    class="w-full bg-orange-100 text-orange-700 py-2 rounded text-xs font-black uppercase hover:bg-orange-200">
+                                    {{ __('Transfer Handler') }}
+                                </button>
+                            </form>
+                        </div>
+                    @endif
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\customer\products\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Available Products') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            @if ($items->isEmpty())
+                <div class="bg-white p-6 rounded-lg shadow text-center text-gray-500">
+                    {{ __('No products are currently available in your catalog.') }}
+                </div>
+            @else
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                    @foreach ($items as $item)
+                        <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg border border-gray-200">
+                            <div class="p-4">
+                                @if ($item->image_path)
+                                    <img src="{{ asset('storage/' . $item->image_path) }}"
+                                        class="w-full h-48 object-cover rounded-md mb-4">
+                                @else
+                                    <div
+                                        class="w-full h-48 bg-gray-100 flex items-center justify-center rounded-md mb-4 text-gray-400">
+                                        {{ __('No Image') }}
+                                    </div>
+                                @endif
+
+                                <h3 class="text-lg font-bold text-gray-900">{{ $item->name }}</h3>
+                                <p class="text-sm text-indigo-600 font-mono mb-2">{{ $item->sku }}</p>
+
+                                <p class="text-sm text-gray-600 line-clamp-3">
+                                    {{ $item->description ?? __('No description provided.') }}
+                                </p>
+
+                                <div class="mt-4">
+                                    <form action="{{ route('reservation.store') }}" method="POST">
+                                        @csrf
+                                        <input type="hidden" name="item_id" value="{{ $item->id }}">
+                                        <div class="flex items-center gap-2">
+                                            <input type="number" name="quantity" value="1" min="1"
+                                                class="w-20 rounded border-gray-300 text-sm">
+                                            <button type="submit"
+                                                class="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition text-sm font-bold">
+                                                {{ __('Add to Reservation') }}
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+            @endif
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\customer\reservation\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('My Reservation Draft') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if (session('success'))
+                    <div class="mb-4 text-green-600 font-bold">{{ session('success') }}</div>
+                @endif
+
+                @if (!$draft || $items->isEmpty())
+                    <div class="text-center py-8">
+                        <p class="text-gray-500 mb-4">{{ __('Your reservation draft is currently empty.') }}</p>
+                        <a href="{{ route('customer.products.index') }}" class="text-blue-600 underline">
+                            {{ __('Browse Products to add items') }}
+                        </a>
+                    </div>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="border-b bg-gray-50">
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600">{{ __('Item') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-center">
+                                        {{ __('Quantity') }}</th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Unit Price') }}</th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Subtotal') }}</th>
+                                    <th class="px-4 py-3 text-sm font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @php $grandTotal = 0; @endphp
+                                @foreach ($items as $orderItem)
+                                    @php
+                                        $subtotal = $orderItem->quantity * $orderItem->price_at_order;
+                                        $grandTotal += $subtotal;
+                                    @endphp
+                                    <tr class="border-b hover:bg-gray-50">
+                                        <td class="px-4 py-4">
+                                            <div class="font-bold text-gray-900">{{ $orderItem->item->name }}</div>
+                                            <div class="text-xs text-gray-500">SKU: {{ $orderItem->item->sku }}</div>
+                                        </td>
+                                        <td class="px-4 py-4">
+                                            <form action="{{ route('reservation.update', $orderItem) }}" method="POST"
+                                                class="flex items-center justify-center gap-2">
+                                                @csrf
+                                                @method('PUT')
+                                                <input type="number" name="quantity"
+                                                    value="{{ $orderItem->quantity }}" min="1" max="999"
+                                                    class="w-20 rounded border-gray-300 text-sm">
+                                                <button type="submit"
+                                                    class="text-blue-600 hover:text-blue-800 text-xs font-bold uppercase">{{ __('Update') }}</button>
+                                            </form>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">RM
+                                            {{ number_format($orderItem->price_at_order, 2) }}</td>
+                                        <td class="px-4 py-4 text-right font-semibold">RM
+                                            {{ number_format($subtotal, 2) }}</td>
+                                        <td class="px-4 py-4 text-right">
+                                            <form action="{{ route('reservation.destroy', $orderItem) }}"
+                                                method="POST" onsubmit="return confirm('Remove this item?');">
+                                                @csrf
+                                                @method('DELETE')
+                                                <button type="submit"
+                                                    class="text-red-600 hover:text-red-800 text-xs font-bold uppercase">{{ __('Remove') }}</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                            <tfoot>
+                                <tr>
+                                    <td colspan="3" class="px-4 py-6 text-right font-bold text-lg text-gray-600">
+                                        {{ __('Estimated Total:') }}</td>
+                                    <td class="px-4 py-6 text-right font-black text-xl text-blue-700">RM
+                                        {{ number_format($grandTotal, 2) }}</td>
+                                    <td></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+
+                    <div class="mt-8 flex justify-end">
+                        <form action="{{ route('reservation.submit') }}" method="POST"
+                            onsubmit="return confirm('Submit this reservation for review? You can still edit it while in Pending status.');">
+                            @csrf
+                            <button type="submit"
+                                class="bg-green-600 text-white px-10 py-4 rounded-xl font-black text-lg hover:bg-green-700 transition shadow-lg">
+                                {{ __('SUBMIT ORDER') }}
+                            </button>
+                        </form>
+                    </div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\layouts\app.blade.php ---
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
@@ -4920,6 +6137,20 @@ $classes = ($active ?? false)
                 {{ __('My Orders') }}
             </x-nav-link>
 
+            @role('customer')
+                <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
+                    {{ __('Order Products') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">
+                    {{ __('My Order History') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
+                    {{ __('My Reservation Draft') }}
+                </x-nav-link>
+            @endrole
+
             <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
             @hasanyrole('admin|cs_leader|cs_staff')
                 <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
@@ -4927,9 +6158,11 @@ $classes = ($active ?? false)
                 </div>
 
                 <!-- Product Management -->
-                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
-                    {{ __('Product Items') }}
-                </x-nav-link>
+                @can('view_items')
+                    <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                        {{ __('Product Items') }}
+                    </x-nav-link>
+                @endcan
 
                 <!-- Catalog Folders -->
                 @can('view_catalogs')
@@ -4950,6 +6183,10 @@ $classes = ($active ?? false)
                         {{ __('My Customers') }}
                     </x-nav-link>
                 @endcan
+
+                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.*')">
+                    {{ __('Order Management Queue') }}
+                </x-nav-link>
             @endhasanyrole
 
             <!-- Section 3: System Controls (Strict Admin Only) -->
@@ -7696,14 +8933,10 @@ $classes = ($active ?? false)
 <?php
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
-use App\Http\Controllers\Auth\ConfirmablePasswordController;
-use App\Http\Controllers\Auth\EmailVerificationNotificationController;
-use App\Http\Controllers\Auth\EmailVerificationPromptController;
 use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
 use App\Http\Controllers\Auth\RegisteredUserController;
-use App\Http\Controllers\Auth\VerifyEmailController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -7731,21 +8964,6 @@ Route::middleware('guest')->group(function () {
 });
 
 Route::middleware('auth')->group(function () {
-    Route::get('verify-email', EmailVerificationPromptController::class)
-        ->name('verification.notice');
-
-    Route::get('verify-email/{id}/{hash}', VerifyEmailController::class)
-        ->middleware(['signed', 'throttle:6,1'])
-        ->name('verification.verify');
-
-    Route::post('email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
-        ->middleware('throttle:6,1')
-        ->name('verification.send');
-
-    Route::get('confirm-password', [ConfirmablePasswordController::class, 'show'])
-        ->name('password.confirm');
-
-    Route::post('confirm-password', [ConfirmablePasswordController::class, 'store']);
 
     Route::put('password', [PasswordController::class, 'update'])->name('password.update');
 
@@ -7792,7 +9010,7 @@ require __DIR__.'/auth.php';
 | Protected Routes (Logged In Users)
 |--------------------------------------------------------------------------
 */
-Route::middleware(['auth', 'verified'])->group(function () {
+Route::middleware(['auth'])->group(function () {
 
     // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -7835,13 +9053,41 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
-    // ITEM MANAGEMENT (CS Staff, Leader, and Admin)
-    Route::resource('items', \App\Http\Controllers\ItemController::class)
-        ->middleware('role:admin|cs_leader|cs_staff');
+    // Only Admin & CS accessible
+    Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
+        Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
+        Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
+        Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
+        Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
+        Route::post('/orders/{order}/cancel', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancel'])->name('orders.cancel');
+        Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
+        Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
+    });
 
-    // CATALOG MANAGEMENT (CS Staff, Leader, and Admin)
+    // ITEM MANAGEMENT
+    Route::resource('items', \App\Http\Controllers\ItemController::class)
+        ->middleware(['auth', 'verified']);
+
+    // CATALOG MANAGEMENT
     Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
         ->middleware(['auth', 'verified']);
+
+    // CUSTOMER PRODUCT VIEWING
+    Route::get('/products', [\App\Http\Controllers\Customer\ProductCatalogController::class, 'index'])
+        ->name('customer.products.index')
+        ->middleware('role:customer'); // Restrict to customer roles
+
+    Route::middleware('role:customer')->prefix('reservation')->name('reservation.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Customer\ReservationController::class, 'index'])->name('index');
+        Route::post('/add', [\App\Http\Controllers\Customer\ReservationController::class, 'store'])->name('store');
+        Route::put('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'update'])->name('update');
+        Route::delete('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'destroy'])->name('destroy');
+        Route::post('/submit', [\App\Http\Controllers\Customer\ReservationController::class, 'submit'])->name('submit');
+
+        Route::get('/my-orders', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'index'])->name('customer.orders.index');
+        Route::get('/my-orders/{order}', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'show'])->name('customer.orders.show');
+
+    });
 
 });
 
@@ -11237,12 +12483,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v6)
+## Update details(v8)
 
-* Added the items & catalogs table.
-* Reorder the navigation bar.
-* Added the catalog folder page, for create the catalog group.
-* Added the "Permission Matrix" of catalog for admin modify who can view/create/edit the catalog.
+* Updated the backbone "Laravel E-Ordering System - é¡¹ç›®éœ€æ±‚å¤§çº²(v7) - EN.txt".
+* Clean up the unnecessary feature like email confirmation & password confirmation that build in in Laravel.
+* Added the create_orders table.
 
 --- END_FILE ---
 

@@ -77,13 +77,15 @@ class ReservationController extends Controller
     }
 
     /**
-     * Update quantity or remove item from draft.
+     * Update quantity or remove item from draft/pending order.
+     * Fulfills Section 4.1 & 4.2
      */
     public function update(Request $request, OrderItem $orderItem)
     {
-        // Security: Ensure the order item belongs to the authenticated user's draft
-        if ($orderItem->order->user_id !== auth()->id() || $orderItem->order->status !== 'draft') {
-            abort(403);
+        // Security: Allow editing if status is draft OR pending
+        if ($orderItem->order->user_id !== auth()->id() ||
+            ! in_array($orderItem->order->status, ['draft', 'pending'])) {
+            abort(403, 'This order is locked and cannot be edited.');
         }
 
         $request->validate(['quantity' => 'required|integer|min:1|max:999']);
@@ -94,12 +96,14 @@ class ReservationController extends Controller
 
     public function destroy(OrderItem $orderItem)
     {
-        if ($orderItem->order->user_id !== auth()->id() || $orderItem->order->status !== 'draft') {
-            abort(403);
+        // Security: Allow removal if status is draft OR pending
+        if ($orderItem->order->user_id !== auth()->id() ||
+            ! in_array($orderItem->order->status, ['draft', 'pending'])) {
+            abort(403, 'This order is locked.');
         }
 
         $orderItem->delete();
 
-        return redirect()->back()->with('success', 'Item removed from reservation.');
+        return redirect()->back()->with('success', 'Item removed.');
     }
 }
