@@ -94,7 +94,7 @@
                                 @csrf
                                 <button type="submit"
                                     class="w-full bg-green-600 text-white py-3 rounded-lg font-black uppercase shadow hover:bg-green-700 mb-4">
-                                    {{ __('✅ Approve & Snapshot') }} [14]
+                                    {{ __('✅ Approve & Snapshot') }}
                                 </button>
                             </form>
                         @endif

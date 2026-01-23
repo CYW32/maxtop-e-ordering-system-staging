@@ -208,30 +208,53 @@ class PasswordResetLinkController extends Controller
 namespace App\Http\Controllers\CS;
 
 use App\Http\Controllers\Controller;
-use App\Models\Order;
+use App\Http\Requests\CS\CancelOrderRequest;
+use App\Models\Order; // Added: Fulfills Section 5 Handover Context
+use App\Models\User; // Added: Required for form handling
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class OrderManagementController extends Controller
 {
     /**
-     * Dashboard for CS to see pending/available orders.
+     * Fulfills Section 5.a: My Fulfillment Workspace
+     * Displays orders assigned to me or currently handled by me.
      */
     public function index()
     {
         $user = auth()->user();
 
-        // 1. Unassigned Orders (Claiming Queue) [3]
-        $unassigned = Order::where('status', 'pending')
-            ->whereNull('handler_id')
-            ->latest()
-            ->get();
-
-        // 2. My Active Orders [3]
-        $myOrders = Order::where('handler_id', $user->id)
-            ->whereIn('status', ['pending', 'approved', 'in_transit'])
+        $myOrders = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+            ->where(function ($query) use ($user) {
+                $query->where('handler_id', $user->id) // Already claimed
+                    ->orWhere(function ($sub) use ($user) {
+                        $sub->whereNull('handler_id') // New but assigned customer
+                            ->whereHas('user', function ($u) use ($user) {
+                                $u->where('assigned_cs_id', $user->id);
+                            });
+                    });
+            })
             ->latest()
             ->paginate(15);
 
-        return view('cs.orders.index', compact('unassigned', 'myOrders'));
+        return view('cs.orders.index', compact('myOrders'));
+    }
+
+    /**
+     * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
+     * Displays orders from customers who have NO assigned CS Staff.
+     */
+    public function queue()
+    {
+        $unassigned = Order::where('status', 'pending')
+            ->whereNull('handler_id')
+            ->whereHas('user', function ($query) {
+                $query->whereNull('assigned_cs_id');
+            })
+            ->latest()
+            ->get();
+
+        return view('cs.orders.queue', compact('unassigned'));
     }
 
     /**
@@ -241,7 +264,7 @@ class OrderManagementController extends Controller
     {
         $order->load(['items.item', 'user.details', 'handler']);
 
-        // Fetch eligible staff for handover (Admin, Leaders, and CS Staff)
+        // Corrected: Uses the imported App\Models\User class [2]
         $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
             ->where('id', '!=', auth()->id())
             ->where('status', 'active')
@@ -251,7 +274,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 5: Handover Protocol (CS A to CS B)
+     * Fulfills Section 5: Handover Protocol (CS A to CS B) [5]
      */
     public function handover(Request $request, Order $order)
     {
@@ -262,7 +285,7 @@ class OrderManagementController extends Controller
         $oldHandlerName = $order->handler->name ?? 'Unassigned';
         $newHandler = User::findOrFail($request->new_handler_id);
 
-        // Security: Only the current handler or a Leader/Admin can initiate handover
+        // Security: Only the current handler or a Leader/Admin can initiate handover [5, 6]
         if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             abort(403, 'Unauthorized handover attempt.');
         }
@@ -278,7 +301,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Ownership Logic: Claiming an order [3]
+     * Fulfills Ownership Logic: Claiming an order [5]
      */
     public function claim(Order $order)
     {
@@ -297,11 +320,10 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger
+     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger [7, 8]
      */
     public function approve(Order $order)
     {
-        // Security: Only the claimed handler or an admin/leader can approve
         if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             abort(403, 'You are not the handler for this order.');
         }
@@ -310,15 +332,13 @@ class OrderManagementController extends Controller
             return redirect()->back()->with('error', 'Only pending orders can be approved.');
         }
 
-        \DB::transaction(function () use ($order) {
-            // Fulfills Section 3C: Item Name Synchronization (One last sync before freezing)
+        DB::transaction(function () use ($order) {
             foreach ($order->items as $orderItem) {
                 $orderItem->update([
-                    'snapshot_name' => $orderItem->item->name, // Permanent Snapshot [6]
+                    'snapshot_name' => $orderItem->item->name,
                     'price_at_order' => $orderItem->item->price,
                 ]);
             }
-
             $order->update(['status' => 'approved']);
         });
 
@@ -331,11 +351,10 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 4.6: Order Cancellation with Mandatory Reason
+     * Fulfills Section 4.6: Order Cancellation with Mandatory Reason [9]
      */
-    public function cancel(\App\Http\Requests\CS\CancelOrderRequest $request, \App\Models\Order $order)
+    public function cancel(CancelOrderRequest $request, Order $order)
     {
-        // Security check: only handler or admin/leader
         if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             abort(403);
         }
@@ -363,13 +382,14 @@ class OrderManagementController extends Controller
      */
     public function updateStatus(Request $request, Order $order)
     {
-        // Security: Only handler or CS Leader
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasRole('cs_leader')) {
+        // Security: Only handler or CS Leader/Admin [5]
+        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             abort(403);
         }
 
         $validated = $request->validate([
-            'status' => 'required|in:approved,in_transit,completed',
+            // FIX: Added 'pending' to the allowed list so notes can be saved early [1, 3]
+            'status' => 'required|in:pending,approved,in_transit,completed',
             'internal_notes' => 'nullable|string',
             'tracking_number' => 'required_if:status,in_transit|nullable|string',
             'logistics_carrier' => 'required_if:status,in_transit|nullable|string',
@@ -380,9 +400,9 @@ class OrderManagementController extends Controller
         activity('order')
             ->performedOn($order)
             ->causedBy(auth()->user())
-            ->log("Order status updated to {$request->status}");
+            ->log("Order updated (Status: {$request->status})");
 
-        return redirect()->back()->with('success', 'Order updated successfully.');
+        return redirect()->back()->with('success', 'Internal notes updated successfully.');
     }
 }
 
@@ -5565,21 +5585,87 @@ $classes = ($active ?? false)
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Order Management Dashboard') }}
+            {{ __('My Fulfillment Workspace') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if ($myOrders->isEmpty())
+                    <p class="text-gray-500 italic">{{ __('You are not currently handling any active orders.') }}</p>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Customer') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($myOrders as $order)
+                                    <tr class="border-b hover:bg-gray-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono text-sm">{{ $order->order_number }}</td>
+                                        <td class="px-4 py-4 text-sm font-bold text-gray-800">{{ $order->user->name }}
+                                        </td>
+                                        <td class="px-4 py-4">
+                                            <span
+                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase shadow-sm
+                                                {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-blue-100 text-blue-800 border border-blue-300' }}">
+                                                {{ $order->status }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">
+                                            @if (is_null($order->handler_id))
+                                                <form action="{{ route('office.orders.claim', $order) }}"
+                                                    method="POST">
+                                                    @csrf
+                                                    <button type="submit"
+                                                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase shadow-md">
+                                                        {{ __('Claim My Customer Order') }}
+                                                    </button>
+                                                </form>
+                                            @else
+                                                <a href="{{ route('office.orders.show', $order) }}"
+                                                    class="inline-block bg-blue-50 text-blue-700 hover:bg-blue-700 hover:text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-blue-200">
+                                                    {{ __('View & Process') }}
+                                                </a>
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-4">{{ $myOrders->links() }}</div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
 
-            {{-- Section 1: Unassigned Orders (Claiming Queue) [3] --}}
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\queue.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('âš ï¸ Claiming Queue (Unassigned Customers)') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
-                <h3 class="font-black text-lg text-orange-700 uppercase tracking-wider mb-4">
-                    {{ __('âš ï¸ Claiming Queue (Unassigned Orders)') }}
-                </h3>
-
                 @if ($unassigned->isEmpty())
-                    <p class="text-gray-500 italic">{{ __('No new orders awaiting assignment.') }}</p>
+                    <p class="text-gray-500 italic">{{ __('No new orders from unassigned customers.') }}</p>
                 @else
                     <div class="overflow-x-auto">
                         <table class="w-full text-left border-collapse">
@@ -5623,61 +5709,6 @@ $classes = ($active ?? false)
                     </div>
                 @endif
             </div>
-
-            {{-- Section 2: My Active Orders (Claimed) [5] --}}
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-                <h3 class="font-black text-lg text-gray-800 uppercase tracking-wider mb-4">
-                    {{ __('ðŸ“‹ My Active Orders') }}
-                </h3>
-
-                @if ($myOrders->isEmpty())
-                    <p class="text-gray-500 italic">{{ __('You are not currently handling any active orders.') }}</p>
-                @else
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse">
-                            <thead>
-                                <tr class="bg-gray-50 border-b">
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
-                                    </th>
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
-                                        {{ __('Customer') }}</th>
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
-                                    </th>
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
-                                        {{ __('Actions') }}</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach ($myOrders as $order)
-                                    <tr class="border-b hover:bg-gray-50 transition-colors">
-                                        <td class="px-4 py-4 font-mono text-sm">{{ $order->order_number }}</td>
-                                        <td class="px-4 py-4 text-sm">
-                                            <span class="font-bold text-gray-800">{{ $order->user->name }}</span>
-                                        </td>
-                                        <td class="px-4 py-4">
-                                            <span
-                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase shadow-sm
-                                                {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-blue-100 text-blue-800 border border-blue-300' }}">
-                                                {{ $order->status }}
-                                            </span>
-                                        </td>
-                                        <td class="px-4 py-4 text-right">
-                                            <a href="{{ route('office.orders.show', $order) }}"
-                                                class="inline-block bg-blue-50 text-blue-700 hover:bg-blue-700 hover:text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-blue-200">
-                                                {{ __('View & Process') }}
-                                            </a>
-                                        </td>
-                                    </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="mt-4">
-                        {{ $myOrders->links() }}
-                    </div>
-                @endif
-            </div>
-
         </div>
     </div>
 </x-app-layout>
@@ -5781,7 +5812,7 @@ $classes = ($active ?? false)
                                 @csrf
                                 <button type="submit"
                                     class="w-full bg-green-600 text-white py-3 rounded-lg font-black uppercase shadow hover:bg-green-700 mb-4">
-                                    {{ __('âœ… Approve & Snapshot') }} [14]
+                                    {{ __('âœ… Approve & Snapshot') }}
                                 </button>
                             </form>
                         @endif
@@ -5816,7 +5847,7 @@ $classes = ($active ?? false)
                             <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
                                 @csrf
                                 <textarea name="cancellation_reason" required class="w-full text-xs rounded border-gray-300 mb-2"
-                                    placeholder="Mandatory cancellation reason..."></textarea> [12]
+                                    placeholder="Mandatory cancellation reason..."></textarea>
                                 <button type="submit"
                                     class="w-full border border-red-600 text-red-600 py-2 rounded text-xs font-black uppercase hover:bg-red-50">
                                     {{ __('Cancel Order') }}
@@ -5835,7 +5866,8 @@ $classes = ($active ?? false)
                                 <select name="new_handler_id" class="w-full text-sm rounded border-gray-300 mb-2">
                                     @foreach ($eligibleStaff as $staff)
                                         <option value="{{ $staff->id }}">{{ $staff->name }}
-                                            ({{ $staff->roles->first()->name }})</option>
+                                            ({{ $staff->roles->first()->name }})
+                                        </option>
                                     @endforeach
                                 </select>
                                 <button type="submit"
@@ -6277,108 +6309,108 @@ $classes = ($active ?? false)
 --- END_FILE ---
 
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\layouts\navigation.blade.php ---
-<div class="py-4 flex flex-col h-full justify-between">
-
-    <div class="space-y-4">
-        <div class="px-6 flex items-center justify-center">
-            <a href="{{ route('dashboard') }}">
-                <x-application-logo class="block h-16 w-auto fill-current text-gray-800" />
-            </a>
-        </div>
-
-        <!-- Primary Navigation Menu -->
-        <div class="flex flex-col h-full py-4">
-            <!-- Section 1: General (Everyone) -->
-            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
-                {{ __('Dashboard') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('dashboard')" :active="false">
-                {{ __('My Orders') }}
-            </x-nav-link>
-
-            @role('customer')
-                <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
-                    {{ __('Order Products') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">
-                    {{ __('My Order History') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
-                    {{ __('My Reservation Draft') }}
-                </x-nav-link>
-            @endrole
-
-            <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
-            @hasanyrole('admin|cs_leader|cs_staff')
-                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('Office Operations') }}
+<nav x-data="{ open: false }" class="bg-white border-b border-gray-100">
+    <!-- Primary Navigation Menu -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex">
+                <!-- Logo -->
+                <div class="shrink-0 flex items-center">
+                    <a href="{{ route('dashboard') }}">
+                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800" />
+                    </a>
                 </div>
-
-                <!-- Product Management -->
-                @can('view_items')
-                    <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
-                        {{ __('Product Items') }}
-                    </x-nav-link>
-                @endcan
-
-                <!-- Catalog Folders -->
-                @can('view_catalogs')
-                    <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
-                        {{ __('Catalog Folders') }}
-                    </x-nav-link>
-                @endcan
-
-                <!-- User/Customer Management -->
-                @can('view_users')
-                    <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                        {{ __('User Management') }}
-                    </x-nav-link>
-                @endcan
-
-                @can('view_assigned_customers')
-                    <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
-                        {{ __('My Customers') }}
-                    </x-nav-link>
-                @endcan
-
-                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.*')">
-                    {{ __('Order Management Queue') }}
-                </x-nav-link>
-            @endhasanyrole
-
-            <!-- Section 3: System Controls (Strict Admin Only) -->
-            @role('admin')
-                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('System Control') }}
-                </div>
-
-                <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
-                    {{ __('Feature Settings') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('roles.activity.index')" :active="request()->routeIs('roles.activity.index')">
-                    {{ __('Activity Log') }}
-                </x-nav-link>
-            @endrole
+            </div>
 
         </div>
     </div>
 
-    <div class="px-6 border-t border-gray-200 pt-4">
-        <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
-        <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+    <!-- Sidebar -->
+    <div class="pt-4 pb-1 border-t border-gray-200">
+        @role('customer')
+            <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.index')">
+                {{ __('Order Products') }}
+            </x-nav-link>
 
-        <form method="POST" action="{{ route('logout') }}" class="mt-3">
-            @csrf
-            <button type="submit" class="text-sm text-red-600 hover:text-red-900">
-                {{ __('Log Out') }}
-            </button>
-        </form>
+            <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.index')">
+                {{ __('My Order History') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
+                {{ __('My Reservation Draft') }}
+            </x-nav-link>
+        @endrole
+        @hasanyrole('admin|cs_leader|cs_staff')
+            <div class="px-4 py-2 font-black text-xs uppercase text-gray-400 tracking-widest">{{ __('Office Operations') }}
+            </div>
+
+            @can('view_items')
+                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                    {{ __('Product Items') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_catalogs')
+                <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
+                    {{ __('Catalog Folders') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_users')
+                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
+                    {{ __('User Management') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_assigned_customers')
+                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
+                    {{ __('My Customers') }}
+                </x-nav-link>
+            @endcan
+
+            {{-- Fulfills Section 5: Assignment Logic Separation --}}
+            <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
+                {{ __('My Fulfillment Workspace') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
+                {{ __('Claiming Queue') }}
+            </x-nav-link>
+        @endhasanyrole
+
+        @role('admin')
+            <div class="mt-4 px-4 py-2 font-black text-xs uppercase text-red-600 tracking-widest">
+                {{ __('System Control') }}</div>
+            <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
+                {{ __('Feature Settings') }}
+            </x-nav-link>
+            <x-nav-link :href="route('activity.index')" :active="request()->routeIs('activity.index')">
+                {{ __('Activity Log') }}
+            </x-nav-link>
+        @endrole
     </div>
-</div>
+
+    <!-- Responsive Settings Options -->
+    <div class="pt-4 pb-1 border-t border-gray-200">
+        {{-- Consolidated Identity & Profile Link: Fulfills standard UI/UX consolidation --}}
+        <a href="{{ route('profile.edit') }}"
+            class="block px-4 py-2 hover:bg-gray-100 transition duration-150 ease-in-out">
+            <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
+            <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+        </a>
+
+        <div class="mt-3 space-y-1">
+            <form method="POST" action="{{ route('logout') }}">
+                @csrf
+                <x-responsive-nav-link :href="route('logout')"
+                    onclick="event.preventDefault();
+                                    this.closest('form').submit();">
+                    {{ __('Log Out') }}
+                </x-responsive-nav-link>
+            </form>
+        </div>
+    </div>
+</nav>
 
 --- END_FILE ---
 
@@ -9175,6 +9207,14 @@ Route::middleware(['auth'])->group(function () {
     // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
+    /**
+     * Profile Management Routes
+     * Fulfills standard user self-service requirements.
+     */
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
     // USER MANAGEMENT
     // We split this because viewing and creating require different permissions.
     Route::prefix('users')->name('users.')->group(function () {
@@ -9203,19 +9243,28 @@ Route::middleware(['auth'])->group(function () {
         ->name('users.assigned');
 
     // SYSTEM SETTINGS (Strict Admin Only)
-    // Only 'admin' role can touch these, regardless of permissions.
-    Route::middleware('role:admin')->prefix('admin')->name('roles.')->group(function () {
+    // Fulfills Section 2.a: Administrator overseeing Activity Logs and assignments
+    Route::middleware('role:admin')->prefix('admin')->group(function () {
 
-        Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
-        Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        // Feature Settings (Feature Matrix) - keep the 'roles.' prefix here
+        Route::name('roles.')->group(function () {
+            Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
+            Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        });
 
-        // Activity Log Route
+        // Activity Log Route - Moved outside roles naming to match navigation
+        // Results in: activity.index
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
     // Only Admin & CS accessible
     Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
+        // Fulfills Section 5.b: General Claiming Queue
+        Route::get('/orders/queue', [\App\Http\Controllers\CS\OrderManagementController::class, 'queue'])->name('orders.queue');
+
+        // Fulfills Section 5.a: My Fulfillment Workspace (Personalized Inbox)
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
+
         Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
         Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
         Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
@@ -12651,11 +12700,10 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v8)
+## Update details(v10)
 
-* Updated the backbone "Laravel E-Ordering System - é¡¹ç›®éœ€æ±‚å¤§çº²(v7) - EN.txt".
-* Clean up the unnecessary feature like email confirmation & password confirmation that build in in Laravel.
-* Added the create_orders table.
+* Separate the claim order and view claimed order into two page.
+* Updated the logic of only un-assign customer order will appear in the "Claiming Queue" page.
 
 --- END_FILE ---
 

@@ -27,6 +27,14 @@ Route::middleware(['auth'])->group(function () {
     // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
+    /**
+     * Profile Management Routes
+     * Fulfills standard user self-service requirements.
+     */
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
     // USER MANAGEMENT
     // We split this because viewing and creating require different permissions.
     Route::prefix('users')->name('users.')->group(function () {
@@ -55,27 +63,44 @@ Route::middleware(['auth'])->group(function () {
         ->name('users.assigned');
 
     // SYSTEM SETTINGS (Strict Admin Only)
-    // Only 'admin' role can touch these, regardless of permissions.
-    Route::middleware('role:admin')->prefix('admin')->name('roles.')->group(function () {
+    // Fulfills Section 2.a: Administrator overseeing Activity Logs and assignments
+    Route::middleware('role:admin')->prefix('admin')->group(function () {
 
-        Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
-        Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        // Feature Settings (Feature Matrix) - keep the 'roles.' prefix here
+        Route::name('roles.')->group(function () {
+            Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
+            Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        });
 
-        // Activity Log Route
+        // Activity Log Route - Moved outside roles naming to match navigation
+        // Results in: activity.index
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
     // Only Admin & CS accessible
     Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
+
+        // 1. Static Routes (Must come first to prevent shadowing)
+        // Fulfills Section 5.b: General Claiming Queue [4]
+        Route::get('/orders/queue', [\App\Http\Controllers\CS\OrderManagementController::class, 'queue'])->name('orders.queue');
+
+        // Fulfills visibility for Completed/Cancelled orders [5, 6]
+        Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
+
+        // 2. Resource Index
+        // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
+
+        // 3. Wildcard Routes (Must come last)
+        // Fulfills Section 5: Handler Visibility & Handover [8]
         Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
+
         Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
         Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
         Route::post('/orders/{order}/cancel', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancel'])->name('orders.cancel');
         Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
         Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
     });
-
     // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
         ->middleware(['auth', 'verified']);

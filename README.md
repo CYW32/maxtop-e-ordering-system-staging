@@ -60,7 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v9)
+## Update details(v10)
 
-* Added the order function and UI for customer.
-* Added the "claim the order from customer" & "approve/reject order from customer"  & "hand over to other CS" function and UI for CS role.
+* Separate the claim order and view claimed order into two page.
+* Updated the logic of only un-assign customer order will appear in the "Claiming Queue" page.
+* Added the "My Claimed Orders" to let CS can see all his claimed history list.

@@ -12,25 +12,44 @@ use Illuminate\Support\Facades\DB;
 class OrderManagementController extends Controller
 {
     /**
-     * Dashboard for CS to see pending/available orders.
+     * Fulfills Section 5.a: On-going Orders
+     * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
     public function index()
     {
         $user = auth()->user();
 
-        // 1. Unassigned Orders (Claiming Queue) [5]
-        $unassigned = Order::where('status', 'pending')
-            ->whereNull('handler_id')
-            ->latest()
-            ->get();
-
-        // 2. My Active Orders [5]
-        $myOrders = Order::where('handler_id', $user->id)
-            ->whereIn('status', ['pending', 'approved', 'in_transit'])
+        $myOrders = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+            ->where(function ($query) use ($user) {
+                $query->where('handler_id', $user->id) // Already claimed
+                    ->orWhere(function ($sub) use ($user) {
+                        $sub->whereNull('handler_id') // New but assigned customer
+                            ->whereHas('user', function ($u) use ($user) {
+                                $u->where('assigned_cs_id', $user->id);
+                            });
+                    });
+            })
             ->latest()
             ->paginate(15);
 
-        return view('cs.orders.index', compact('unassigned', 'myOrders'));
+        return view('cs.orders.index', compact('myOrders'));
+    }
+
+    /**
+     * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
+     * Displays orders from customers who have NO assigned CS Staff.
+     */
+    public function queue()
+    {
+        $unassigned = Order::where('status', 'pending')
+            ->whereNull('handler_id')
+            ->whereHas('user', function ($query) {
+                $query->whereNull('assigned_cs_id');
+            })
+            ->latest()
+            ->get();
+
+        return view('cs.orders.queue', compact('unassigned'));
     }
 
     /**
@@ -77,7 +96,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Ownership Logic: Claiming an order [5]
+     * Fulfills Ownership Logic and Section 5.a Permanent Assignment
      */
     public function claim(Order $order)
     {
@@ -85,14 +104,28 @@ class OrderManagementController extends Controller
             return redirect()->back()->with('error', 'This order has already been claimed.');
         }
 
-        $order->update(['handler_id' => auth()->id()]);
+        DB::transaction(function () use ($order) {
+            // 1. Claim the specific order
+            $order->update(['handler_id' => auth()->id()]);
+
+            // 2. Fulfills Section 5.a: If customer is unassigned, make this CS the permanent representative
+            $customer = $order->user;
+            if (is_null($customer->assigned_cs_id)) {
+                $customer->update(['assigned_cs_id' => auth()->id()]);
+
+                activity('user_assignment')
+                    ->performedOn($customer)
+                    ->causedBy(auth()->user())
+                    ->log('Customer permanently assigned to CS: '.auth()->user()->name);
+            }
+        });
 
         activity('order')
             ->performedOn($order)
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        return redirect()->back()->with('success', 'Order claimed. You are now the current handler.');
+        return redirect()->back()->with('success', 'Order claimed. You are now the current handler and assigned representative for this customer.');
     }
 
     /**
@@ -179,5 +212,21 @@ class OrderManagementController extends Controller
             ->log("Order updated (Status: {$request->status})");
 
         return redirect()->back()->with('success', 'Internal notes updated successfully.');
+    }
+
+    /**
+     * Fulfills Section 5.c: My Claimed Orders (Master List)
+     * Displays all orders ever claimed by this CS, providing a full historical audit trail.
+     */
+    public function history()
+    {
+        $user = auth()->user();
+
+        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
+        $history = Order::where('handler_id', $user->id)
+            ->latest()
+            ->paginate(15);
+
+        return view('cs.orders.history', compact('history'));
     }
 }
