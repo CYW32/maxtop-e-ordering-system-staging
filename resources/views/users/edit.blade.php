@@ -180,7 +180,7 @@
                                         {{ __('Dangerous: Remove Account') }}</h3>
                                     <p class="text-red-600 text-[10px] mt-2 italic">
                                         {{ is_null($user->parent_id)
-                                            ? __('Deleting this HQ will also permanently remove all associated branches [Section 3.c.1].')
+                                            ? __('Deleting this HQ will also permanently remove all associated branches.')
                                             : __('This will permanently remove this specific account.') }}
                                     </p>
                                 </div>
@@ -197,7 +197,7 @@
                         @else
                             <div class="p-6 bg-gray-50 rounded-2xl border border-gray-100 text-center">
                                 <p class="text-gray-400 text-[10px] font-black uppercase tracking-widest italic">
-                                    {{ __('🔒 This account is locked from deletion because it is linked to historical order records [Section 3.c].') }}
+                                    {{ __('🔒 This account is locked from deletion because it is linked to historical order records.') }}
                                 </p>
                             </div>
                         @endif

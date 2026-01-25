@@ -7578,15 +7578,15 @@ $classes = ($active ?? false)
 
     <div class="py-12">
         <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
+            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100" x-data="{ role: '{{ old('role', $parent ? 'customer' : '') }}' }">
+                {{-- Fulfills dynamic visibility request --}}
 
                 <form action="{{ route('users.store') }}" method="POST" class="space-y-6">
+                    @csrf
+
                     @php
                         $isRestricted = auth()->user()->hasRole('cs_staff') || $parent;
-                        $fixedRole = $isRestricted ? 'customer' : old('role', '');
                     @endphp
-
-                    @csrf
 
                     @if ($parent)
                         <input type="hidden" name="parent_id" value="{{ $parent->id }}">
@@ -7605,13 +7605,12 @@ $classes = ($active ?? false)
                         {{-- Role Selection --}}
                         <div class="md:col-span-2">
                             <x-input-label for="role" :value="__('Select User Role')" />
-                            <select id="role" name="role"
-                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm @if ($isRestricted) bg-gray-100 cursor-not-allowed @endif"
+                            <select id="role" name="role" x-model="role" {{-- Alpine Binding --}}
+                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
                                 @if ($isRestricted) disabled @endif>
                                 <option value="">{{ __('Select a Role') }}</option>
                                 @foreach ($roles as $roleOption)
-                                    <option value="{{ $roleOption->name }}"
-                                        @if ($fixedRole == $roleOption->name) selected @endif>
+                                    <option value="{{ $roleOption->name }}">
                                         {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
                                     </option>
                                 @endforeach
@@ -7619,7 +7618,6 @@ $classes = ($active ?? false)
                             <x-input-error class="mt-2" :messages="$errors->get('role')" />
                         </div>
 
-                        {{-- Name --}}
                         <div>
                             <x-input-label for="name" :value="__('Full Name')" />
                             <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
@@ -7627,7 +7625,6 @@ $classes = ($active ?? false)
                             <x-input-error class="mt-2" :messages="$errors->get('name')" />
                         </div>
 
-                        {{-- Login ID --}}
                         <div>
                             <x-input-label for="login_id" :value="__('Login ID (Unique)')" />
                             <x-text-input id="login_id" name="login_id" type="text"
@@ -7635,7 +7632,6 @@ $classes = ($active ?? false)
                             <x-input-error class="mt-2" :messages="$errors->get('login_id')" />
                         </div>
 
-                        {{-- Email --}}
                         <div>
                             <x-input-label for="email" :value="__('Email Address')" />
                             <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
@@ -7645,7 +7641,6 @@ $classes = ($active ?? false)
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {{-- Password --}}
                         <div>
                             <x-input-label for="password" :value="__('Password')" />
                             <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
@@ -7653,7 +7648,6 @@ $classes = ($active ?? false)
                             <x-input-error class="mt-2" :messages="$errors->get('password')" />
                         </div>
 
-                        {{-- Password Confirmation --}}
                         <div>
                             <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
                             <x-text-input id="password_confirmation" name="password_confirmation" type="password"
@@ -7662,15 +7656,20 @@ $classes = ($active ?? false)
                         </div>
                     </div>
 
-                    {{-- Customer Specific Information --}}
-                    <div class="pt-6 border-t border-gray-100">
+                    {{-- Customer Specific Information: Section 3.a Hierarchy --}}
+                    <div x-show="role === 'customer'" x-transition:enter="transition ease-out duration-300"
+                        x-transition:enter-start="opacity-0 transform -translate-y-2"
+                        x-transition:enter-end="opacity-100 transform translate-y-0"
+                        class="pt-6 border-t border-gray-100">
+
                         <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
                             {{ __('Company & Logistics') }}</h3>
 
                         @if ($parent)
                             <div class="bg-blue-50 p-3 rounded border border-blue-100 text-[10px] text-blue-700 mb-4">
                                 *{{ __('INHERITANCE:') }}*
-                                {{ __('This branch will automatically inherit settings from ') }} {{ $parent->name }}.
+                                {{ __('This branch will automatically inherit settings from ') }} {{ $parent->name }}
+                                [6].
                             </div>
                         @endif
 
@@ -7757,9 +7756,9 @@ $classes = ($active ?? false)
 
     <div class="py-12">
         <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
+            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100" x-data="{ role: '{{ old('role', $user->roles->first()->name ?? '') }}' }">
 
-                {{-- PRIMARY UPDATE FORM --}}
+                {{-- PRIMARY UPDATE FORM [Section 3.a.1] --}}
                 <form action="{{ route('users.update', $user) }}" method="POST" class="space-y-6">
                     @csrf
                     @method('PUT')
@@ -7802,38 +7801,50 @@ $classes = ($active ?? false)
                         </div>
                     </div>
 
-                    {{-- Role Assignment (Read-Only to preserve Backbone Section 2.a audit integrity) --}}
+                    {{-- Role Assignment (Read-Only per Section 2.a audit integrity [3]) --}}
                     <div>
-                        <x-input-label for="role" :value="__('Assigned Role')" />
-                        <select id="role" name="role"
+                        <x-input-label for="role_display" :value="__('Assigned Role')" />
+                        <select id="role_display"
                             class="block mt-1 w-full border-gray-300 bg-gray-100 cursor-not-allowed rounded-md shadow-sm"
                             disabled>
-                            @foreach ($roles as $role)
-                                <option value="{{ $role->name }}" {{ $user->hasRole($role->name) ? 'selected' : '' }}>
-                                    {{ ucfirst(str_replace('_', ' ', $role->name)) }}
+                            @foreach ($roles as $roleOption)
+                                <option value="{{ $roleOption->name }}"
+                                    @if ($user->hasRole($roleOption->name)) selected @endif>
+                                    {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
                                 </option>
                             @endforeach
                         </select>
                         <input type="hidden" name="role" value="{{ $user->roles->first()->name ?? '' }}">
                     </div>
 
-                    @if ($user->hasRole('customer'))
-                        <div class="pt-6 border-t border-gray-100">
-                            <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
-                                {{ __('Company & Logistics') }}</h3>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                    <x-input-label for="company_name" :value="__('Company Name')" />
-                                    <x-text-input id="company_name" name="company_name" type="text"
-                                        class="mt-1 block w-full" :value="old('company_name', $user->details->company_name ?? '')" />
-                                    <x-input-error class="mt-2" :messages="$errors->get('company_name')" />
-                                </div>
-                                <div>
-                                    <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
-                                    <x-text-input id="company_reg_no" name="company_reg_no" type="text"
-                                        class="mt-1 block w-full" :value="old('company_reg_no', $user->details->company_reg_no ?? '')" />
-                                    <x-input-error class="mt-2" :messages="$errors->get('company_reg_no')" />
-                                </div>
+                    {{-- Company & Logistics: Only visible if Customer --}}
+                    <div x-show="role === 'customer'" class="pt-6 border-t border-gray-100">
+                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
+                            {{ __('Company & Logistics') }}</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <x-input-label for="company_name" :value="__('Company Name')" />
+                                <x-text-input id="company_name" name="company_name" type="text"
+                                    class="mt-1 block w-full" :value="old('company_name', $user->details->company_name ?? '')" />
+                                <x-input-error class="mt-2" :messages="$errors->get('company_name')" />
+                            </div>
+                            <div>
+                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
+                                <x-text-input id="company_reg_no" name="company_reg_no" type="text"
+                                    class="mt-1 block w-full" :value="old('company_reg_no', $user->details->company_reg_no ?? '')" />
+                                <x-input-error class="mt-2" :messages="$errors->get('company_reg_no')" />
+                            </div>
+                            <div>
+                                <x-input-label for="pic_name" :value="__('PIC Name')" />
+                                <x-text-input id="pic_name" name="pic_name" type="text" class="mt-1 block w-full"
+                                    :value="old('pic_name', $user->details->pic_name ?? '')" />
+                                <x-input-error class="mt-2" :messages="$errors->get('pic_name')" />
+                            </div>
+                            <div>
+                                <x-input-label for="pic_phone" :value="__('PIC Phone')" />
+                                <x-text-input id="pic_phone" name="pic_phone" type="text" class="mt-1 block w-full"
+                                    :value="old('pic_phone', $user->details->pic_phone ?? '')" />
+                                <x-input-error class="mt-2" :messages="$errors->get('pic_phone')" />
                             </div>
                         </div>
 
@@ -7843,7 +7854,7 @@ $classes = ($active ?? false)
                                 class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm text-sm">{{ old('delivery_address', $user->details->delivery_address ?? '') }}</textarea>
                             <x-input-error class="mt-2" :messages="$errors->get('delivery_address')" />
                         </div>
-                    @endif
+                    </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-gray-100">
                         {{-- CS Staff Assignment --}}
@@ -7863,22 +7874,20 @@ $classes = ($active ?? false)
                             </div>
                         @endcan
 
-                        {{-- Catalog Selection --}}
-                        @if ($user->hasRole('customer'))
-                            <div>
-                                <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
-                                <select id="catalog_id" name="catalog_id"
-                                    class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
-                                    <option value="">{{ __('-- Inherit from Parent --') }}</option>
-                                    @foreach ($catalogs as $catalog)
-                                        <option value="{{ $catalog->id }}"
-                                            {{ old('catalog_id', $user->catalog_id) == $catalog->id ? 'selected' : '' }}>
-                                            {{ $catalog->name }}</option>
-                                    @endforeach
-                                </select>
-                                <x-input-error class="mt-2" :messages="$errors->get('catalog_id')" />
-                            </div>
-                        @endif
+                        {{-- Catalog Selection [Section 3.a.1] --}}
+                        <div x-show="role === 'customer'">
+                            <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
+                            <select id="catalog_id" name="catalog_id"
+                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                                <option value="">{{ __('-- Inherit from Parent --') }}</option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}"
+                                        {{ old('catalog_id', $user->catalog_id) == $catalog->id ? 'selected' : '' }}>
+                                        {{ $catalog->name }}</option>
+                                @endforeach
+                            </select>
+                            <x-input-error class="mt-2" :messages="$errors->get('catalog_id')" />
+                        </div>
                     </div>
 
                     <div class="pt-6 border-t border-gray-100">
@@ -7892,7 +7901,7 @@ $classes = ($active ?? false)
                     </div>
                 </form>
 
-                {{-- Separate Branch and Delete Sections continue as previously debugged... --}}
+                {{-- Branch Management and Dangerous Actions sections follow separately... --}}
                 {{-- BRANCH MANAGEMENT SECTION [Section 3.a.2] --}}
                 @if ($user->hasRole('customer') && is_null($user->parent_id))
                     <div
@@ -13702,6 +13711,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 * Solve the bug that unable to add item into "Catalog" & "Category".
 * Solve the bug that if set "Deactive" and click back to "Reactivate" at "Catalog" & "Category" it will clear the list.
 * Slove the "Update User" button will hard remove the current edit user.
+* Solve the it will show "Company & Logistics" field will is role is "Customer".
 
 --- END_FILE ---
 

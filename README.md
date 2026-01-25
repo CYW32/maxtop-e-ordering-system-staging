@@ -60,9 +60,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v12)
+## Update details(v13)
 
-* Solve the bug that unable to add item into "Catalog" & "Category".
-* Solve the bug that if set "Deactive" and click back to "Reactivate" at "Catalog" & "Category" it will clear the list.
-* Slove the "Update User" button will hard remove the current edit user.
-* Solve the it will show "Company & Logistics" field will is role is "Customer".
+* Solve the bug that will make the branch become HQ when update the branch profile(Cause it assign to empty parent_id field).

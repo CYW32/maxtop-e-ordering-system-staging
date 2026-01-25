@@ -170,7 +170,6 @@ class UserController extends Controller
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
-            'parent_id' => $request->parent_id, // Ensure hierarchy is saved
             'catalog_id' => $request->catalog_id, // Fulfills Single Catalog Policy
         ];
 
