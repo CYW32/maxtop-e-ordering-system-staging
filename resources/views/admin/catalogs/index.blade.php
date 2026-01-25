@@ -41,9 +41,14 @@
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
                         @foreach ($catalogs as $catalog)
-                            <tr>
+                            <tr
+                                class="transition-colors {{ $catalog->status === 'deactive' ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50' }}">
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                     {{ $catalog->name }}
+                                    @if ($catalog->status === 'deactive')
+                                        <span
+                                            class="ml-2 px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded">{{ __('Deactive') }}</span>
+                                    @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                     <span

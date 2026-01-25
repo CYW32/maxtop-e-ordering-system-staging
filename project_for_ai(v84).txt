@@ -501,26 +501,35 @@ class ProductCatalogController extends Controller
     public function index(Request $request)
     {
         $user = auth()->user();
+        $catalogId = $user->getEffectiveCatalogId();
 
-        // Fulfills Whitelist Logic: Customers only see their assigned catalog items [4]
-        $query = Item::whereHas('catalogs', function ($q) use ($user) {
-            $q->where('catalogs.id', $user->getEffectiveCatalogId());
-        });
+        // Fulfills Request: If the assigned catalog is deactivated, show nothing
+        $catalog = \App\Models\Catalog::find($catalogId);
+        if (! $catalog || $catalog->status === 'deactive') {
+            return view('customer.products.index', ['items' => collect(), 'availableCategories' => collect()]);
+        }
 
-        // Fulfills Request: Optional Category Filtering with Ambiguity Fix
+        // Fulfills Whitelist Logic + Request: Only show 'active' items [7]
+        $query = Item::where('status', 'active')
+            ->whereHas('catalogs', function ($q) use ($catalogId) {
+                $q->where('catalogs.id', $catalogId);
+            });
+
         if ($request->filled('category')) {
             $query->whereHas('categories', function ($q) use ($request) {
-                // FIXED: Explicitly qualify 'id' with the table name to prevent SQL STATE
-                $q->where('categories.id', $request->category);
+                $q->where('categories.id', $request->category)
+                    ->where('categories.status', 'active'); // Fulfills Category deactivation
             });
         }
 
         $items = $query->with('categories')->get();
 
-        // Fulfills UI Requirement: Only show categories available to THIS user's whitelist
-        $availableCategories = Category::whereHas('items', function ($q) use ($user) {
-            $q->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $user->getEffectiveCatalogId()));
-        })->get();
+        // Only show active categories containing active items for this catalog
+        $availableCategories = Category::where('status', 'active')
+            ->whereHas('items', function ($q) use ($catalogId) {
+                $q->where('items.status', 'active')
+                    ->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $catalogId));
+            })->get();
 
         return view('customer.products.index', compact('items', 'availableCategories'));
     }
@@ -796,10 +805,7 @@ class CatalogController extends Controller
 
     public function update(Request $request, Catalog $catalog)
     {
-        // Requirement: Needs View + Create + Edit
-        if (! auth()->user()->can('view_catalogs') ||
-            ! auth()->user()->can('create_catalogs') ||
-            ! auth()->user()->can('edit_catalogs')) {
+        if (! auth()->user()->can('view_catalogs') || ! auth()->user()->can('create_catalogs') || ! auth()->user()->can('edit_catalogs')) {
             abort(403);
         }
 
@@ -807,14 +813,20 @@ class CatalogController extends Controller
             'name' => 'required|string|max:255|unique:catalogs,name,'.$catalog->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
+            'status' => 'sometimes|in:active,deactive',
         ]);
 
-        $catalog->update(['name' => $validated['name']]);
+        $catalog->update([
+            'name' => $validated['name'],
+            'status' => $validated['status'] ?? $catalog->status,
+        ]);
 
-        // Fulfills Whitelist Logic: Sync checkboxes to the pivot table [2, 4]
-        $catalog->items()->sync($request->input('items', []));
+        // FIX: Only sync items if the whitelist data is present in the request
+        if ($request->has('items')) {
+            $catalog->items()->sync($request->input('items', []));
+        }
 
-        return redirect()->route('catalogs.index')->with('success', 'Catalog items updated.');
+        return redirect()->route('catalogs.index')->with('success', 'Catalog updated successfully.');
     }
 
     public function destroy(Catalog $catalog)
@@ -900,14 +912,20 @@ class CategoryController extends Controller
             'name' => 'required|max:255|unique:categories,name,'.$category->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
+            'status' => 'sometimes|in:active,deactive',
         ]);
 
-        $category->update(['name' => $validated['name']]);
+        $category->update([
+            'name' => $validated['name'],
+            'status' => $validated['status'] ?? $category->status,
+        ]);
 
-        // Fulfills Requirement: Arrange items in groups
-        $category->items()->sync($request->input('items', []));
+        // FIX: Only sync if item list is present (prevents wiping during status toggle)
+        if ($request->has('items')) {
+            $category->items()->sync($request->input('items', []));
+        }
 
-        return redirect()->route('categories.index')->with('success', 'Category and item groupings updated.');
+        return redirect()->route('categories.index')->with('success', 'Category updated successfully.');
     }
 
     /**
@@ -915,7 +933,13 @@ class CategoryController extends Controller
      */
     public function destroy(Category $category)
     {
-        Gate::authorize('edit_items');
+        // Ensure only authorized staff can trigger deletion
+        \Illuminate\Support\Facades\Gate::authorize('edit_items');
+
+        // Fulfills Section 3.c.1 Guard
+        if (! $category->canBeDeleted()) {
+            return redirect()->back()->with('error', 'This category contains items linked to historical orders and cannot be deleted. Use "Deactivate" instead.');
+        }
 
         $category->delete();
 
@@ -1048,7 +1072,12 @@ class ItemController extends Controller
             'price' => 'required|numeric|min:0',
             'description' => 'nullable|string',
             'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+            'status' => 'sometimes|in:active,deactive',
         ]);
+
+        if (isset($validated['status']) && $validated['status'] === 'deactive' && $item->isInDraft()) {
+            return redirect()->back()->with('error', 'Item is currently in a customer draft and cannot be deactivated.');
+        }
 
         if ($request->hasFile('image')) {
             if ($item->image_path) {
@@ -1057,10 +1086,15 @@ class ItemController extends Controller
             $validated['image_path'] = $request->file('image')->store('items', 'public');
         }
 
+        $validated['status'] = $validated['status'] ?? $item->status;
         $item->update($validated);
-        $item->categories()->sync($request->input('categories', []));
 
-        return redirect()->route('items.index')->with('success', 'Item updated successfully.');
+        // FIX: Only sync if categories are provided (prevents clearing during status toggle)
+        if ($request->has('categories')) {
+            $item->categories()->sync($request->input('categories', []));
+        }
+
+        return redirect()->route('items.index')->with('success', 'Item details updated successfully.');
     }
 
     public function destroy(Item $item)
@@ -1637,7 +1671,7 @@ class Catalog extends Model
 {
     use LogsActivity;
 
-    protected $fillable = ['name'];
+    protected $fillable = ['name', 'status'];
 
     public function items()
     {
@@ -1672,7 +1706,7 @@ class Category extends Model
 {
     use LogsActivity;
 
-    protected $fillable = ['name'];
+    protected $fillable = ['name', 'status'];
 
     public function items()
     {
@@ -1682,6 +1716,17 @@ class Category extends Model
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+
+    /**
+     * Fulfills Section 3.c Deletion Restriction:
+     * A category can only be hard deleted if none of the items
+     * currently assigned to it have transaction history.
+     */
+    public function canBeDeleted(): bool
+    {
+        // Check if any items in this category exist in the order_items table
+        return ! $this->items()->whereHas('orderItems')->exists();
     }
 }
 
@@ -1741,7 +1786,7 @@ class Item extends Model
 {
     use LogsActivity;
 
-    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path'];
+    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path', 'status'];
 
     public function catalogs()
     {
@@ -1772,6 +1817,16 @@ class Item extends Model
     public function categories()
     {
         return $this->belongsToMany(Category::class);
+    }
+
+    /**
+     * Fulfills Section 3.c.2: Check if item is in any active draft.
+     */
+    public function isInDraft(): bool
+    {
+        return $this->orderItems()->whereHas('order', function ($query) {
+            $query->where('status', 'draft');
+        })->exists();
     }
 }
 
@@ -4503,6 +4558,38 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_02_10_000001_add_status_to_product_entities.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('items', function (Blueprint $table) {
+            $table->enum('status', ['active', 'deactive'])->default('active')->after('price');
+        });
+        Schema::table('catalogs', function (Blueprint $table) {
+            $table->enum('status', ['active', 'deactive'])->default('active')->after('name');
+        });
+        Schema::table('categories', function (Blueprint $table) {
+            $table->enum('status', ['active', 'deactive'])->default('active')->after('name');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('items', fn ($table) => $table->dropColumn('status'));
+        Schema::table('catalogs', fn ($table) => $table->dropColumn('status'));
+        Schema::table('categories', fn ($table) => $table->dropColumn('status'));
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
@@ -4833,82 +4920,111 @@ class RoleSeeder extends Seeder
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\catalogs\edit.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Edit Catalog: ') . $catalog->name }}
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('ðŸ“‚ Edit Folder: ') . $catalog->name }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
 
-                <form method="POST" action="{{ route('catalogs.update', $catalog->id) }}">
+                <form action="{{ route('catalogs.update', $catalog) }}" method="POST" class="space-y-8">
                     @csrf
                     @method('PUT')
 
-                    <!-- Catalog Name -->
-                    <div class="mb-8">
-                        <x-input-label for="name" :value="__('Catalog Name')" />
-                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full md:w-1/2"
+                    <div>
+                        <x-input-label for="name" :value="__('Catalog Folder Name')" />
+                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
                             :value="old('name', $catalog->name)" required />
-                        <x-input-error :messages="$errors->get('name')" class="mt-2" />
-                        <p class="mt-1 text-sm text-gray-500">
-                            {{ __('Changing this name will affect all customers assigned to this catalog.') }}</p>
+                        <p class="text-[10px] text-gray-500 mt-2 italic uppercase font-bold">
+                            {{ __('Changing this name affects all linked customers [Section 3.a.1].') }}</p>
                     </div>
 
-                    <hr class="my-8 border-gray-200">
-
-                    <!-- Whitelist Logic Interface -->
-                    <div class="mb-6">
-                        <h3 class="text-lg font-medium text-gray-900">{{ __('Item Whitelist Selection') }}</h3>
-                        <p class="text-sm text-gray-600 mb-4">
-                            {{ __('Select the products that should be visible to customers assigned to this catalog. Unchecked items will be hidden from their view.') }}
-                        </p>
+                    <div class="pt-6 border-t border-gray-100">
+                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-2">
+                            {{ __('Item Whitelist Selection') }}</h3>
+                        <p class="text-xs text-gray-500 mb-6">
+                            {{ __('Checked items will be visible to customers assigned to this folder.') }}</p>
 
                         @if ($items->isEmpty())
-                            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4">
-                                <p class="text-sm text-yellow-700">
-                                    {{ __('No items found in the system. Please create items first.') }}
-                                </p>
+                            <div
+                                class="p-6 bg-amber-50 rounded-xl border border-amber-100 text-amber-700 text-xs font-bold text-center uppercase">
+                                {{ __('No items found. Please create items in Product Management first.') }}
                             </div>
                         @else
-                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <div
+                                class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                                 @foreach ($items as $item)
-                                    <div
-                                        class="relative flex items-start p-4 border rounded-lg hover:bg-gray-50 transition-colors">
-                                        <div class="flex items-center h-5">
-                                            <input id="item_{{ $item->id }}" name="items[]"
-                                                value="{{ $item->id }}" type="checkbox"
-                                                {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}
-                                                class="focus:ring-indigo-500 h-5 w-5 text-indigo-600 border-gray-300 rounded">
-                                        </div>
-                                        <div class="ml-3 text-sm">
-                                            <label for="item_{{ $item->id }}"
-                                                class="font-medium text-gray-700 cursor-pointer">
-                                                <span class="block">{{ $item->name }}</span>
-                                                <span class="text-gray-500 text-xs uppercase tracking-tighter">SKU:
-                                                    {{ $item->sku }}</span>
-                                            </label>
-                                            <div class="mt-1 text-xs font-semibold text-indigo-600">
-                                                RM {{ number_format($item->price, 2) }}
+                                    <label
+                                        class="relative flex items-center p-4 border rounded-xl hover:bg-gray-50 transition shadow-sm cursor-pointer {{ in_array($item->id, $assignedItemIds) ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100' }}">
+                                        <input name="items[]" value="{{ $item->id }}" type="checkbox"
+                                            class="focus:ring-blue-500 h-5 w-5 text-blue-600 border-gray-300 rounded-lg mr-4"
+                                            {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}>
+                                        <div class="flex-1">
+                                            <div class="text-xs font-black text-blue-700 uppercase">{{ $item->sku }}
                                             </div>
+                                            <div class="text-sm font-bold text-gray-800 leading-tight">
+                                                {{ $item->name }}</div>
+                                            <div class="text-[10px] font-mono text-gray-500 mt-1">RM
+                                                {{ number_format($item->price, 2) }}</div>
                                         </div>
-                                    </div>
+                                    </label>
                                 @endforeach
                             </div>
                         @endif
                     </div>
 
-                    <div class="flex items-center justify-end mt-8 border-t pt-6">
+                    <div class="flex items-center justify-end pt-8 border-t border-gray-100">
                         <a href="{{ route('catalogs.index') }}"
-                            class="text-sm text-gray-600 hover:text-gray-900 underline mr-4">
-                            {{ __('Cancel') }}
-                        </a>
-                        <x-primary-button>
-                            {{ __('Update Catalog & Whitelist') }}
-                        </x-primary-button>
+                            class="text-sm text-gray-600 hover:text-gray-900 underline mr-6">{{ __('Cancel') }}</a>
+                        <x-primary-button
+                            class="bg-blue-700 hover:bg-blue-800">{{ __('Save Folder & Whitelist') }}</x-primary-button>
                     </div>
                 </form>
+
+                {{-- Lifecycle Section --}}
+                <div
+                    class="mt-16 bg-gray-800 p-8 rounded-3xl text-white flex flex-col md:flex-row justify-between items-center gap-8 shadow-2xl">
+                    <div>
+                        <h4 class="font-black uppercase text-sm tracking-widest text-amber-400">
+                            {{ __('Catalog Lifecycle') }}</h4>
+                        <p class="text-[10px] text-gray-400 mt-2">
+                            {{ __('Deactivating a folder hides ALL assigned products from linked customers immediately.') }}
+                        </p>
+                    </div>
+                    <div class="flex gap-3">
+                        <form action="{{ route('catalogs.update', $catalog) }}" method="POST">
+                            @csrf @method('PUT')
+                            <input type="hidden" name="name" value="{{ $catalog->name }}">
+
+                            @if ($catalog->status === 'active')
+                                <input type="hidden" name="status" value="deactive">
+                                <button type="submit"
+                                    class="px-6 py-2 bg-amber-500 hover:bg-amber-600 rounded-xl text-xs font-black uppercase transition shadow-md">
+                                    {{ __('â›” Deactivate Folder') }}
+                                </button>
+                            @else
+                                <input type="hidden" name="status" value="active">
+                                <button type="submit"
+                                    class="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-xl text-xs font-black uppercase transition shadow-md">
+                                    {{ __('âœ… Reactivate Folder') }}
+                                </button>
+                            @endif
+                        </form>
+
+                        @if ($catalog->canBeDeleted())
+                            <form action="{{ route('catalogs.destroy', $catalog) }}" method="POST">
+                                @csrf @method('DELETE')
+                                <button type="submit"
+                                    class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-md">
+                                    {{ __('ðŸ”¥ Hard Delete') }}
+                                </button>
+                            </form>
+                        @endif
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
@@ -4960,9 +5076,14 @@ class RoleSeeder extends Seeder
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
                         @foreach ($catalogs as $catalog)
-                            <tr>
+                            <tr
+                                class="transition-colors {{ $catalog->status === 'deactive' ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50' }}">
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                     {{ $catalog->name }}
+                                    @if ($catalog->status === 'deactive')
+                                        <span
+                                            class="ml-2 px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded">{{ __('Deactive') }}</span>
+                                    @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                     <span
@@ -4977,15 +5098,6 @@ class RoleSeeder extends Seeder
                                             {{ __('Manage Whitelist') }}
                                         </a>
                                     @endcan
-                                    {{-- <form action="{{ route('catalogs.destroy', $catalog->id) }}" method="POST"
-                                        class="inline">
-                                        @csrf
-                                        @method('DELETE')
-                                        <button type="submit" class="text-red-600 hover:text-red-900"
-                                            onclick="return confirm('Delete this catalog?')">
-                                            {{ __('Delete') }}
-                                        </button>
-                                    </form> --}}
                                 </td>
                             </tr>
                         @endforeach
@@ -5004,53 +5116,106 @@ class RoleSeeder extends Seeder
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\categories\edit.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
             {{ __('âš™ï¸ Manage Group:') }} {{ $category->name }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <form method="POST" action="{{ route('categories.update', $category) }}">
-                @csrf @method('PUT')
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
 
-                <div class="bg-white shadow sm:rounded-lg p-6 mb-6">
-                    <x-input-label for="name" :value="__('Rename Category')" />
-                    <x-text-input id="name" class="block mt-1 w-2/3 md:w-1/3" type="text" name="name"
-                        :value="old('name', $category->name)" required />
-                </div>
+                <form action="{{ route('categories.update', $category) }}" method="POST" class="space-y-8">
+                    @csrf
+                    @method('PUT')
 
-                <div class="bg-white shadow sm:rounded-lg p-6">
-                    <h3 class="font-bold text-gray-700 border-b pb-2 mb-4 uppercase text-xs tracking-widest">
-                        {{ __('Select Items for this Group') }}</h3>
+                    <div>
+                        <x-input-label for="name" :value="__('Group Name')" />
+                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                            :value="old('name', $category->name)" required />
+                        <x-input-error class="mt-2" :messages="$errors->get('name')" />
+                    </div>
 
-                    @if ($items->isEmpty())
-                        <p class="text-gray-500 italic">
-                            {{ __('No items available. Create items in Product Management first.') }}</p>
-                    @else
-                        <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                            @foreach ($items as $item)
-                                <label
-                                    class="relative flex items-center p-3 border rounded-lg hover:bg-gray-50 transition-colors cursor-pointer {{ in_array($item->id, $assignedItemIds) ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200' }}">
-                                    <input value="{{ $item->id }}" name="items[]" type="checkbox"
-                                        class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                                        {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}>
-                                    <div class="ml-3">
-                                        <div class="text-xs font-bold text-gray-900">{{ $item->name }}</div>
-                                        <div class="text-[10px] text-gray-400 font-mono">{{ $item->sku }}</div>
-                                    </div>
-                                </label>
-                            @endforeach
-                        </div>
-                    @endif
+                    <div class="pt-6 border-t border-gray-100">
+                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
+                            {{ __('Select Items for this Group') }}</h3>
 
-                    <div class="flex items-center justify-end mt-8 border-t pt-6">
+                        @if ($items->isEmpty())
+                            <p class="text-xs text-gray-500 italic uppercase">
+                                {{ __('No items available. Create items in Product Management first.') }}</p>
+                        @else
+                            <div
+                                class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                                @foreach ($items as $item)
+                                    <label
+                                        class="relative flex items-center p-3 border rounded-lg hover:bg-gray-50 transition-colors cursor-pointer {{ in_array($item->id, $assignedItemIds) ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200' }}">
+                                        <input name="items[]" value="{{ $item->id }}" type="checkbox"
+                                            class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                            {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}>
+                                        <div class="ml-3">
+                                            <div class="text-sm font-bold text-gray-800 leading-tight">
+                                                {{ $item->name }}</div>
+                                            <div class="text-[10px] font-black text-blue-600 uppercase">
+                                                {{ $item->sku }}</div>
+                                        </div>
+                                    </label>
+                                @endforeach
+                            </div>
+                        @endif
+                    </div>
+
+                    <div class="flex items-center justify-end pt-6 border-t border-gray-100">
                         <a href="{{ route('categories.index') }}"
                             class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
-                        <x-primary-button>{{ __('Save Changes') }}</x-primary-button>
+                        <x-primary-button
+                            class="bg-blue-700 hover:bg-blue-800">{{ __('Save Changes') }}</x-primary-button>
+                    </div>
+                </form>
+
+                {{-- Lifecycle Section: Fulfills Soft Deactivation & Secure Delete Requirements --}}
+                <div
+                    class="mt-12 bg-gray-50 p-6 rounded-2xl border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div>
+                        <h4 class="font-black uppercase text-xs text-gray-700">
+                            {{ __('Category Visibility & Lifecycle') }}</h4>
+                        <p class="text-[10px] text-gray-500 italic mt-1">
+                            {{ __('Deactivated categories are hidden from the customer catalog.') }}</p>
+                    </div>
+
+                    <div class="flex items-center gap-3">
+                        {{-- Visibility Toggle --}}
+                        <form action="{{ route('categories.update', $category) }}" method="POST">
+                            @csrf @method('PUT')
+                            <input type="hidden" name="name" value="{{ $category->name }}">
+                            <input type="hidden" name="status"
+                                value="{{ $category->status === 'active' ? 'deactive' : 'active' }}">
+
+                            <button type="submit"
+                                class="px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-md {{ $category->status === 'active' ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
+                                {{ $category->status === 'active' ? __('â›” Deactivate') : __('âœ… Reactivate') }}
+                            </button>
+                        </form>
+
+                        {{-- Hard Delete Guard --}}
+                        @if ($category->canBeDeleted())
+                            <form action="{{ route('categories.destroy', $category) }}" method="POST"
+                                onsubmit="return confirm('Hard delete this category? Items will remain but the grouping will be lost.');">
+                                @csrf @method('DELETE')
+                                <button type="submit"
+                                    class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-md">
+                                    {{ __('ðŸ”¥ Hard Delete') }}
+                                </button>
+                            </form>
+                        @else
+                            <div class="bg-white text-gray-400 px-4 py-2 rounded-xl text-[9px] font-black uppercase border border-gray-200 cursor-help"
+                                title="Locked: Items in this category have order history.">
+                                {{ __('ðŸ”’ Deletion Locked') }}
+                            </div>
+                        @endif
                     </div>
                 </div>
-            </form>
+
+            </div>
         </div>
     </div>
 </x-app-layout>
@@ -5060,78 +5225,71 @@ class RoleSeeder extends Seeder
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\categories\index.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
             {{ __('ðŸ“‚ Item Categories Management') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-
-                <!-- Quick Create Category -->
-                @can('create_items')
-                    <div class="bg-white p-6 shadow sm:rounded-lg h-fit">
-                        <h3 class="font-bold text-gray-700 mb-4 uppercase text-xs tracking-widest">
-                            {{ __('Create New Group') }}</h3>
-                        <form method="POST" action="{{ route('categories.store') }}">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+            {{-- Left Column: Create Form --}}
+            @can('create_items')
+                <div class="md:col-span-1">
+                    <div class="bg-white p-6 shadow-xl sm:rounded-2xl border border-gray-100">
+                        <h3 class="font-black text-sm uppercase text-gray-700 mb-4">{{ __('Create New Group') }}</h3>
+                        <form action="{{ route('categories.store') }}" method="POST">
                             @csrf
-                            <div>
+                            <div class="mb-4">
                                 <x-input-label for="name" :value="__('Category Name')" />
-                                <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
+                                <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
                                     required placeholder="e.g. Spare Parts" />
-                                <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                                <x-input-error class="mt-2" :messages="$errors->get('name')" />
                             </div>
-                            <div class="mt-4">
-                                <x-primary-button
-                                    class="w-full justify-center">{{ __('Create Category') }}</x-primary-button>
-                            </div>
+                            <x-primary-button class="w-full justify-center">{{ __('Create Category') }}</x-primary-button>
                         </form>
                     </div>
-                @endcan
+                </div>
+            @endcan
 
-                <!-- Categories Table -->
-                <div class="md:col-span-2 bg-white overflow-hidden shadow sm:rounded-lg p-6">
+            {{-- Right Column: Table List --}}
+            <div class="{{ auth()->user()->can('create_items') ? 'md:col-span-2' : 'md:col-span-3' }}">
+                <div class="bg-white shadow-xl sm:rounded-2xl border border-gray-100 overflow-hidden">
                     <table class="w-full text-left border-collapse">
                         <thead>
-                            <tr class="bg-gray-50 border-b">
-                                <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Group Name') }}
-                                </th>
-                                <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-center">
-                                    {{ __('Items') }}</th>
-                                <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
-                                    {{ __('Actions') }}</th>
+                            <tr class="bg-gray-800 text-white uppercase text-[10px] tracking-widest font-black">
+                                <th class="px-6 py-4">{{ __('Group Name') }}</th>
+                                <th class="px-6 py-4">{{ __('Items') }}</th>
+                                <th class="px-6 py-4 text-right">{{ __('Actions') }}</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody class="divide-y divide-gray-100">
                             @foreach ($categories as $category)
-                                <tr class="border-b hover:bg-gray-50 transition-colors">
-                                    <td class="px-4 py-4 text-sm font-bold text-gray-900">{{ $category->name }}</td>
-                                    <td class="px-4 py-4 text-center">
+                                <tr
+                                    class="transition-colors {{ $category->status === 'deactive' ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50' }}">
+                                    <td class="px-6 py-4 font-bold text-gray-800">
+                                        {{ $category->name }}
+                                        @if ($category->status === 'deactive')
+                                            <span
+                                                class="ml-2 px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded">{{ __('Deactive') }}</span>
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-4">
                                         <span
                                             class="px-2 py-1 rounded-full bg-blue-100 text-blue-800 text-[10px] font-black uppercase">
                                             {{ $category->items_count }} {{ __('Linked') }}
                                         </span>
                                     </td>
-                                    <td class="px-4 py-4 text-right flex justify-end space-x-2">
+                                    <td class="px-6 py-4 text-right">
                                         <a href="{{ route('categories.edit', $category) }}"
-                                            class="text-indigo-600 hover:text-indigo-900 text-xs font-black uppercase border border-indigo-200 px-3 py-1 rounded hover:bg-indigo-50">
+                                            class="text-indigo-600 hover:text-indigo-900 text-xs font-black uppercase border border-indigo-200 px-3 py-1 rounded-lg hover:bg-indigo-50 transition">
                                             {{ __('Manage Items') }}
                                         </a>
-                                        <form action="{{ route('categories.destroy', $category) }}" method="POST"
-                                            onsubmit="return confirm('Only the group will be deleted. Items will not be removed. Continue?')">
-                                            @csrf @method('DELETE')
-                                            <button type="submit"
-                                                class="text-red-600 hover:text-red-900 text-xs font-black uppercase border border-red-200 px-3 py-1 rounded hover:bg-red-50">
-                                                {{ __('Delete') }}
-                                            </button>
-                                        </form>
                                     </td>
                                 </tr>
                             @endforeach
                         </tbody>
                     </table>
-                    <div class="mt-4">
+                    <div class="p-4 bg-gray-50 border-t">
                         {{ $categories->links() }}
                     </div>
                 </div>
@@ -5218,29 +5376,28 @@ class RoleSeeder extends Seeder
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\items\edit.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Edit Product Item: ') . $item->sku }}
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('âš™ï¸ Edit Product: ') . $item->sku }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-                <!-- Requirement 7: Assets must handle multipart for image storage [3] -->
-                <form action="{{ route('items.update', $item->id) }}" method="POST" enctype="multipart/form-data">
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
+
+                <form action="{{ route('items.update', $item) }}" method="POST" enctype="multipart/form-data"
+                    class="space-y-6">
                     @csrf
                     @method('PUT')
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <!-- SKU (Unique Check handled by Controller [1]) -->
                         <div>
-                            <x-input-label for="sku" :value="__('Item SKU')" />
+                            <x-input-label for="sku" :value="__('SKU Code')" />
                             <x-text-input id="sku" name="sku" type="text"
-                                class="mt-1 block w-full uppercase" :value="old('sku', $item->sku)" required />
+                                class="mt-1 block w-full uppercase font-mono" :value="old('sku', $item->sku)" required />
                             <x-input-error class="mt-2" :messages="$errors->get('sku')" />
                         </div>
 
-                        <!-- Name -->
                         <div>
                             <x-input-label for="name" :value="__('Item Name')" />
                             <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
@@ -5248,43 +5405,29 @@ class RoleSeeder extends Seeder
                             <x-input-error class="mt-2" :messages="$errors->get('name')" />
                         </div>
 
-                        <!-- Price -->
                         <div>
-                            <x-input-label for="price" :value="__('Base Price (RM)')" />
+                            <x-input-label for="price" :value="__('Unit Price (RM)')" />
                             <x-text-input id="price" name="price" type="number" step="0.01"
                                 class="mt-1 block w-full" :value="old('price', $item->price)" required />
                             <x-input-error class="mt-2" :messages="$errors->get('price')" />
                         </div>
 
-                        <!-- Image Upload & Preview -->
                         <div>
-                            <x-input-label for="image" :value="__('Product Image')" />
-
-                            @if ($item->image_path)
-                                <div class="mb-2">
-                                    <p class="text-xs text-gray-500 mb-1">Current Image:</p>
-                                    <img src="{{ asset('storage/' . $item->image_path) }}"
-                                        class="h-20 w-20 object-cover rounded border">
-                                </div>
-                            @endif
-
-                            <input type="file" name="image" id="image"
-                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm"
+                            <x-input-label for="image" :value="__('Update Image (Max 2MB)')" />
+                            <input type="file" id="image" name="image"
+                                class="mt-1 block w-full text-xs text-gray-500 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 focus:outline-none"
                                 accept="image/*">
-                            <p class="text-xs text-gray-500 mt-1">Max 2MB. Uploading a new image will replace the old
-                                one [2].</p>
-                            <x-input-error class="mt-2" :messages="$errors->get('image')" />
                         </div>
                     </div>
 
-                    <div class="mt-6">
-                        <x-input-label :value="__('Assign Categories')" />
-                        <div class="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
+                    <div>
+                        <x-input-label :value="__('Product Categories')" />
+                        <div class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
                             @foreach (\App\Models\Category::all() as $category)
                                 <label
-                                    class="flex items-center text-xs font-bold uppercase text-gray-700 bg-gray-50 p-2 border rounded cursor-pointer hover:bg-gray-100">
+                                    class="flex items-center text-[10px] font-black uppercase text-gray-700 bg-gray-50 p-2 border rounded-lg cursor-pointer hover:bg-gray-100 transition shadow-sm">
                                     <input type="checkbox" name="categories[]" value="{{ $category->id }}"
-                                        class="rounded border-gray-300 text-indigo-600 mr-2"
+                                        class="rounded border-gray-300 text-blue-600 mr-2"
                                         {{ $item->categories->contains($category->id) ? 'checked' : '' }}>
                                     {{ $category->name }}
                                 </label>
@@ -5292,22 +5435,75 @@ class RoleSeeder extends Seeder
                         </div>
                     </div>
 
-                    <!-- Description -->
-                    <div class="mt-6">
-                        <x-input-label for="description" :value="__('Description')" />
-                        <textarea id="description" name="description" rows="4"
-                            class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">{{ old('description', $item->description) }}</textarea>
-                        <x-input-error class="mt-2" :messages="$errors->get('description')" />
+                    <div>
+                        <x-input-label for="description" :value="__('Technical Description')" />
+                        <textarea id="description" name="description" rows="3"
+                            class="mt-1 block w-full border-gray-300 focus:border-blue-500 focus:ring-blue-500 rounded-xl shadow-sm text-sm">{{ old('description', $item->description) }}</textarea>
                     </div>
 
-                    <div class="flex items-center justify-end mt-6 border-t pt-4">
+                    <div class="flex items-center justify-end pt-4 border-t border-gray-100">
                         <a href="{{ route('items.index') }}"
-                            class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
-                        <x-primary-button>
-                            {{ __('Update Product Item') }}
-                        </x-primary-button>
+                            class="text-sm text-gray-600 hover:text-gray-900 underline mr-6">{{ __('Cancel') }}</a>
+                        <x-primary-button
+                            class="bg-blue-700 hover:bg-blue-800">{{ __('Update Product Details') }}</x-primary-button>
                     </div>
                 </form>
+
+                {{-- Lifecycle Section: Fulfills Soft Deactivation Requirement --}}
+                <div class="mt-12 pt-8 border-t-2 border-dashed border-gray-100">
+                    <div
+                        class="bg-gray-50 p-6 rounded-2xl border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-6">
+                        <div>
+                            <h3 class="text-gray-800 font-black uppercase text-sm">
+                                {{ __('Item Visibility & Lifecycle') }}</h3>
+                            <p class="text-gray-500 text-[10px] mt-2 italic">
+                                {{ __('Deactivated items are hidden from customers but remain in historical order records [Section 3.c].') }}
+                            </p>
+                        </div>
+
+                        <div class="flex items-center gap-3">
+                            {{-- Status Toggle Form --}}
+                            <form action="{{ route('items.update', $item) }}" method="POST">
+                                @csrf @method('PUT')
+                                <input type="hidden" name="sku" value="{{ $item->sku }}">
+                                <input type="hidden" name="name" value="{{ $item->name }}">
+                                <input type="hidden" name="price" value="{{ $item->price }}">
+
+                                @if ($item->status === 'active')
+                                    <input type="hidden" name="status" value="deactive">
+                                    <button type="submit"
+                                        class="px-6 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black uppercase transition shadow-lg">
+                                        {{ __('â›” Deactivate Item') }}
+                                    </button>
+                                @else
+                                    <input type="hidden" name="status" value="active">
+                                    <button type="submit"
+                                        class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-black uppercase transition shadow-lg">
+                                        {{ __('âœ… Reactivate Item') }}
+                                    </button>
+                                @endif
+                            </form>
+
+                            {{-- Hard Delete Guard [Section 3.c] --}}
+                            @if ($item->canBeDeleted())
+                                <form action="{{ route('items.destroy', $item) }}" method="POST"
+                                    onsubmit="return confirm('Hard delete this item permanently?');">
+                                    @csrf @method('DELETE')
+                                    <button type="submit"
+                                        class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-lg">
+                                        {{ __('ðŸ”¥ Hard Delete') }}
+                                    </button>
+                                </form>
+                            @else
+                                <div class="bg-white text-gray-400 px-4 py-2 rounded-xl text-[9px] font-black uppercase border border-gray-200 cursor-help"
+                                    title="Locked due to order history.">
+                                    {{ __('ðŸ”’ Deletion Locked') }}
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
@@ -5319,106 +5515,91 @@ class RoleSeeder extends Seeder
 <x-app-layout>
     <x-slot name="header">
         <div class="flex justify-between items-center">
-            <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-                {{ __('Product Item Master List') }}
+            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                {{ __('ðŸ“¦ Product Item Master List') }}
             </h2>
-
-            {{-- <!-- Requirement: Show Create btn ONLY if View AND Create are ticked -->
-            @if (auth()->user()->can('view_items') && auth()->user()->can('create_items'))
-                <a href="{{ route('items.create') }}"
-                    class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">
-                    + {{ __('Create New Item') }}
-                </a>
-            @endif --}}
         </div>
     </x-slot>
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-xl sm:rounded-2xl border border-gray-100">
 
-            @can('create_items')
-                <div class="flex justify-end mb-4">
+                @can('create_items')
                     <a href="{{ route('items.create') }}"
-                        class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-md">
                         + {{ __('Create New Item') }}
                     </a>
+                @endcan
+
+                {{-- Search Filter --}}
+                <div class="p-6 border-b border-gray-50 bg-gray-50/50">
+                    <form action="{{ route('items.index') }}" method="GET" class="flex gap-4">
+                        <x-text-input name="search" value="{{ request('search') }}" placeholder="Search SKU or Name..."
+                            class="flex-1" />
+                        <x-primary-button>{{ __('Filter') }}</x-primary-button>
+                        @if (request('search'))
+                            <a href="{{ route('items.index') }}"
+                                class="inline-flex items-center px-4 py-2 bg-gray-200 border border-transparent rounded-md font-semibold text-xs text-gray-700 uppercase tracking-widest hover:bg-gray-300 transition">
+                                {{ __('Clear') }}
+                            </a>
+                        @endif
+                    </form>
                 </div>
-            @endcan
 
-            <!-- Search Toolbar -->
-            <div class="mb-6">
-                <form method="GET" action="{{ route('items.index') }}" class="flex gap-4">
-                    <x-text-input name="search" placeholder="Search SKU or Name..." class="w-full" :value="request('search')" />
-                    <x-primary-button>{{ __('Filter') }}</x-primary-button>
-                    @if (request('search'))
-                        <a href="{{ route('items.index') }}"
-                            class="bg-gray-200 px-4 py-2 rounded flex items-center text-sm">Clear</a>
-                    @endif
-                </form>
-            </div>
-
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                                {{ __('Image') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                                {{ __('SKU / Name') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                                {{ __('Price') }}</th>
-                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
-                                {{ __('Actions') }}</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        @foreach ($items as $item)
-                            <tr>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    @if ($item->image_path)
-                                        <img src="{{ asset('storage/' . $item->image_path) }}"
-                                            class="h-12 w-12 object-cover rounded border">
-                                    @else
-                                        <div
-                                            class="h-12 w-12 bg-gray-100 flex items-center justify-center text-xs text-gray-400">
-                                            No Image</div>
-                                    @endif
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <div class="text-sm font-bold text-indigo-600">{{ $item->sku }}</div>
-                                    <div class="text-sm text-gray-900">{{ $item->name }}</div>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                    RM {{ number_format($item->price, 2) }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                    @foreach ($items as $item)
-                                        <div class="flex items-center space-x-4">
-                                            <a href="{{ route('items.edit', $item) }}"
-                                                class="text-indigo-600 hover:text-indigo-900 font-bold uppercase text-xs">{{ __('Edit') }}</a>
-
-                                            @if ($item->canBeDeleted())
-                                                <form action="{{ route('items.destroy', $item) }}" method="POST"
-                                                    onsubmit="return confirm('Hard delete this item?');">
-                                                    @csrf @method('DELETE')
-                                                    <button type="submit"
-                                                        class="text-red-600 hover:text-red-900 font-bold uppercase text-xs">{{ __('Delete') }}</button>
-                                                </form>
-                                            @else
-                                                <span
-                                                    class="text-gray-400 text-[10px] font-black uppercase italic cursor-help"
-                                                    title="Item is linked to orders and locked.">
-                                                    {{ __('Locked') }}
-                                                </span>
-                                            @endif
-                                        </div>
-                                    @endforeach
-                                </td>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-800 text-white uppercase text-[10px] tracking-widest font-black">
+                                <th class="px-6 py-4">{{ __('Image') }}</th>
+                                <th class="px-6 py-4">{{ __('SKU / Name') }}</th>
+                                <th class="px-6 py-4">{{ __('Price') }}</th>
+                                <th class="px-6 py-4 text-right">{{ __('Actions') }}</th>
                             </tr>
-                        @endforeach
-                    </tbody>
-                </table>
-                <div class="p-4">{{ $items->links() }}</div>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            @foreach ($items as $item)
+                                <tr
+                                    class="transition-colors {{ $item->status === 'deactive' ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50' }}">
+                                    <td class="px-6 py-4">
+                                        @if ($item->image_path)
+                                            <img src="{{ asset('storage/' . $item->image_path) }}"
+                                                class="h-12 w-12 object-cover rounded-lg border shadow-sm">
+                                        @else
+                                            <div
+                                                class="h-12 w-12 bg-gray-100 flex items-center justify-center rounded-lg text-[10px] text-gray-400 font-bold uppercase border border-dashed border-gray-300">
+                                                {{ __('No Image') }}
+                                            </div>
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <div class="text-xs font-black text-blue-600 uppercase">{{ $item->sku }}
+                                        </div>
+                                        <div class="text-sm font-bold text-gray-800">{{ $item->name }}</div>
+                                        @if ($item->status === 'deactive')
+                                            <span
+                                                class="mt-1 inline-block px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded shadow-sm">
+                                                {{ __('Deactivated') }}
+                                            </span>
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-4 font-mono text-sm font-bold text-gray-700">
+                                        RM {{ number_format($item->price, 2) }}
+                                    </td>
+                                    <td class="px-6 py-4 text-right">
+                                        <a href="{{ route('items.edit', $item) }}"
+                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase hover:bg-gray-100 transition shadow-sm">
+                                            {{ __('Edit Item') }}
+                                        </a>
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+                <div class="p-6 border-t border-gray-50">
+                    {{ $items->links() }}
+                </div>
             </div>
         </div>
     </div>
@@ -7554,240 +7735,256 @@ $classes = ($active ?? false)
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\users\edit.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Edit User') }}
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('âš™ï¸ Edit User: ') }} {{ $user->name }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
 
-                <form method="POST" action="{{ route('users.update', $user->id) }}">
+                {{-- PRIMARY UPDATE FORM [Section 3.a.1] --}}
+                <form action="{{ route('users.update', $user) }}" method="POST" class="space-y-6">
                     @csrf
-                    @method('PUT') {{-- Required for Update --}}
+                    @method('PUT')
 
-                    <div class="mb-4">
-                        <x-input-label for="name" :value="__('Full Name')" />
-                        <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
-                            :value="$user->name" required />
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {{-- Full Name --}}
+                        <div>
+                            <x-input-label for="name" :value="__('Full Name')" />
+                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                :value="old('name', $user->name)" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('name')" />
+                        </div>
+
+                        {{-- Login ID (Locked for Audit) --}}
+                        <div>
+                            <x-input-label for="login_id" :value="__('Login ID')" />
+                            <x-text-input id="login_id" type="text"
+                                class="mt-1 block w-full bg-gray-50 cursor-not-allowed" :value="$user->login_id" disabled />
+                            <p class="text-[10px] text-gray-400 mt-1 italic">
+                                {{ __('Login ID cannot be modified for audit integrity.') }}</p>
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="login_id" :value="__('Login ID')" />
-                        <x-text-input id="login_id" class="block mt-1 w-full bg-gray-100" type="text"
-                            :value="$user->login_id" disabled />
-                        <span class="text-xs text-gray-500">Login ID cannot be changed.</span>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {{-- Email Address --}}
+                        <div>
+                            <x-input-label for="email" :value="__('Email Address')" />
+                            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
+                                :value="old('email', $user->email)" required />
+                            <x-input-error class="mt-2" :messages="$errors->get('email')" />
+                        </div>
+
+                        {{-- Account Status (Locked for Admin) --}}
+                        <div>
+                            <x-input-label for="status" :value="__('Account Status')" />
+                            <select id="status" name="status"
+                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                                @if ($user->hasRole('admin')) disabled @endif>
+                                <option value="active"
+                                    {{ old('status', $user->status) === 'active' ? 'selected' : '' }}>Active</option>
+                                <option value="deactive"
+                                    {{ old('status', $user->status) === 'deactive' ? 'selected' : '' }}>Deactive
+                                </option>
+                            </select>
+                            @if ($user->hasRole('admin'))
+                                <input type="hidden" name="status" value="active">
+                                <p class="text-[10px] text-amber-600 mt-1 font-bold italic">
+                                    {{ __('Reason: System Admin must remain active to prevent management lockout.') }}
+                                </p>
+                            @endif
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="email" :value="__('Email')" />
-                        <x-text-input id="email" class="block mt-1 w-full" type="email" name="email"
-                            :value="$user->email" required />
-                    </div>
-
-                    <!-- ROLE SECTION -->
-                    <div class="mb-4">
-                        <x-input-label for="role" :value="__('User Role')" />
-                        <input type="hidden" name="role" value="{{ $user->roles->first()->name }}">
-                        <select id="role"
+                    {{-- Role Assignment (Read-Only) --}}
+                    <div>
+                        <x-input-label for="role" :value="__('Assigned Role')" />
+                        <select id="role" name="role"
                             class="block mt-1 w-full border-gray-300 bg-gray-100 cursor-not-allowed rounded-md shadow-sm"
                             disabled>
                             @foreach ($roles as $role)
-                                <option value="{{ $role->name }}" @if ($user->hasRole($role->name)) selected @endif>
+                                <option value="{{ $role->name }}" {{ $user->hasRole($role->name) ? 'selected' : '' }}>
                                     {{ ucfirst(str_replace('_', ' ', $role->name)) }}
                                 </option>
                             @endforeach
                         </select>
-                        <p class="text-[10px] text-red-600 mt-1 uppercase font-bold">
+                        {{-- Hidden field to satisfy validation since disabled selects don't submit --}}
+                        <input type="hidden" name="role" value="{{ $user->roles->first()->name ?? '' }}">
+                        <p class="text-[10px] text-gray-400 mt-1 italic">
                             {{ __('Role cannot be changed after creation for security integrity.') }}</p>
-                        {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
-                        @if ($user->hasRole('admin'))
-                            <p class="text-xs text-red-500 mt-1 italic">Reason: The System Admin role is permanent to
-                                ensure developer-level access.</p>
-                            <input type="hidden" name="role" value="admin">
-                        @endif
-                    </div>
-
-                    <!-- STATUS SECTION -->
-                    <div class="mb-4">
-                        <x-input-label for="status" :value="__('Status')" />
-                        <select name="status" id="status"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
-                            @if ($user->hasRole('admin')) disabled @endif>
-                            <option value="active" @if ($user->status === 'active') selected @endif>Active</option>
-                            <option value="deactive" @if ($user->status === 'deactive') selected @endif>Deactive</option>
-                        </select>
-                        {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
-                        @if ($user->hasRole('admin'))
-                            <p class="text-xs text-red-500 mt-1 italic">Reason: System Admin must remain active to
-                                prevent management lockout.</p>
-                            <input type="hidden" name="status" value="active">
-                        @endif
                     </div>
 
                     @if ($user->hasRole('customer'))
-                        <div class="mb-8 border-t pt-6">
-                            <h3 class="text-lg font-medium text-gray-900 mb-4">{{ __('Company & PIC Information') }}
-                            </h3>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {{-- Company & PIC Information --}}
+                        <div class="pt-6 border-t border-gray-100">
+                            <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
+                                {{ __('Company & PIC Information') }}</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
                                     <x-input-label for="company_name" :value="__('Company Name')" />
                                     <x-text-input id="company_name" name="company_name" type="text"
                                         class="mt-1 block w-full" :value="old('company_name', $user->details->company_name ?? '')" />
                                 </div>
-
                                 <div>
                                     <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
                                     <x-text-input id="company_reg_no" name="company_reg_no" type="text"
                                         class="mt-1 block w-full" :value="old('company_reg_no', $user->details->company_reg_no ?? '')" />
                                 </div>
-
                                 <div>
                                     <x-input-label for="pic_name" :value="__('PIC Name')" />
                                     <x-text-input id="pic_name" name="pic_name" type="text"
                                         class="mt-1 block w-full" :value="old('pic_name', $user->details->pic_name ?? '')" />
                                 </div>
-
                                 <div>
                                     <x-input-label for="pic_phone" :value="__('PIC Phone')" />
                                     <x-text-input id="pic_phone" name="pic_phone" type="text"
                                         class="mt-1 block w-full" :value="old('pic_phone', $user->details->pic_phone ?? '')" />
                                 </div>
                             </div>
+                        </div>
 
-                            <div class="mt-4">
-                                <x-input-label for="delivery_address" :value="__('Delivery Address')" />
-                                <textarea id="delivery_address" name="delivery_address"
-                                    class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">{{ old('delivery_address', $user->details->delivery_address ?? '') }}</textarea>
+                        {{-- Logistics --}}
+                        <div class="pt-6">
+                            <x-input-label for="delivery_address" :value="__('Delivery Address')" />
+                            <textarea id="delivery_address" name="delivery_address" rows="3"
+                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm text-sm">{{ old('delivery_address', $user->details->delivery_address ?? '') }}</textarea>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div>
+                                <x-input-label for="city" :value="__('City')" />
+                                <x-text-input id="city" name="city" type="text" class="mt-1 block w-full"
+                                    :value="old('city', $user->details->city ?? '')" />
                             </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                                <div>
-                                    <x-input-label for="city" :value="__('City')" />
-                                    <x-text-input id="city" name="city" type="text" class="mt-1 block w-full"
-                                        :value="old('city', $user->details->city ?? '')" />
-                                </div>
-                                <div>
-                                    <x-input-label for="state" :value="__('State')" />
-                                    <x-text-input id="state" name="state" type="text" class="mt-1 block w-full"
-                                        :value="old('state', $user->details->state ?? '')" />
-                                </div>
-                                <div>
-                                    <x-input-label for="postal_code" :value="__('Postal Code')" />
-                                    <x-text-input id="postal_code" name="postal_code" type="text"
-                                        class="mt-1 block w-full" :value="old('postal_code', $user->details->postal_code ?? '')" />
-                                </div>
+                            <div>
+                                <x-input-label for="state" :value="__('State')" />
+                                <x-text-input id="state" name="state" type="text" class="mt-1 block w-full"
+                                    :value="old('state', $user->details->state ?? '')" />
+                            </div>
+                            <div>
+                                <x-input-label for="postal_code" :value="__('Postal Code')" />
+                                <x-text-input id="postal_code" name="postal_code" type="text"
+                                    class="mt-1 block w-full" :value="old('postal_code', $user->details->postal_code ?? '')" />
                             </div>
                         </div>
                     @endif
 
-                    <!-- ASSIGNED CS REPRESENTATIVE SECTION -->
-                    @can('reassign_customers')
-                        <div class="mb-4">
-                            <x-input-label for="assigned_cs_id" :value="__('Assigned CS Representative')" />
-                            <select name="assigned_cs_id" id="assigned_cs_id"
-                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
-                                @if ($user->hasRole('admin')) disabled @endif>
-                                <option value="">-- No CS Assigned --</option>
-                                @foreach ($csStaffMembers as $staff)
-                                    <option value="{{ $staff->id }}"
-                                        {{ $user->assigned_cs_id == $staff->id ? 'selected' : '' }}>
-                                        {{ $staff->name }} ({{ $staff->roles->first()->name ?? 'No Role' }})
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-gray-100">
+                        {{-- CS Staff Assignment [Section 5.a] --}}
+                        @can('reassign_customers')
+                            <div>
+                                <x-input-label for="assigned_cs_id" :value="__('Assigned CS Staff')" />
+                                <select id="assigned_cs_id" name="assigned_cs_id"
+                                    class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
+                                    @if ($user->hasRole('admin')) disabled @endif>
+                                    <option value="">-- No CS Assigned --</option>
+                                    @foreach ($csStaffMembers as $staff)
+                                        <option value="{{ $staff->id }}"
+                                            {{ old('assigned_cs_id', $user->assigned_cs_id) == $staff->id ? 'selected' : '' }}>
+                                            {{ $staff->name }} ({{ $staff->roles->first()->name ?? 'No Role' }})
+                                        </option>
+                                    @endforeach
+                                </select>
+                                @if ($user->hasRole('admin'))
+                                    <p class="text-[10px] text-gray-400 mt-1 italic">
+                                        {{ __('Reason: Admins cannot be assigned to CS Staff as they oversee the entire system.') }}
+                                    </p>
+                                @endif
+                            </div>
+                        @endcan
+
+                        {{-- Catalog Folder Selection [Section 3.a.1] --}}
+                        @if ($user->hasRole('customer'))
+                            <div>
+                                <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
+                                <select id="catalog_id" name="catalog_id"
+                                    class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
+                                    <option value="">{{ __('-- No Catalog (Will inherit from Parent) --') }}
                                     </option>
-                                @endforeach
-                            </select>
-                            {{-- CRITICAL: Reason for Admin --}}
-                            @if ($user->hasRole('admin'))
-                                <p class="text-xs text-red-500 mt-1 italic">Reason: Admins cannot be assigned to CS Staff
-                                    as they oversee the entire system.</p>
-                            @endif
-                        </div>
-                    @endcan
-
-                    @if ($user->hasRole('customer'))
-                        <div class="mt-4">
-                            <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
-                            <select name="catalog_id" id="catalog_id"
-                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
-                                <option value="">{{ __('-- No Catalog (Will inherit from Parent) --') }}
-                                </option>
-                                @foreach ($catalogs as $catalog)
-                                    <option value="{{ $catalog->id }}"
-                                        {{ $user->catalog_id == $catalog->id ? 'selected' : '' }}>
-                                        {{ $catalog->name }}
-                                    </option>
-                                @endforeach
-                            </select>
-                        </div>
-                    @endif
-
-                    <div class="mb-4">
-                        <x-input-label for="password" :value="__('New Password (Optional)')" />
-                        <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"
-                            autocomplete="new-password" />
-                        <p class="text-xs text-gray-500 mt-1">Leave blank to keep the current password.</p>
-                        <x-input-error :messages="$errors->get('password')" class="mt-2" />
-                    </div>
-
-                    <div class="flex items-center gap-4">
-                        <x-primary-button>{{ __('Update User') }}</x-primary-button>
-
-                        <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
-                            class="text-sm text-gray-600 hover:text-gray-900 underline">
-                            {{ __('Cancel') }}
-                        </a>
-
-                        @if ($user->hasRole('customer') && is_null($user->parent_id))
-                            <div class="mt-6 p-4 bg-gray-50 border rounded-lg flex justify-between items-center">
-                                <div>
-                                    <h4 class="font-bold text-sm text-gray-900">{{ __('Branch Management') }}</h4>
-                                    <p class="text-xs text-gray-500">
-                                        {{ __('Create a sub-account that inherits this HQ\'s settings.') }}</p>
-                                </div>
-                                <a href="{{ route('users.create', ['parent_id' => $user->id]) }}"
-                                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
-                                    {{ __('+ Add New Branch') }}
-                                </a>
+                                    @foreach ($catalogs as $catalog)
+                                        <option value="{{ $catalog->id }}"
+                                            {{ old('catalog_id', $user->catalog_id) == $catalog->id ? 'selected' : '' }}>
+                                            {{ $catalog->name }}
+                                        </option>
+                                    @endforeach
+                                </select>
                             </div>
                         @endif
-
-                        {{-- Fulfills Section 3.c: Standardized Hard Delete for ALL eligible roles --}}
-                        @can('edit_users')
-                            @if ($user->canBeDeleted())
-                                <div class="mt-12 pt-8 border-t border-red-100">
-                                    <div
-                                        class="bg-red-50 p-6 rounded-xl border border-red-100 flex flex-col md:flex-row justify-between items-center">
-                                        <div>
-                                            <h3 class="text-red-800 font-black uppercase text-sm">
-                                                {{ __('Dangerous: Remove Account') }}</h3>
-                                            <p class="text-red-600 text-xs mt-1">
-                                                {{ is_null($user->parent_id)
-                                                    ? __('Deleting this HQ will also permanently remove all its associated branches.')
-                                                    : __('This will permanently remove this account.') }}
-                                            </p>
-                                        </div>
-                                        <form action="{{ route('users.destroy', $user) }}" method="POST"
-                                            onsubmit="return confirm('Are you absolutely sure? This cannot be undone.');">
-                                            @csrf
-                                            @method('DELETE')
-                                            <button type="submit"
-                                                class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg text-xs font-black uppercase transition shadow-lg">
-                                                {{ __('Confirm Hard Delete') }}
-                                            </button>
-                                        </form>
-                                    </div>
-                                </div>
-                            @else
-                                {{-- Fulfills Section 3.c.3: UI Warning for Locked Records --}}
-                                <div class="mt-12 pt-8 border-t border-gray-100 italic text-gray-400 text-xs text-center">
-                                    {{ __('This account is unable to hard delete because it is linked to historical order records.') }}
-                                </div>
-                            @endif
-                        @endcan
                     </div>
-                </form>
+
+                    {{-- Security: Password Reset --}}
+                    <div class="pt-6 border-t border-gray-100">
+                        <x-input-label for="password" :value="__('New Password (Optional)')" />
+                        <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
+                            autocomplete="new-password" />
+                        <p class="text-[10px] text-gray-400 mt-1 italic">
+                            {{ __('Leave blank to keep the current password.') }}</p>
+                        <x-input-error class="mt-2" :messages="$errors->get('password')" />
+                    </div>
+
+                    <div class="flex items-center justify-end pt-6 border-t border-gray-100">
+                        <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
+                            class="text-sm text-gray-600 hover:text-gray-900 underline mr-6">
+                            {{ __('Cancel') }}
+                        </a>
+                        <x-primary-button>
+                            {{ __('Update User Account') }}
+                        </x-primary-button>
+                    </div>
+                </form> {{-- ARCHITECTURE FIX: Primary Update Form explicitly closed here --}}
+
+                {{-- BRANCH MANAGEMENT SECTION [Section 3.a.2] --}}
+                @if ($user->hasRole('customer') && is_null($user->parent_id))
+                    <div
+                        class="mt-12 p-6 bg-gray-50 rounded-xl border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-4">
+                        <div>
+                            <h3 class="text-gray-800 font-black uppercase text-sm">{{ __('Branch Management') }}</h3>
+                            <p class="text-gray-600 text-[10px] mt-1 italic">
+                                {{ __('Create a sub-account that inherits this HQ\'s settings.') }}</p>
+                        </div>
+                        <a href="{{ route('users.create', ['parent_id' => $user->id]) }}"
+                            class="inline-block bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-sm">
+                            + {{ __('Add New Branch') }}
+                        </a>
+                    </div>
+                @endif
+
+                {{-- DANGEROUS ACTIONS SECTION [Section 3.c] --}}
+                @can('edit_users')
+                    <div class="mt-12 pt-8 border-t-2 border-dashed border-gray-100">
+                        @if ($user->canBeDeleted())
+                            <div
+                                class="bg-red-50 p-6 rounded-2xl border border-red-100 flex flex-col md:flex-row justify-between items-center gap-6">
+                                <div>
+                                    <h3 class="text-red-800 font-black uppercase text-sm leading-none">
+                                        {{ __('Dangerous: Remove Account') }}</h3>
+                                    <p class="text-red-600 text-[10px] mt-2 italic">
+                                        {{ is_null($user->parent_id)
+                                            ? __('Deleting this HQ will also permanently remove all associated branches [Section 3.c.1].')
+                                            : __('This will permanently remove this specific account.') }}
+                                    </p>
+                                </div>
+                                <form action="{{ route('users.destroy', $user) }}" method="POST"
+                                    onsubmit="return confirm('Are you absolutely sure? This cannot be undone.');">
+                                    @csrf
+                                    @method('DELETE')
+                                    <button type="submit"
+                                        class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-lg">
+                                        {{ __('Confirm Hard Delete') }}
+                                    </button>
+                                </form>
+                            </div>
+                        @else
+                            <div class="p-6 bg-gray-50 rounded-2xl border border-gray-100 text-center">
+                                <p class="text-gray-400 text-[10px] font-black uppercase tracking-widest italic">
+                                    {{ __('ðŸ”’ This account is locked from deletion because it is linked to historical order records [Section 3.c].') }}
+                                </p>
+                            </div>
+                        @endif
+                    </div>
+                @endcan
 
             </div>
         </div>
@@ -13543,12 +13740,10 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v11)
+## Update details(v12)
 
-* Added a filed(DB table) that can point a branch to its HQ, if the CS handle the HQ also handle all the HQ branch.
-* "Create User" form will showing the company input details when role is "Customer".
-* Added "Product Categories" feature.
-* Updated to every customer can have 1 pending order at once.
+* Solve the bug that unable to add item into "Catalog" & "Category".
+* Solve the bug that if set "Deactive" and click back to "Reactivate" at "Catalog" & "Category" it will clear the list.
 
 --- END_FILE ---
 

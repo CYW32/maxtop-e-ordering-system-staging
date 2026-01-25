@@ -64,17 +64,20 @@ class CategoryController extends Controller
             'name' => 'required|max:255|unique:categories,name,'.$category->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
-            'status' => 'required|in:active,deactive', // Added status validation
+            'status' => 'sometimes|in:active,deactive',
         ]);
 
         $category->update([
             'name' => $validated['name'],
-            'status' => $validated['status'], // Update status
+            'status' => $validated['status'] ?? $category->status,
         ]);
 
-        $category->items()->sync($request->input('items', []));
+        // FIX: Only sync if item list is present (prevents wiping during status toggle)
+        if ($request->has('items')) {
+            $category->items()->sync($request->input('items', []));
+        }
 
-        return redirect()->route('categories.index')->with('success', 'Category updated.');
+        return redirect()->route('categories.index')->with('success', 'Category updated successfully.');
     }
 
     /**

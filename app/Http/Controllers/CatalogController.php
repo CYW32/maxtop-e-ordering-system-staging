@@ -73,17 +73,20 @@ class CatalogController extends Controller
             'name' => 'required|string|max:255|unique:catalogs,name,'.$catalog->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
-            'status' => 'required|in:active,deactive', // Added status validation
+            'status' => 'sometimes|in:active,deactive',
         ]);
 
         $catalog->update([
             'name' => $validated['name'],
-            'status' => $validated['status'], // Update status
+            'status' => $validated['status'] ?? $catalog->status,
         ]);
 
-        $catalog->items()->sync($request->input('items', []));
+        // FIX: Only sync items if the whitelist data is present in the request
+        if ($request->has('items')) {
+            $catalog->items()->sync($request->input('items', []));
+        }
 
-        return redirect()->route('catalogs.index')->with('success', 'Catalog updated.');
+        return redirect()->route('catalogs.index')->with('success', 'Catalog updated successfully.');
     }
 
     public function destroy(Catalog $catalog)

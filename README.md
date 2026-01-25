@@ -60,11 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v11)
+## Update details(v12)
 
-* Added a filed(DB table) that can point a branch to its HQ, if the CS handle the HQ also handle all the HQ branch.
-* "Create User" form will showing the company input details when role is "Customer".
-* Added "Product Categories" feature.
-* Updated to every customer can have 1 pending order at once.
-* Added the "Hard delete" options in item & category & catalog & user if they are not having any orders before.
-* Added the "Deactivate" field to item & category & catalog table for hide the unvailable product to customer and not crashing the order history.
+* Solve the bug that unable to add item into "Catalog" & "Category".
+* Solve the bug that if set "Deactive" and click back to "Reactivate" at "Catalog" & "Category" it will clear the list.
+* Slove the "Update User" button will hard remove the current edit user.
+* Solve the it will show "Company & Logistics" field will is role is "Customer".

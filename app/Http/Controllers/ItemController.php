@@ -85,25 +85,29 @@ class ItemController extends Controller
             'price' => 'required|numeric|min:0',
             'description' => 'nullable|string',
             'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-            'status' => 'required|in:active,deactive',
+            'status' => 'sometimes|in:active,deactive',
         ]);
 
-        // Fulfills Section 3.c.2: Draft Protection Logic
-        if ($validated['status'] === 'deactive' && $item->isInDraft()) {
+        if (isset($validated['status']) && $validated['status'] === 'deactive' && $item->isInDraft()) {
             return redirect()->back()->with('error', 'Item is currently in a customer draft and cannot be deactivated.');
         }
 
         if ($request->hasFile('image')) {
             if ($item->image_path) {
-                \Illuminate\Support\Facades\Storage::disk('public')->delete($item->image_path);
+                Storage::disk('public')->delete($item->image_path);
             }
             $validated['image_path'] = $request->file('image')->store('items', 'public');
         }
 
+        $validated['status'] = $validated['status'] ?? $item->status;
         $item->update($validated);
-        $item->categories()->sync($request->input('categories', []));
 
-        return redirect()->route('items.index')->with('success', 'Item updated successfully.');
+        // FIX: Only sync if categories are provided (prevents clearing during status toggle)
+        if ($request->has('categories')) {
+            $item->categories()->sync($request->input('categories', []));
+        }
+
+        return redirect()->route('items.index')->with('success', 'Item details updated successfully.');
     }
 
     public function destroy(Item $item)
