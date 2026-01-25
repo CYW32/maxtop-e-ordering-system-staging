@@ -54,6 +54,8 @@ Route::middleware(['auth'])->group(function () {
         Route::middleware('permission:edit_users|edit_assigned_customers')->group(function () {
             Route::get('/{user}/edit', [UserController::class, 'edit'])->name('edit');
             Route::put('/{user}', [UserController::class, 'update'])->name('update');
+            Route::delete('/{user}', [UserController::class, 'destroy'])->name('destroy');
+
         });
     });
 
@@ -109,6 +111,10 @@ Route::middleware(['auth'])->group(function () {
     Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
         ->middleware(['auth', 'verified']);
 
+    // Fulfills Requirement: Item Categories Management
+    Route::resource('categories', \App\Http\Controllers\CategoryController::class)
+        ->middleware(['auth', 'verified']);
+
     // CUSTOMER PRODUCT VIEWING
     // 1. Product Catalog visibility (whitelist logic) [1]
     Route::get('/products', [\App\Http\Controllers\Customer\ProductCatalogController::class, 'index'])
@@ -124,6 +130,7 @@ Route::middleware(['auth'])->group(function () {
             Route::put('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'update'])->name('update');
             Route::delete('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'destroy'])->name('destroy');
             Route::post('/submit', [\App\Http\Controllers\Customer\ReservationController::class, 'submit'])->name('submit');
+            Route::post('/{order}/recall', [\App\Http\Controllers\Customer\ReservationController::class, 'recall'])->name('recall');
         });
 
         // 3. Order History (customer.orders. index, show) [3]

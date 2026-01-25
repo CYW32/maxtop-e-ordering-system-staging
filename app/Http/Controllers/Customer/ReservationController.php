@@ -56,10 +56,15 @@ class ReservationController extends Controller
     public function store(AddToCartRequest $request)
     {
         $user = auth()->user();
+
+        // Fulfills Request: Check for pending blocks
+        if ($user->hasPendingOrder()) {
+            return redirect()->back()->with('error', 'You have a pending order awaiting review. Please recall it to draft if you wish to make changes or add new items.');
+        }
+
         $draft = $user->getOrCreateDraft();
         $item = Item::findOrFail($request->item_id);
 
-        // Check if item already exists in draft
         $orderItem = $draft->items()->where('item_id', $item->id)->first();
 
         if ($orderItem) {
@@ -67,13 +72,36 @@ class ReservationController extends Controller
         } else {
             $draft->items()->create([
                 'item_id' => $item->id,
-                'snapshot_name' => $item->name, // Initial snapshot
+                'snapshot_name' => $item->name,
                 'quantity' => $request->quantity,
                 'price_at_order' => $item->price,
             ]);
         }
 
         return redirect()->back()->with('success', 'Item added to your reservation draft.');
+    }
+
+    /**
+     * Fulfills Request: Move a 'pending' order back to 'draft' status.
+     */
+    public function recall(\App\Models\Order $order)
+    {
+        // Security check: Ownership and Status
+        if ($order->user_id !== auth()->id() || $order->status !== 'pending') {
+            abort(403, 'Unauthorized recall attempt.');
+        }
+
+        $order->update([
+            'status' => 'draft',
+            'order_number' => null, // Reset order number until re-submitted
+        ]);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log('Customer recalled pending order back to draft');
+
+        return redirect()->route('reservation.index')->with('success', 'Order has been recalled to your draft for editing.');
     }
 
     /**

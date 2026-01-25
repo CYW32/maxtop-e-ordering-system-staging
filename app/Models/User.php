@@ -150,6 +150,14 @@ class User extends Authenticatable
         })->get();
     }
 
+    /**
+     * Fulfills Request: Check if the user has an order currently awaiting review.
+     */
+    public function hasPendingOrder(): bool
+    {
+        return $this->orders()->where('status', 'pending')->exists();
+    }
+
     public function orders()
     {
         return $this->hasMany(\App\Models\Order::class);
@@ -165,17 +173,43 @@ class User extends Authenticatable
     }
 
     /**
-     * Fulfills Section 3A & 3B: Ordering Scope
-     * Direct Ordering: Orders are always tied to the logged-in user.
+     * Refined Section 4.a.1: Logic to prevent draft creation if a pending order exists.
      */
     public function getOrCreateDraft()
     {
         $draft = $this->currentDraft();
 
         if (! $draft) {
+            // Architecture Check: Block creation if a pending order is already in the queue
+            if ($this->hasPendingOrder()) {
+                return null;
+            }
             $draft = $this->orders()->create(['status' => 'draft']);
         }
 
         return $draft;
+    }
+
+    /**
+     * Refined Section 3.c.1: Deletion Restriction Logic
+     * A user can be deleted if they have no orders.
+     * If they are an HQ, all their branches must also have no orders.
+     */
+    public function canBeDeleted(): bool
+    {
+        // 1. Check if the specific user has orders [4]
+        if ($this->orders()->exists()) {
+            return false;
+        }
+
+        // 2. Fulfills Request: If Main HQ, check if any branch has orders
+        if (is_null($this->parent_id)) {
+            $hasBranchWithOrders = $this->branches()->whereHas('orders')->exists();
+            if ($hasBranchWithOrders) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

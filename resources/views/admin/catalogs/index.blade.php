@@ -58,15 +58,6 @@
                                             {{ __('Manage Whitelist') }}
                                         </a>
                                     @endcan
-                                    {{-- <form action="{{ route('catalogs.destroy', $catalog->id) }}" method="POST"
-                                        class="inline">
-                                        @csrf
-                                        @method('DELETE')
-                                        <button type="submit" class="text-red-600 hover:text-red-900"
-                                            onclick="return confirm('Delete this catalog?')">
-                                            {{ __('Delete') }}
-                                        </button>
-                                    </form> --}}
                                 </td>
                             </tr>
                         @endforeach

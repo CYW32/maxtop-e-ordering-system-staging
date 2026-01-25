@@ -14,17 +14,22 @@
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
             {{-- Status Summary Card --}}
-            <div class="bg-white shadow rounded-lg p-6 flex flex-wrap justify-between items-center gap-4">
+            <div class="flex justify-between items-center">
                 <div>
-                    <p class="text-xs font-bold uppercase text-gray-400">{{ __('Current Status') }}</p>
-                    <p class="text-xl font-black uppercase text-blue-700">{{ $order->status }}</p>
+                    <p class="text-xs text-gray-500 uppercase font-bold">{{ __('Current Status') }}</p>
+                    <p class="font-black text-blue-600 uppercase">{{ $order->status }}</p>
                 </div>
-                @if ($order->tracking_number)
-                    <div>
-                        <p class="text-xs font-bold uppercase text-gray-400">{{ __('Logistics') }}</p>
-                        <p class="text-sm font-bold text-gray-800">{{ $order->logistics_carrier }}:
-                            {{ $order->tracking_number }}</p>
-                    </div>
+
+                {{-- Fulfills Request: Recall functionality --}}
+                @if ($order->status === 'pending')
+                    <form action="{{ route('reservation.recall', $order) }}" method="POST"
+                        onsubmit="return confirm('Move this order back to draft for editing?');">
+                        @csrf
+                        <button type="submit"
+                            class="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-md">
+                            {{ __('Recall to Draft') }}
+                        </button>
+                    </form>
                 @endif
             </div>
 

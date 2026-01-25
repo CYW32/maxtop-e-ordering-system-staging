@@ -96,7 +96,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Ownership Logic and Section 5.a Permanent Assignment
+     * Fulfills Ownership Logic and Section 5.a Permanent Cluster Assignment
      */
     public function claim(Order $order)
     {
@@ -108,15 +108,24 @@ class OrderManagementController extends Controller
             // 1. Claim the specific order
             $order->update(['handler_id' => auth()->id()]);
 
-            // 2. Fulfills Section 5.a: If customer is unassigned, make this CS the permanent representative
+            // 2. Fulfills Section 5.a Cluster Logic:
+            // If the HQ is unassigned, assign the entire hierarchy to this CS
             $customer = $order->user;
-            if (is_null($customer->assigned_cs_id)) {
-                $customer->update(['assigned_cs_id' => auth()->id()]);
+
+            // Find the "Root HQ" (The user themselves if they have no parent)
+            $hq = $customer->parent_id ? $customer->parent : $customer;
+
+            if (is_null($hq->assigned_cs_id)) {
+                // Assign the HQ
+                $hq->update(['assigned_cs_id' => auth()->id()]);
+
+                // Assign all associated branches
+                $hq->branches()->update(['assigned_cs_id' => auth()->id()]);
 
                 activity('user_assignment')
-                    ->performedOn($customer)
+                    ->performedOn($hq)
                     ->causedBy(auth()->user())
-                    ->log('Customer permanently assigned to CS: '.auth()->user()->name);
+                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: ".auth()->user()->name);
             }
         });
 
@@ -125,7 +134,7 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        return redirect()->back()->with('success', 'Order claimed. You are now the current handler and assigned representative for this customer.');
+        return redirect()->back()->with('success', 'Order claimed. You are now the assigned representative for this entire customer hierarchy.');
     }
 
     /**

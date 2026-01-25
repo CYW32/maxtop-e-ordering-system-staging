@@ -6,6 +6,19 @@
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8 flex flex-wrap gap-2">
+            <a href="{{ route('customer.products.index') }}"
+                class="px-4 py-2 rounded-full text-xs font-black uppercase border {{ !request('category') ? 'bg-blue-600 text-white' : 'bg-white text-gray-600' }}">
+                {{ __('All Items') }}
+            </a>
+            @foreach ($availableCategories as $cat)
+                <a href="{{ route('customer.products.index', ['category' => $cat->id]) }}"
+                    class="px-4 py-2 rounded-full text-xs font-black uppercase border {{ request('category') == $cat->id ? 'bg-blue-600 text-white' : 'bg-white text-gray-600' }}">
+                    {{ $cat->name }}
+                </a>
+            @endforeach
+        </div>
+
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             @if ($items->isEmpty())
                 <div class="bg-white p-6 rounded-lg shadow text-center text-gray-500">
@@ -34,18 +47,27 @@
                                 </p>
 
                                 <div class="mt-4">
-                                    <form action="{{ route('reservation.store') }}" method="POST">
-                                        @csrf
-                                        <input type="hidden" name="item_id" value="{{ $item->id }}">
-                                        <div class="flex items-center gap-2">
-                                            <input type="number" name="quantity" value="1" min="1"
-                                                class="w-20 rounded border-gray-300 text-sm">
-                                            <button type="submit"
-                                                class="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition text-sm font-bold">
-                                                {{ __('Add to Reservation') }}
-                                            </button>
+                                    @if (auth()->user()->hasPendingOrder())
+                                        <div
+                                            class="bg-amber-50 border border-amber-200 p-2 rounded text-[10px] text-amber-700 font-bold uppercase text-center">
+                                            {{ __('Order Pending Review') }}
+                                            <br>
+                                            <span
+                                                class="font-normal normal-case italic">{{ __('Recall pending order to add items.') }}</span>
                                         </div>
-                                    </form>
+                                    @else
+                                        <form action="{{ route('reservation.store') }}" method="POST"
+                                            class="flex gap-2">
+                                            @csrf
+                                            <input type="hidden" name="item_id" value="{{ $item->id }}">
+                                            <x-text-input type="number" name="quantity" value="1" min="1"
+                                                max="999" class="w-20 rounded border-gray-300 text-sm" />
+                                            <x-primary-button
+                                                class="flex-1 justify-center bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition text-sm font-bold">
+                                                {{ __('Add to Reservation') }}
+                                            </x-primary-button>
+                                        </form>
+                                    @endif
                                 </div>
                             </div>
                         </div>

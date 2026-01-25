@@ -217,8 +217,8 @@ use Illuminate\Support\Facades\DB;
 class OrderManagementController extends Controller
 {
     /**
-     * Fulfills Section 5.a: My Fulfillment Workspace
-     * Displays orders assigned to me or currently handled by me.
+     * Fulfills Section 5.a: On-going Orders
+     * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
     public function index()
     {
@@ -420,14 +420,15 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills visibility for Completed/Cancelled orders handled by the CS.
+     * Fulfills Section 5.c: My Claimed Orders (Master List)
+     * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
     public function history()
     {
         $user = auth()->user();
 
-        $history = Order::whereIn('status', ['completed', 'cancelled'])
-            ->where('handler_id', $user->id)
+        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
+        $history = Order::where('handler_id', $user->id)
             ->latest()
             ->paginate(15);
 
@@ -5610,11 +5611,96 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\history.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('ðŸ“‹ My Claimed Orders Master List') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if ($history->isEmpty())
+                    <div class="text-center py-8">
+                        <p class="text-gray-500 italic">{{ __('You have not claimed any orders yet.') }}</p>
+                    </div>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Customer') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
+                                        {{ __('Last Update') }}</th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($history as $order)
+                                    <tr class="border-b hover:bg-gray-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono text-sm font-bold text-blue-600">
+                                            {{ $order->order_number }}</td>
+                                        <td class="px-4 py-4 text-sm">
+                                            <div class="font-bold text-gray-900">
+                                                {{ $order->user->details->company_name ?? $order->user->name }}</div>
+                                            <div class="text-xs text-gray-400">{{ $order->user->email }}</div>
+                                        </td>
+                                        <td class="px-4 py-4 text-sm text-gray-600">
+                                            {{ $order->updated_at->format('Y-m-d H:i') }}
+                                        </td>
+                                        <td class="px-4 py-4 text-sm">
+                                            {{-- Fulfills Section 4: All Lifecycle Statuses --}}
+                                            @php
+                                                $statusClasses = match ($order->status) {
+                                                    'pending' => 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                                                    'approved' => 'bg-green-100 text-green-800 border-green-300',
+                                                    'in_transit' => 'bg-blue-100 text-blue-800 border-blue-300',
+                                                    'completed' => 'bg-gray-100 text-gray-800 border-gray-300',
+                                                    'cancelled' => 'bg-red-100 text-red-800 border-red-300',
+                                                    default => 'bg-gray-50 text-gray-600 border-gray-200',
+                                                };
+                                            @endphp
+                                            <span
+                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase border shadow-sm {{ $statusClasses }}">
+                                                {{ $order->status }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">
+                                            <a href="{{ route('office.orders.show', $order) }}"
+                                                class="inline-block bg-white text-gray-700 hover:bg-gray-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-gray-200">
+                                                {{ in_array($order->status, ['completed', 'cancelled']) ? __('View Summary') : __('Process Order') }}
+                                            </a>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="mt-6">
+                        {{ $history->links() }}
+                    </div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\index.blade.php ---
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('My Fulfillment Workspace') }}
+            {{ __('On-going Orders (My Active Tasks)') }}
         </h2>
     </x-slot>
 
@@ -6399,7 +6485,7 @@ $classes = ($active ?? false)
 
             {{-- Fulfills Section 5: Assignment Logic Separation --}}
             <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
-                {{ __('My Fulfillment Workspace') }}
+                {{ __('On-going Orders') }}
             </x-nav-link>
 
             <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
@@ -6407,7 +6493,7 @@ $classes = ($active ?? false)
             </x-nav-link>
 
             <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
-                {{ __('My Processed History') }}
+                {{ __('My Claimed Orders') }}
             </x-nav-link>
         @endhasanyrole
 
@@ -9292,21 +9378,28 @@ Route::middleware(['auth'])->group(function () {
 
     // Only Admin & CS accessible
     Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
-        // Fulfills Section 5.b: General Claiming Queue
+
+        // 1. Static Routes (Must come first to prevent shadowing)
+        // Fulfills Section 5.b: General Claiming Queue [4]
         Route::get('/orders/queue', [\App\Http\Controllers\CS\OrderManagementController::class, 'queue'])->name('orders.queue');
 
-        // Fulfills Section 5.a: My Fulfillment Workspace (Personalized Inbox)
+        // Fulfills visibility for Completed/Cancelled orders [5, 6]
+        Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
+
+        // 2. Resource Index
+        // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
 
+        // 3. Wildcard Routes (Must come last)
+        // Fulfills Section 5: Handler Visibility & Handover [8]
         Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
+
         Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
         Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
         Route::post('/orders/{order}/cancel', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancel'])->name('orders.cancel');
         Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
         Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
-        Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
     });
-
     // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
         ->middleware(['auth', 'verified']);
@@ -12738,6 +12831,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 * Separate the claim order and view claimed order into two page.
 * Updated the logic of only un-assign customer order will appear in the "Claiming Queue" page.
+* Added the "My Claimed Orders" to let CS can see all his claimed history list.
 
 --- END_FILE ---
 

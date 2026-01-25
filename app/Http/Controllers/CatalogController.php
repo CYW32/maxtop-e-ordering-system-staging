@@ -65,10 +65,7 @@ class CatalogController extends Controller
 
     public function update(Request $request, Catalog $catalog)
     {
-        // Requirement: Needs View + Create + Edit
-        if (! auth()->user()->can('view_catalogs') ||
-            ! auth()->user()->can('create_catalogs') ||
-            ! auth()->user()->can('edit_catalogs')) {
+        if (! auth()->user()->can('view_catalogs') || ! auth()->user()->can('create_catalogs') || ! auth()->user()->can('edit_catalogs')) {
             abort(403);
         }
 
@@ -76,20 +73,24 @@ class CatalogController extends Controller
             'name' => 'required|string|max:255|unique:catalogs,name,'.$catalog->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
+            'status' => 'required|in:active,deactive', // Added status validation
         ]);
 
-        $catalog->update(['name' => $validated['name']]);
+        $catalog->update([
+            'name' => $validated['name'],
+            'status' => $validated['status'], // Update status
+        ]);
 
-        // Fulfills Whitelist Logic: Sync checkboxes to the pivot table [2, 4]
         $catalog->items()->sync($request->input('items', []));
 
-        return redirect()->route('catalogs.index')->with('success', 'Catalog items updated.');
+        return redirect()->route('catalogs.index')->with('success', 'Catalog updated.');
     }
 
     public function destroy(Catalog $catalog)
     {
-        // Prevent deletion if customers are currently assigned (Single Catalog Policy) [6]
-        if (\App\Models\User::where('catalog_id', $catalog->id)->exists()) {
+        Gate::authorize('edit_catalogs');
+
+        if (! $catalog->canBeDeleted()) {
             return redirect()->back()->with('error', 'Cannot delete catalog while customers are assigned to it.');
         }
 

@@ -34,16 +34,19 @@
 
                     <!-- ROLE SECTION -->
                     <div class="mb-4">
-                        <x-input-label for="role" :value="__('Role')" />
-                        <select name="role" id="role"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
-                            @if ($user->hasRole('admin')) disabled @endif>
+                        <x-input-label for="role" :value="__('User Role')" />
+                        <input type="hidden" name="role" value="{{ $user->roles->first()->name }}">
+                        <select id="role"
+                            class="block mt-1 w-full border-gray-300 bg-gray-100 cursor-not-allowed rounded-md shadow-sm"
+                            disabled>
                             @foreach ($roles as $role)
                                 <option value="{{ $role->name }}" @if ($user->hasRole($role->name)) selected @endif>
                                     {{ ucfirst(str_replace('_', ' ', $role->name)) }}
                                 </option>
                             @endforeach
                         </select>
+                        <p class="text-[10px] text-red-600 mt-1 uppercase font-bold">
+                            {{ __('Role cannot be changed after creation for security integrity.') }}</p>
                         {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
                         @if ($user->hasRole('admin'))
                             <p class="text-xs text-red-500 mt-1 italic">Reason: The System Admin role is permanent to
@@ -181,6 +184,54 @@
                             class="text-sm text-gray-600 hover:text-gray-900 underline">
                             {{ __('Cancel') }}
                         </a>
+
+                        @if ($user->hasRole('customer') && is_null($user->parent_id))
+                            <div class="mt-6 p-4 bg-gray-50 border rounded-lg flex justify-between items-center">
+                                <div>
+                                    <h4 class="font-bold text-sm text-gray-900">{{ __('Branch Management') }}</h4>
+                                    <p class="text-xs text-gray-500">
+                                        {{ __('Create a sub-account that inherits this HQ\'s settings.') }}</p>
+                                </div>
+                                <a href="{{ route('users.create', ['parent_id' => $user->id]) }}"
+                                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
+                                    {{ __('+ Add New Branch') }}
+                                </a>
+                            </div>
+                        @endif
+
+                        {{-- Fulfills Section 3.c: Standardized Hard Delete for ALL eligible roles --}}
+                        @can('edit_users')
+                            @if ($user->canBeDeleted())
+                                <div class="mt-12 pt-8 border-t border-red-100">
+                                    <div
+                                        class="bg-red-50 p-6 rounded-xl border border-red-100 flex flex-col md:flex-row justify-between items-center">
+                                        <div>
+                                            <h3 class="text-red-800 font-black uppercase text-sm">
+                                                {{ __('Dangerous: Remove Account') }}</h3>
+                                            <p class="text-red-600 text-xs mt-1">
+                                                {{ is_null($user->parent_id)
+                                                    ? __('Deleting this HQ will also permanently remove all its associated branches.')
+                                                    : __('This will permanently remove this account.') }}
+                                            </p>
+                                        </div>
+                                        <form action="{{ route('users.destroy', $user) }}" method="POST"
+                                            onsubmit="return confirm('Are you absolutely sure? This cannot be undone.');">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit"
+                                                class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg text-xs font-black uppercase transition shadow-lg">
+                                                {{ __('Confirm Hard Delete') }}
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                            @else
+                                {{-- Fulfills Section 3.c.3: UI Warning for Locked Records --}}
+                                <div class="mt-12 pt-8 border-t border-gray-100 italic text-gray-400 text-xs text-center">
+                                    {{ __('This account is unable to hard delete because it is linked to historical order records.') }}
+                                </div>
+                            @endif
+                        @endcan
                     </div>
                 </form>
 

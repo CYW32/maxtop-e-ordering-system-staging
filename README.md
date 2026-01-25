@@ -60,8 +60,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v10)
+## Update details(v11)
 
-* Separate the claim order and view claimed order into two page.
-* Updated the logic of only un-assign customer order will appear in the "Claiming Queue" page.
-* Added the "My Claimed Orders" to let CS can see all his claimed history list.
+* Added a filed(DB table) that can point a branch to its HQ, if the CS handle the HQ also handle all the HQ branch.
+* "Create User" form will showing the company input details when role is "Customer".
+* Added "Product Categories" feature.
+* Updated to every customer can have 1 pending order at once.
+* Added the "Hard delete" options in item & category & catalog & user if they are not having any orders before.
+* Added the "Deactivate" field to item & category & catalog table for hide the unvailable product to customer and not crashing the order history.

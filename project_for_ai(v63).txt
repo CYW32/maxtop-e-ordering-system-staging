@@ -217,15 +217,35 @@ use Illuminate\Support\Facades\DB;
 class OrderManagementController extends Controller
 {
     /**
-     * Dashboard for CS to see pending/available orders.
-     * Refined to fulfill Backbone 5.a and 5.b
+     * Fulfills Section 5.a: On-going Orders
+     * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
     public function index()
     {
         $user = auth()->user();
 
-        // 1. Unassigned Orders (Claiming Queue)
-        // Fulfills Section 5.b: ONLY show orders from customers who have NO assigned CS Staff
+        $myOrders = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+            ->where(function ($query) use ($user) {
+                $query->where('handler_id', $user->id) // Already claimed
+                    ->orWhere(function ($sub) use ($user) {
+                        $sub->whereNull('handler_id') // New but assigned customer
+                            ->whereHas('user', function ($u) use ($user) {
+                                $u->where('assigned_cs_id', $user->id);
+                            });
+                    });
+            })
+            ->latest()
+            ->paginate(15);
+
+        return view('cs.orders.index', compact('myOrders'));
+    }
+
+    /**
+     * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
+     * Displays orders from customers who have NO assigned CS Staff.
+     */
+    public function queue()
+    {
         $unassigned = Order::where('status', 'pending')
             ->whereNull('handler_id')
             ->whereHas('user', function ($query) {
@@ -234,23 +254,7 @@ class OrderManagementController extends Controller
             ->latest()
             ->get();
 
-        // 2. My Active Orders
-        // Fulfills Section 5.a: Include orders I am already handling OR
-        // new orders from customers specifically assigned to me.
-        $myOrders = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
-            ->where(function ($query) use ($user) {
-                $query->where('handler_id', $user->id) // Orders I have already claimed
-                    ->orWhere(function ($sub) use ($user) {
-                        $sub->whereNull('handler_id') // Not yet claimed
-                            ->whereHas('user', function ($u) use ($user) {
-                                $u->where('assigned_cs_id', $user->id); // But the customer is mine
-                            });
-                    });
-            })
-            ->latest()
-            ->paginate(15);
-
-        return view('cs.orders.index', compact('unassigned', 'myOrders'));
+        return view('cs.orders.queue', compact('unassigned'));
     }
 
     /**
@@ -297,7 +301,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Ownership Logic: Claiming an order [5]
+     * Fulfills Ownership Logic and Section 5.a Permanent Cluster Assignment
      */
     public function claim(Order $order)
     {
@@ -305,14 +309,37 @@ class OrderManagementController extends Controller
             return redirect()->back()->with('error', 'This order has already been claimed.');
         }
 
-        $order->update(['handler_id' => auth()->id()]);
+        DB::transaction(function () use ($order) {
+            // 1. Claim the specific order
+            $order->update(['handler_id' => auth()->id()]);
+
+            // 2. Fulfills Section 5.a Cluster Logic:
+            // If the HQ is unassigned, assign the entire hierarchy to this CS
+            $customer = $order->user;
+
+            // Find the "Root HQ" (The user themselves if they have no parent)
+            $hq = $customer->parent_id ? $customer->parent : $customer;
+
+            if (is_null($hq->assigned_cs_id)) {
+                // Assign the HQ
+                $hq->update(['assigned_cs_id' => auth()->id()]);
+
+                // Assign all associated branches
+                $hq->branches()->update(['assigned_cs_id' => auth()->id()]);
+
+                activity('user_assignment')
+                    ->performedOn($hq)
+                    ->causedBy(auth()->user())
+                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: ".auth()->user()->name);
+            }
+        });
 
         activity('order')
             ->performedOn($order)
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        return redirect()->back()->with('success', 'Order claimed. You are now the current handler.');
+        return redirect()->back()->with('success', 'Order claimed. You are now the assigned representative for this entire customer hierarchy.');
     }
 
     /**
@@ -399,6 +426,22 @@ class OrderManagementController extends Controller
             ->log("Order updated (Status: {$request->status})");
 
         return redirect()->back()->with('success', 'Internal notes updated successfully.');
+    }
+
+    /**
+     * Fulfills Section 5.c: My Claimed Orders (Master List)
+     * Displays all orders ever claimed by this CS, providing a full historical audit trail.
+     */
+    public function history()
+    {
+        $user = auth()->user();
+
+        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
+        $history = Order::where('handler_id', $user->id)
+            ->latest()
+            ->paginate(15);
+
+        return view('cs.orders.history', compact('history'));
     }
 }
 
@@ -1023,31 +1066,13 @@ use Spatie\Permission\Models\Role;
 
 class UserController extends Controller
 {
-    // // 1. LIST USERS
-    // public function index(Request $request)
-    // {
-    //     // Get Roles for the filter dropdown
-    //     // plucking name/name creates an array like ['admin' => 'admin']
-    //     $roles = Role::pluck('name', 'name');
-
-    //     $users = User::with('roles')
-    //         ->search($request->search) // <--- Magic happens here(The 'search()' method now exists automatically!)
-    //         ->filterByDate() // <--- Date Filter (Defaults to created_at)
-    //         ->filterByRole()
-    //         ->latest()
-    //         ->paginate(10)
-    //         ->withQueryString(); // Keep the search term when changing pages
-
-    //     return view('users.index', compact('users', 'roles'));
-    // }
-
     public function index(Request $request)
     {
         // Get Roles for the filter dropdown
         // plucking name/name creates an array like ['admin' => 'admin']
         $roles = Role::pluck('name', 'name');
 
-        $query = User::with('roles');
+        $query = User::with(['roles', 'parent']);
 
         // CS Leaders cannot see Admins or other CS Leaders [7]
         if (auth()->user()->hasRole('cs_leader')) {
@@ -1080,7 +1105,7 @@ class UserController extends Controller
     {
         // Fetch only users where assigned_cs_id matches the logged-in staff member
         $users = User::where('assigned_cs_id', auth()->id())
-            ->with('roles')
+            ->with('roles', 'parent')
             ->search($request->search)
             ->filterByDate()
             ->latest()
@@ -5577,25 +5602,176 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\index.blade.php ---
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\history.blade.php ---
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Order Management Dashboard') }}
+            {{ __('ðŸ“‹ My Claimed Orders Master List') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if ($history->isEmpty())
+                    <div class="text-center py-8">
+                        <p class="text-gray-500 italic">{{ __('You have not claimed any orders yet.') }}</p>
+                    </div>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Customer') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
+                                        {{ __('Last Update') }}</th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($history as $order)
+                                    <tr class="border-b hover:bg-gray-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono text-sm font-bold text-blue-600">
+                                            {{ $order->order_number }}</td>
+                                        <td class="px-4 py-4 text-sm">
+                                            <div class="font-bold text-gray-900">
+                                                {{ $order->user->details->company_name ?? $order->user->name }}</div>
+                                            <div class="text-xs text-gray-400">{{ $order->user->email }}</div>
+                                        </td>
+                                        <td class="px-4 py-4 text-sm text-gray-600">
+                                            {{ $order->updated_at->format('Y-m-d H:i') }}
+                                        </td>
+                                        <td class="px-4 py-4 text-sm">
+                                            {{-- Fulfills Section 4: All Lifecycle Statuses --}}
+                                            @php
+                                                $statusClasses = match ($order->status) {
+                                                    'pending' => 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                                                    'approved' => 'bg-green-100 text-green-800 border-green-300',
+                                                    'in_transit' => 'bg-blue-100 text-blue-800 border-blue-300',
+                                                    'completed' => 'bg-gray-100 text-gray-800 border-gray-300',
+                                                    'cancelled' => 'bg-red-100 text-red-800 border-red-300',
+                                                    default => 'bg-gray-50 text-gray-600 border-gray-200',
+                                                };
+                                            @endphp
+                                            <span
+                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase border shadow-sm {{ $statusClasses }}">
+                                                {{ $order->status }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">
+                                            <a href="{{ route('office.orders.show', $order) }}"
+                                                class="inline-block bg-white text-gray-700 hover:bg-gray-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-gray-200">
+                                                {{ in_array($order->status, ['completed', 'cancelled']) ? __('View Summary') : __('Process Order') }}
+                                            </a>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
 
-            {{-- Section 1: Unassigned Orders (Claiming Queue) [3] --}}
+                    <div class="mt-6">
+                        {{ $history->links() }}
+                    </div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('On-going Orders (My Active Tasks)') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if ($myOrders->isEmpty())
+                    <p class="text-gray-500 italic">{{ __('You are not currently handling any active orders.') }}</p>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Customer') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($myOrders as $order)
+                                    <tr class="border-b hover:bg-gray-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono text-sm">{{ $order->order_number }}</td>
+                                        <td class="px-4 py-4 text-sm font-bold text-gray-800">{{ $order->user->name }}
+                                        </td>
+                                        <td class="px-4 py-4">
+                                            <span
+                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase shadow-sm
+                                                {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-blue-100 text-blue-800 border border-blue-300' }}">
+                                                {{ $order->status }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">
+                                            @if (is_null($order->handler_id))
+                                                <form action="{{ route('office.orders.claim', $order) }}"
+                                                    method="POST">
+                                                    @csrf
+                                                    <button type="submit"
+                                                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase shadow-md">
+                                                        {{ __('Claim My Customer Order') }}
+                                                    </button>
+                                                </form>
+                                            @else
+                                                <a href="{{ route('office.orders.show', $order) }}"
+                                                    class="inline-block bg-blue-50 text-blue-700 hover:bg-blue-700 hover:text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-blue-200">
+                                                    {{ __('View & Process') }}
+                                                </a>
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-4">{{ $myOrders->links() }}</div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\queue.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('âš ï¸ Claiming Queue (Unassigned Customers)') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
-                <h3 class="font-black text-lg text-orange-700 uppercase tracking-wider mb-4">
-                    {{ __('âš ï¸ Claiming Queue (Unassigned Orders)') }}
-                </h3>
-
                 @if ($unassigned->isEmpty())
-                    <p class="text-gray-500 italic">{{ __('No new orders awaiting assignment.') }}</p>
+                    <p class="text-gray-500 italic">{{ __('No new orders from unassigned customers.') }}</p>
                 @else
                     <div class="overflow-x-auto">
                         <table class="w-full text-left border-collapse">
@@ -5639,73 +5815,6 @@ $classes = ($active ?? false)
                     </div>
                 @endif
             </div>
-
-            {{-- Section 2: My Active Orders (Claimed) [5] --}}
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-                <h3 class="font-black text-lg text-gray-800 uppercase tracking-wider mb-4">
-                    {{ __('ðŸ“‹ My Active Orders') }}
-                </h3>
-
-                @if ($myOrders->isEmpty())
-                    <p class="text-gray-500 italic">{{ __('You are not currently handling any active orders.') }}</p>
-                @else
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse">
-                            <thead>
-                                <tr class="bg-gray-50 border-b">
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
-                                    </th>
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
-                                        {{ __('Customer') }}</th>
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
-                                    </th>
-                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
-                                        {{ __('Actions') }}</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach ($myOrders as $order)
-                                    <tr class="border-b hover:bg-gray-50 transition-colors">
-                                        <td class="px-4 py-4 font-mono text-sm">{{ $order->order_number }}</td>
-                                        <td class="px-4 py-4 text-sm">
-                                            <span class="font-bold text-gray-800">{{ $order->user->name }}</span>
-                                        </td>
-                                        <td class="px-4 py-4">
-                                            <span
-                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase shadow-sm
-                                                {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-blue-100 text-blue-800 border border-blue-300' }}">
-                                                {{ $order->status }}
-                                            </span>
-                                        </td>
-                                        <td class="px-4 py-4 text-right">
-                                            @if (is_null($order->handler_id))
-                                                {{-- Section 5.a Logic: Order belongs to my customer, but I must still officially 'Claim' it --}}
-                                                <form action="{{ route('office.orders.claim', $order) }}"
-                                                    method="POST">
-                                                    @csrf
-                                                    <button type="submit"
-                                                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-md">
-                                                        {{ __('Claim My Customer Order') }}
-                                                    </button>
-                                                </form>
-                                            @else
-                                                <a href="{{ route('office.orders.show', $order) }}"
-                                                    class="inline-block bg-blue-50 text-blue-700 hover:bg-blue-700 hover:text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-blue-200">
-                                                    {{ __('View & Process') }}
-                                                </a>
-                                            @endif
-                                        </td>
-                                    </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="mt-4">
-                        {{ $myOrders->links() }}
-                    </div>
-                @endif
-            </div>
-
         </div>
     </div>
 </x-app-layout>
@@ -6306,108 +6415,112 @@ $classes = ($active ?? false)
 --- END_FILE ---
 
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\layouts\navigation.blade.php ---
-<div class="py-4 flex flex-col h-full justify-between">
-
-    <div class="space-y-4">
-        <div class="px-6 flex items-center justify-center">
-            <a href="{{ route('dashboard') }}">
-                <x-application-logo class="block h-16 w-auto fill-current text-gray-800" />
-            </a>
-        </div>
-
-        <!-- Primary Navigation Menu -->
-        <div class="flex flex-col h-full py-4">
-            <!-- Section 1: General (Everyone) -->
-            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
-                {{ __('Dashboard') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('dashboard')" :active="false">
-                {{ __('My Orders') }}
-            </x-nav-link>
-
-            @role('customer')
-                <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
-                    {{ __('Order Products') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">
-                    {{ __('My Order History') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
-                    {{ __('My Reservation Draft') }}
-                </x-nav-link>
-            @endrole
-
-            <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
-            @hasanyrole('admin|cs_leader|cs_staff')
-                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('Office Operations') }}
+<nav x-data="{ open: false }" class="bg-white border-b border-gray-100">
+    <!-- Primary Navigation Menu -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex">
+                <!-- Logo -->
+                <div class="shrink-0 flex items-center">
+                    <a href="{{ route('dashboard') }}">
+                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800" />
+                    </a>
                 </div>
-
-                <!-- Product Management -->
-                @can('view_items')
-                    <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
-                        {{ __('Product Items') }}
-                    </x-nav-link>
-                @endcan
-
-                <!-- Catalog Folders -->
-                @can('view_catalogs')
-                    <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
-                        {{ __('Catalog Folders') }}
-                    </x-nav-link>
-                @endcan
-
-                <!-- User/Customer Management -->
-                @can('view_users')
-                    <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                        {{ __('User Management') }}
-                    </x-nav-link>
-                @endcan
-
-                @can('view_assigned_customers')
-                    <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
-                        {{ __('My Customers') }}
-                    </x-nav-link>
-                @endcan
-
-                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.*')">
-                    {{ __('Order Management Queue') }}
-                </x-nav-link>
-            @endhasanyrole
-
-            <!-- Section 3: System Controls (Strict Admin Only) -->
-            @role('admin')
-                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('System Control') }}
-                </div>
-
-                <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
-                    {{ __('Feature Settings') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('roles.activity.index')" :active="request()->routeIs('roles.activity.index')">
-                    {{ __('Activity Log') }}
-                </x-nav-link>
-            @endrole
+            </div>
 
         </div>
     </div>
 
-    <div class="px-6 border-t border-gray-200 pt-4">
-        <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
-        <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+    <!-- Sidebar -->
+    <div class="pt-4 pb-1 border-t border-gray-200">
+        @role('customer')
+            <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.index')">
+                {{ __('Order Products') }}
+            </x-nav-link>
 
-        <form method="POST" action="{{ route('logout') }}" class="mt-3">
-            @csrf
-            <button type="submit" class="text-sm text-red-600 hover:text-red-900">
-                {{ __('Log Out') }}
-            </button>
-        </form>
+            <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.index')">
+                {{ __('My Order History') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
+                {{ __('My Reservation Draft') }}
+            </x-nav-link>
+        @endrole
+        @hasanyrole('admin|cs_leader|cs_staff')
+            <div class="px-4 py-2 font-black text-xs uppercase text-gray-400 tracking-widest">{{ __('Office Operations') }}
+            </div>
+
+            @can('view_items')
+                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                    {{ __('Product Items') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_catalogs')
+                <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
+                    {{ __('Catalog Folders') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_users')
+                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
+                    {{ __('User Management') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_assigned_customers')
+                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
+                    {{ __('My Customers') }}
+                </x-nav-link>
+            @endcan
+
+            {{-- Fulfills Section 5: Assignment Logic Separation --}}
+            <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
+                {{ __('On-going Orders') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
+                {{ __('Claiming Queue') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
+                {{ __('My Claimed Orders') }}
+            </x-nav-link>
+        @endhasanyrole
+
+        @role('admin')
+            <div class="mt-4 px-4 py-2 font-black text-xs uppercase text-red-600 tracking-widest">
+                {{ __('System Control') }}</div>
+            <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
+                {{ __('Feature Settings') }}
+            </x-nav-link>
+            <x-nav-link :href="route('activity.index')" :active="request()->routeIs('activity.index')">
+                {{ __('Activity Log') }}
+            </x-nav-link>
+        @endrole
     </div>
-</div>
+
+    <!-- Responsive Settings Options -->
+    <div class="pt-4 pb-1 border-t border-gray-200">
+        {{-- Consolidated Identity & Profile Link: Fulfills standard UI/UX consolidation --}}
+        <a href="{{ route('profile.edit') }}"
+            class="block px-4 py-2 hover:bg-gray-100 transition duration-150 ease-in-out">
+            <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
+            <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+        </a>
+
+        <div class="mt-3 space-y-1">
+            <form method="POST" action="{{ route('logout') }}">
+                @csrf
+                <x-responsive-nav-link :href="route('logout')"
+                    onclick="event.preventDefault();
+                                    this.closest('form').submit();">
+                    {{ __('Log Out') }}
+                </x-responsive-nav-link>
+            </form>
+        </div>
+    </div>
+</nav>
 
 --- END_FILE ---
 
@@ -6691,13 +6804,28 @@ $classes = ($active ?? false)
                                         <div class="text-sm text-gray-500">{{ $user->login_id }}</div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
-                                        {{-- Spatie helper to get role names --}}
-                                        @foreach ($user->getRoleNames() as $role)
-                                            <span
-                                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                                                {{ ucfirst(str_replace('_', ' ', $role)) }}
-                                            </span>
-                                        @endforeach
+                                        <div class="flex flex-col">
+                                            <div class="text-sm font-bold text-gray-900 flex items-center">
+                                                @if ($user->parent_id)
+                                                    <span class="text-gray-400 mr-2">â†³</span>
+                                                @endif
+                                                {{ $user->name }}
+                                            </div>
+                                            <div class="text-xs text-gray-500">
+                                                {{ $user->login_id }}
+                                                @if ($user->parent_id)
+                                                    <span
+                                                        class="ml-1 px-1 bg-gray-100 border border-gray-200 rounded italic">
+                                                        {{ __('Branch of: ') }} {{ $user->parent->name }}
+                                                    </span>
+                                                @else
+                                                    <span
+                                                        class="ml-1 px-1 bg-blue-50 border border-blue-100 text-blue-600 rounded text-[10px] uppercase font-black">
+                                                        {{ __('Main HQ') }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                        </div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
                                         @if ($user->status === 'active')
@@ -7080,13 +7208,28 @@ $classes = ($active ?? false)
                                         <div class="text-sm text-gray-500">{{ $user->login_id }}</div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
-                                        {{-- Spatie helper to get role names --}}
-                                        @foreach ($user->getRoleNames() as $role)
-                                            <span
-                                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                                                {{ ucfirst(str_replace('_', ' ', $role)) }}
-                                            </span>
-                                        @endforeach
+                                        <div class="flex flex-col">
+                                            <div class="text-sm font-bold text-gray-900 flex items-center">
+                                                @if ($user->parent_id)
+                                                    <span class="text-gray-400 mr-2">â†³</span>
+                                                @endif
+                                                {{ $user->name }}
+                                            </div>
+                                            <div class="text-xs text-gray-500">
+                                                {{ $user->login_id }}
+                                                @if ($user->parent_id)
+                                                    <span
+                                                        class="ml-1 px-1 bg-gray-100 border border-gray-200 rounded italic">
+                                                        {{ __('Branch of: ') }} {{ $user->parent->name }}
+                                                    </span>
+                                                @else
+                                                    <span
+                                                        class="ml-1 px-1 bg-blue-50 border border-blue-100 text-blue-600 rounded text-[10px] uppercase font-black">
+                                                        {{ __('Main HQ') }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                        </div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
                                         @if ($user->status === 'active')
@@ -9204,6 +9347,14 @@ Route::middleware(['auth'])->group(function () {
     // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
+    /**
+     * Profile Management Routes
+     * Fulfills standard user self-service requirements.
+     */
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
     // USER MANAGEMENT
     // We split this because viewing and creating require different permissions.
     Route::prefix('users')->name('users.')->group(function () {
@@ -9232,27 +9383,44 @@ Route::middleware(['auth'])->group(function () {
         ->name('users.assigned');
 
     // SYSTEM SETTINGS (Strict Admin Only)
-    // Only 'admin' role can touch these, regardless of permissions.
-    Route::middleware('role:admin')->prefix('admin')->name('roles.')->group(function () {
+    // Fulfills Section 2.a: Administrator overseeing Activity Logs and assignments
+    Route::middleware('role:admin')->prefix('admin')->group(function () {
 
-        Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
-        Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        // Feature Settings (Feature Matrix) - keep the 'roles.' prefix here
+        Route::name('roles.')->group(function () {
+            Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
+            Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        });
 
-        // Activity Log Route
+        // Activity Log Route - Moved outside roles naming to match navigation
+        // Results in: activity.index
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
     // Only Admin & CS accessible
     Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
+
+        // 1. Static Routes (Must come first to prevent shadowing)
+        // Fulfills Section 5.b: General Claiming Queue [4]
+        Route::get('/orders/queue', [\App\Http\Controllers\CS\OrderManagementController::class, 'queue'])->name('orders.queue');
+
+        // Fulfills visibility for Completed/Cancelled orders [5, 6]
+        Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
+
+        // 2. Resource Index
+        // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
+
+        // 3. Wildcard Routes (Must come last)
+        // Fulfills Section 5: Handler Visibility & Handover [8]
         Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
+
         Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
         Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
         Route::post('/orders/{order}/cancel', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancel'])->name('orders.cancel');
         Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
         Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
     });
-
     // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
         ->middleware(['auth', 'verified']);
@@ -12680,10 +12848,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v9)
+## Update details(v10)
 
-* Added the order function and UI for customer.
-* Added the "claim the order from customer" & "approve/reject order from customer"  & "hand over to other CS" function and UI for CS role.
+* Separate the claim order and view claimed order into two page.
+* Updated the logic of only un-assign customer order will appear in the "Claiming Queue" page.
+* Added the "My Claimed Orders" to let CS can see all his claimed history list.
 
 --- END_FILE ---
 

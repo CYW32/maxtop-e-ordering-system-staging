@@ -217,8 +217,8 @@ use Illuminate\Support\Facades\DB;
 class OrderManagementController extends Controller
 {
     /**
-     * Fulfills Section 5.a: My Fulfillment Workspace
-     * Displays orders assigned to me or currently handled by me.
+     * Fulfills Section 5.a: On-going Orders
+     * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
     public function index()
     {
@@ -301,7 +301,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Ownership Logic and Section 5.a Permanent Assignment
+     * Fulfills Ownership Logic and Section 5.a Permanent Cluster Assignment
      */
     public function claim(Order $order)
     {
@@ -313,15 +313,24 @@ class OrderManagementController extends Controller
             // 1. Claim the specific order
             $order->update(['handler_id' => auth()->id()]);
 
-            // 2. Fulfills Section 5.a: If customer is unassigned, make this CS the permanent representative
+            // 2. Fulfills Section 5.a Cluster Logic:
+            // If the HQ is unassigned, assign the entire hierarchy to this CS
             $customer = $order->user;
-            if (is_null($customer->assigned_cs_id)) {
-                $customer->update(['assigned_cs_id' => auth()->id()]);
+
+            // Find the "Root HQ" (The user themselves if they have no parent)
+            $hq = $customer->parent_id ? $customer->parent : $customer;
+
+            if (is_null($hq->assigned_cs_id)) {
+                // Assign the HQ
+                $hq->update(['assigned_cs_id' => auth()->id()]);
+
+                // Assign all associated branches
+                $hq->branches()->update(['assigned_cs_id' => auth()->id()]);
 
                 activity('user_assignment')
-                    ->performedOn($customer)
+                    ->performedOn($hq)
                     ->causedBy(auth()->user())
-                    ->log('Customer permanently assigned to CS: '.auth()->user()->name);
+                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: ".auth()->user()->name);
             }
         });
 
@@ -330,7 +339,7 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        return redirect()->back()->with('success', 'Order claimed. You are now the current handler and assigned representative for this customer.');
+        return redirect()->back()->with('success', 'Order claimed. You are now the assigned representative for this entire customer hierarchy.');
     }
 
     /**
@@ -420,8 +429,8 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills visibility for ALL orders handled by the CS.
-     * Shows both ongoing (pending, approved, in_transit) and terminal (completed, cancelled) orders.
+     * Fulfills Section 5.c: My Claimed Orders (Master List)
+     * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
     public function history()
     {
@@ -1052,116 +1061,105 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\Rules;
 use Spatie\Permission\Models\Role;
 
 class UserController extends Controller
 {
-    // // 1. LIST USERS
-    // public function index(Request $request)
-    // {
-    //     // Get Roles for the filter dropdown
-    //     // plucking name/name creates an array like ['admin' => 'admin']
-    //     $roles = Role::pluck('name', 'name');
-
-    //     $users = User::with('roles')
-    //         ->search($request->search) // <--- Magic happens here(The 'search()' method now exists automatically!)
-    //         ->filterByDate() // <--- Date Filter (Defaults to created_at)
-    //         ->filterByRole()
-    //         ->latest()
-    //         ->paginate(10)
-    //         ->withQueryString(); // Keep the search term when changing pages
-
-    //     return view('users.index', compact('users', 'roles'));
-    // }
-
     public function index(Request $request)
     {
-        // Get Roles for the filter dropdown
-        // plucking name/name creates an array like ['admin' => 'admin']
-        $roles = Role::pluck('name', 'name');
+        $roles = \Spatie\Permission\Models\Role::pluck('name', 'name');
 
-        $query = User::with('roles');
+        // Fulfills Section 3.a & User Request: Fetch only top-level accounts (no parent)
+        $query = User::with(['roles', 'parent', 'branches.roles', 'details'])
+            ->whereNull('parent_id');
 
-        // CS Leaders cannot see Admins or other CS Leaders [7]
         if (auth()->user()->hasRole('cs_leader')) {
-            $query->whereDoesntHave('roles', function ($q) {
-                $q->whereIn('name', ['admin', 'cs_leader']);
-            });
+            $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
         }
 
-        // DATA ISOLATION LOGIC:
-        // If the user is CS Staff and the 'view_assigned_customers' permission is ON
         if (auth()->user()->hasPermissionTo('view_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-
-            // They ONLY see customers assigned to them
             $query->where('assigned_cs_id', auth()->id());
         }
 
-        $roles = Role::pluck('name', 'name');
         $users = $query->search($request->search)
             ->filterByDate()
             ->filterByRole()
             ->latest()
-            ->paginate(10)
-            ->withQueryString(); // Keep the search term when changing pages
+            ->paginate(15)
+            ->withQueryString();
 
         return view('users.index', compact('users', 'roles'));
     }
 
     public function assignedIndex(Request $request)
     {
-        // Fetch only users where assigned_cs_id matches the logged-in staff member
+        // Fulfills Section 5.a & User Request: Only top-level assigned customers
         $users = User::where('assigned_cs_id', auth()->id())
-            ->with('roles')
+            ->whereNull('parent_id')
+            ->with(['roles', 'parent', 'branches.roles', 'details'])
             ->search($request->search)
             ->filterByDate()
             ->latest()
-            ->paginate(10);
+            ->paginate(15);
 
-        // We only need the 'customer' role for the filter in this view
         $roles = ['customer' => 'customer'];
 
         return view('users.assigned', compact('users', 'roles'));
     }
 
     // SHOW CREATE FORM
-    public function create()
+    public function create(Request $request)
     {
-        // Get all roles except 'admin' if you want to restrict that
-        // For now, let's fetch all available roles so you can choose
-        $roles = Role::all();
+        $roles = \Spatie\Permission\Models\Role::all();
+        $parent = null;
 
-        return view('users.create', compact('roles'));
+        // Fulfills Section 3.a.2: Branch inheritance context
+        if ($request->has('parent_id')) {
+            $parent = User::with('details')->findOrFail($request->parent_id);
+        }
+
+        $catalogs = \App\Models\Catalog::all();
+        $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
+
+        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers'));
     }
 
-    // STORE NEW USER
+    // Save new user
     public function store(Request $request)
     {
-        // A. Validate the input
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'login_id' => ['required', 'string', 'max:255', 'unique:users'],
             'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
-            'role' => ['required', 'exists:roles,name'], // Must pick a valid role
+            'password' => ['required', 'confirmed', \Illuminate\Validation\Rules\Password::defaults()],
+            'role' => ['required', 'exists:roles,name'],
+            'parent_id' => ['nullable', 'exists:users,id'],
+            'catalog_id' => ['nullable', 'exists:catalogs,id'],
+            'assigned_cs_id' => ['nullable', 'exists:users,id'],
         ]);
 
-        // B. Create the User
         $user = User::create([
             'name' => $request->name,
             'login_id' => $request->login_id,
             'email' => $request->email,
-            'status' => 'active', // Default status
             'password' => Hash::make($request->password),
+            'status' => 'active',
+            'parent_id' => $request->parent_id,
+            'catalog_id' => $request->catalog_id,
+            'assigned_cs_id' => $request->assigned_cs_id ?? (auth()->user()->hasRole('cs_staff') ? auth()->id() : null),
         ]);
 
-        // C. Assign the Role (Spatie Logic)
         $user->assignRole($request->role);
 
-        // D. Go back to list with success message
-        return redirect()->route('users.index')
+        // If it is a customer, create initial details shell
+        if ($request->role === 'customer') {
+            $user->details()->create([
+                'company_name' => $request->company_name ?? $user->name,
+            ]);
+        }
+
+        return redirect()->route($request->has('parent_id') || auth()->user()->hasRole('cs_staff') ? 'users.assigned' : 'users.index')
             ->with('success', 'User created successfully.');
     }
 
@@ -5700,7 +5698,7 @@ $classes = ($active ?? false)
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('My Fulfillment Workspace') }}
+            {{ __('On-going Orders (My Active Tasks)') }}
         </h2>
     </x-slot>
 
@@ -6485,7 +6483,7 @@ $classes = ($active ?? false)
 
             {{-- Fulfills Section 5: Assignment Logic Separation --}}
             <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
-                {{ __('My Fulfillment Workspace') }}
+                {{ __('On-going Orders') }}
             </x-nav-link>
 
             <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
@@ -6493,7 +6491,7 @@ $classes = ($active ?? false)
             </x-nav-link>
 
             <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
-                {{ __('My Processed History') }}
+                {{ __('My Claimed Orders') }}
             </x-nav-link>
         @endhasanyrole
 
@@ -6766,6 +6764,14 @@ $classes = ($active ?? false)
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
                 <div class="p-6 text-gray-900">
 
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-gray-800">{{ __('My Assigned Customers') }}</h2>
+                        <a href="{{ route('users.create') }}"
+                            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
+                            {{ __('+ Onboard New Customer') }}
+                        </a>
+                    </div>
+
                     {{-- Header with Add Button --}}
                     <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
 
@@ -6807,36 +6813,73 @@ $classes = ($active ?? false)
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             @foreach ($users as $user)
-                                <tr>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">{{ $user->name }}</div>
-                                        <div class="text-sm text-gray-500">{{ $user->login_id }}</div>
+                                {{-- Main HQ/Top-Level Row --}}
+                                <tr class="border-b hover:bg-gray-50 transition-colors group">
+                                    <td class="px-6 py-4">
+                                        <div class="flex flex-col">
+                                            <div class="text-sm font-bold text-gray-900">
+                                                {{ $user->name }}
+                                                {{-- Fulfills Request: "MAIN HQ" tag only for Customers with no parent_id --}}
+                                                @if ($user->hasRole('customer') && is_null($user->parent_id))
+                                                    <span
+                                                        class="ml-2 px-1.5 py-0.5 bg-blue-600 text-white rounded text-[10px] uppercase font-black tracking-tighter">
+                                                        {{ __('MAIN HQ') }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                            <div class="text-xs text-gray-500 font-mono">{{ $user->login_id }}</div>
+                                        </div>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        {{-- Spatie helper to get role names --}}
-                                        @foreach ($user->getRoleNames() as $role)
-                                            <span
-                                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                                                {{ ucfirst(str_replace('_', ' ', $role)) }}
-                                            </span>
-                                        @endforeach
+                                    <td class="px-6 py-4 text-xs font-bold uppercase text-gray-600">
+                                        {{ $user->roles->pluck('name')->map(fn($n) => str_replace('_', ' ', $n))->implode(', ') }}
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        @if ($user->status === 'active')
-                                            <span class="text-green-600 font-bold text-xs uppercase">Active</span>
-                                        @else
-                                            <span class="text-red-600 font-bold text-xs uppercase">Deactive</span>
-                                        @endif
+                                    <td class="px-6 py-4">
+                                        <span
+                                            class="px-2 py-1 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            {{ $user->status }}
+                                        </span>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                        @can('edit_assigned_customers')
-                                            <a href="{{ route('users.edit', $user->id) }}"
-                                                class="text-indigo-600 hover:text-indigo-900 mr-3">
-                                                Edit
-                                            </a>
-                                        @endcan
+                                    <td class="px-6 py-4 text-right">
+                                        <a href="{{ route('users.edit', $user) }}"
+                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-gray-100 transition">
+                                            {{ __('Edit HQ/Staff') }}
+                                        </a>
                                     </td>
                                 </tr>
+
+                                {{-- Branch Sub-Rows: Fulfills "Sub line below HQ" requirement --}}
+                                @if ($user->branches->isNotEmpty())
+                                    @foreach ($user->branches as $branch)
+                                        <tr class="border-b bg-gray-50/50 hover:bg-gray-100 transition-colors">
+                                            <td class="px-6 py-3 pl-12"> {{-- Indented for visual sub-line --}}
+                                                <div class="flex items-center">
+                                                    <span class="text-gray-400 mr-2 text-lg">â†³</span>
+                                                    <div class="flex flex-col">
+                                                        <div class="text-sm font-semibold text-gray-700">
+                                                            {{ $branch->name }}</div>
+                                                        <div class="text-[10px] text-gray-400 font-mono">
+                                                            {{ $branch->login_id }}</div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td class="px-6 py-3 text-[10px] font-bold uppercase text-gray-400 italic">
+                                                {{ __('Branch Account') }}
+                                            </td>
+                                            <td class="px-6 py-3">
+                                                <span
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase {{ $branch->status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600' }}">
+                                                    {{ $branch->status }}
+                                                </span>
+                                            </td>
+                                            <td class="px-6 py-3 text-right">
+                                                <a href="{{ route('users.edit', $branch) }}"
+                                                    class="inline-block bg-gray-200 text-gray-600 px-3 py-1 rounded-md text-[10px] font-bold uppercase hover:bg-gray-300 transition">
+                                                    {{ __('Edit Branch') }}
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                @endif
                             @endforeach
                         </tbody>
                     </table>
@@ -6858,74 +6901,144 @@ $classes = ($active ?? false)
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Create New User') }}
+            {{ $parent ? __('Add Branch for ') . $parent->name : __('Create New User') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6" x-data="{ role: '{{ $parent ? 'customer' : old('role', '') }}' }">
                 <form method="POST" action="{{ route('users.store') }}">
                     @csrf
+                    @if ($parent)
+                        <input type="hidden" name="parent_id" value="{{ $parent->id }}">
+                        <input type="hidden" name="role" value="customer">
+                        <input type="hidden" name="catalog_id" value="{{ $parent->catalog_id }}">
+                        <input type="hidden" name="assigned_cs_id" value="{{ $parent->assigned_cs_id }}">
+                    @endif
 
-                    <div class="mb-4">
-                        <x-input-label for="name" :value="__('Full Name')" />
-                        <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
-                            :value="old('name')" required autofocus />
-                        <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- Left Column: Auth Info -->
+                        <div class="space-y-4">
+                            <h3 class="font-bold text-gray-700 border-b pb-2">{{ __('Account Credentials') }}</h3>
+
+                            <div>
+                                <x-input-label for="role" :value="__('User Role')" />
+                                <select id="role" name="role" x-model="role"
+                                    class="block mt-1 w-full border-gray-300 rounded-md shadow-sm @if ($parent) bg-gray-100 cursor-not-allowed @endif"
+                                    @if ($parent) disabled @endif>
+                                    <option value="">{{ __('Select a Role') }}</option>
+                                    @foreach ($roles as $roleOption)
+                                        <option value="{{ $roleOption->name }}">
+                                            {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}</option>
+                                    @endforeach
+                                </select>
+                                @if ($parent)
+                                    <p class="text-[10px] text-blue-600 mt-1 uppercase font-bold">
+                                        {{ __('Locked: Branches must be customers') }}</p>
+                                @endif
+                            </div>
+
+                            <div>
+                                <x-input-label for="name" :value="__('Full Name')" />
+                                <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
+                                    :value="old('name')" required />
+                            </div>
+
+                            <div>
+                                <x-input-label for="login_id" :value="__('Login ID')" />
+                                <x-text-input id="login_id" class="block mt-1 w-full" type="text" name="login_id"
+                                    :value="old('login_id')" required />
+                            </div>
+
+                            <div>
+                                <x-input-label for="email" :value="__('Email Address')" />
+                                <x-text-input id="email" class="block mt-1 w-full" type="email" name="email"
+                                    :value="old('email')" required />
+                            </div>
+
+                            <div>
+                                <x-input-label for="password" :value="__('Password')" />
+                                <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"
+                                    required />
+                            </div>
+
+                            <div>
+                                <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
+                                <x-text-input id="password_confirmation" class="block mt-1 w-full" type="password"
+                                    name="password_confirmation" required />
+                            </div>
+                        </div>
+
+                        <!-- Right Column: Dynamic Company Form -->
+                        <div class="space-y-4" x-show="role === 'customer'" x-transition>
+                            <h3 class="font-bold text-blue-700 border-b pb-2">{{ __('Company & Logistics') }}</h3>
+
+                            @if ($parent)
+                                <div class="bg-blue-50 p-3 rounded border border-blue-100 text-xs text-blue-700 mb-4">
+                                    <strong>{{ __('Note:') }}</strong>
+                                    {{ __('This branch will inherit Catalog and CS Representative from ') }}
+                                    {{ $parent->name }}.
+                                </div>
+                            @endif
+
+                            <div>
+                                <x-input-label for="company_name" :value="__('Company/Branch Name')" />
+                                <x-text-input id="company_name" class="block mt-1 w-full" type="text"
+                                    name="company_name" :value="old('company_name', $parent->details->company_name ?? '')" />
+                            </div>
+
+                            {{-- Add other detail fields here as needed --}}
+                            <div>
+                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
+                                <x-text-input id="company_reg_no" class="block mt-1 w-full" type="text"
+                                    name="company_reg_no" :value="old('company_reg_no', $parent->details->company_reg_no ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="pic_name" :value="__('PIC Name')" />
+                                <x-text-input id="pic_name" class="block mt-1 w-full" type="text" name="pic_name"
+                                    :value="old('pic_name', $parent->details->pic_name ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="pic_phone" :value="__('PIC Phone')" />
+                                <x-text-input id="pic_phone" class="block mt-1 w-full" type="text" name="pic_phone"
+                                    :value="old('pic_phone', $parent->details->pic_phone ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="delivery_address" :value="__('Delivery Address')" />
+                                <textarea id="delivery_address" class="block mt-1 w-full" type="text" name="delivery_address"
+                                    :value="old('delivery_address', $parent->details->delivery_address ?? '')"></textarea>
+                            </div>
+
+                            <div>
+                                <x-input-label for="city" :value="__('City')" />
+                                <x-text-input id="city" class="block mt-1 w-full" type="text" name="city"
+                                    :value="old('city', $parent->details->city ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="state" :value="__('State')" />
+                                <x-text-input id="state" class="block mt-1 w-full" type="text" name="state"
+                                    :value="old('state', $parent->details->state ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="postal_code" :value="__('Postal Code')" />
+                                <x-text-input id="postal_code" class="block mt-1 w-full" type="text"
+                                    name="postal_code" :value="old('postal_code', $parent->details->postal_code ?? '')" />
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="login_id" :value="__('Login ID (e.g. staff01)')" />
-                        <x-text-input id="login_id" class="block mt-1 w-full" type="text" name="login_id"
-                            :value="old('login_id')" required />
-                        <x-input-error :messages="$errors->get('login_id')" class="mt-2" />
-                    </div>
-
-                    <div class="mb-4">
-                        <x-input-label for="email" :value="__('Email Address')" />
-                        <x-text-input id="email" class="block mt-1 w-full" type="email" name="email"
-                            :value="old('email')" required />
-                        <x-input-error :messages="$errors->get('email')" class="mt-2" />
-                    </div>
-
-                    <div class="mb-4">
-                        <x-input-label for="role" :value="__('Assign Role')" />
-                        <select id="role" name="role"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">
-                            <option value="" disabled selected>Select a Role</option>
-                            @foreach ($roles as $role)
-                                <option value="{{ $role->name }}">
-                                    {{ ucfirst(str_replace('_', ' ', $role->name)) }}
-                                </option>
-                            @endforeach
-                        </select>
-                        <x-input-error :messages="$errors->get('role')" class="mt-2" />
-                    </div>
-
-                    <div class="mb-4">
-                        <x-input-label for="password" :value="__('Password')" />
-                        <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"
-                            required />
-                        <x-input-error :messages="$errors->get('password')" class="mt-2" />
-                    </div>
-
-                    <div class="mb-6">
-                        <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-                        <x-text-input id="password_confirmation" class="block mt-1 w-full" type="password"
-                            name="password_confirmation" required />
-                        <x-input-error :messages="$errors->get('password_confirmation')" class="mt-2" />
-                    </div>
-
-                    <div class="flex items-center justify-end">
-                        <a href="{{ route('users.index') }}" class="text-gray-600 hover:text-gray-900 mr-4">Cancel</a>
-                        <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded-md hover:bg-gray-700">
-                            Create User
-                        </button>
+                    <div class="flex items-center justify-end mt-8 border-t pt-6">
+                        <a href="{{ url()->previous() }}"
+                            class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
+                        <x-primary-button>{{ __('Create User') }}</x-primary-button>
                     </div>
                 </form>
-
             </div>
         </div>
     </div>
@@ -6970,16 +7083,19 @@ $classes = ($active ?? false)
 
                     <!-- ROLE SECTION -->
                     <div class="mb-4">
-                        <x-input-label for="role" :value="__('Role')" />
-                        <select name="role" id="role"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
-                            @if ($user->hasRole('admin')) disabled @endif>
+                        <x-input-label for="role" :value="__('User Role')" />
+                        <input type="hidden" name="role" value="{{ $user->roles->first()->name }}">
+                        <select id="role"
+                            class="block mt-1 w-full border-gray-300 bg-gray-100 cursor-not-allowed rounded-md shadow-sm"
+                            disabled>
                             @foreach ($roles as $role)
                                 <option value="{{ $role->name }}" @if ($user->hasRole($role->name)) selected @endif>
                                     {{ ucfirst(str_replace('_', ' ', $role->name)) }}
                                 </option>
                             @endforeach
                         </select>
+                        <p class="text-[10px] text-red-600 mt-1 uppercase font-bold">
+                            {{ __('Role cannot be changed after creation for security integrity.') }}</p>
                         {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
                         @if ($user->hasRole('admin'))
                             <p class="text-xs text-red-500 mt-1 italic">Reason: The System Admin role is permanent to
@@ -7117,6 +7233,20 @@ $classes = ($active ?? false)
                             class="text-sm text-gray-600 hover:text-gray-900 underline">
                             {{ __('Cancel') }}
                         </a>
+
+                        @if ($user->hasRole('customer') && is_null($user->parent_id))
+                            <div class="mt-6 p-4 bg-gray-50 border rounded-lg flex justify-between items-center">
+                                <div>
+                                    <h4 class="font-bold text-sm text-gray-900">{{ __('Branch Management') }}</h4>
+                                    <p class="text-xs text-gray-500">
+                                        {{ __('Create a sub-account that inherits this HQ\'s settings.') }}</p>
+                                </div>
+                                <a href="{{ route('users.create', ['parent_id' => $user->id]) }}"
+                                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
+                                    {{ __('+ Add New Branch') }}
+                                </a>
+                            </div>
+                        @endif
                     </div>
                 </form>
 
@@ -7196,34 +7326,73 @@ $classes = ($active ?? false)
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             @foreach ($users as $user)
-                                <tr>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">{{ $user->name }}</div>
-                                        <div class="text-sm text-gray-500">{{ $user->login_id }}</div>
+                                {{-- Main HQ/Top-Level Row --}}
+                                <tr class="border-b hover:bg-gray-50 transition-colors group">
+                                    <td class="px-6 py-4">
+                                        <div class="flex flex-col">
+                                            <div class="text-sm font-bold text-gray-900">
+                                                {{ $user->name }}
+                                                {{-- Fulfills Request: "MAIN HQ" tag only for Customers with no parent_id --}}
+                                                @if ($user->hasRole('customer') && is_null($user->parent_id))
+                                                    <span
+                                                        class="ml-2 px-1.5 py-0.5 bg-blue-600 text-white rounded text-[10px] uppercase font-black tracking-tighter">
+                                                        {{ __('MAIN HQ') }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                            <div class="text-xs text-gray-500 font-mono">{{ $user->login_id }}</div>
+                                        </div>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        {{-- Spatie helper to get role names --}}
-                                        @foreach ($user->getRoleNames() as $role)
-                                            <span
-                                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                                                {{ ucfirst(str_replace('_', ' ', $role)) }}
-                                            </span>
-                                        @endforeach
+                                    <td class="px-6 py-4 text-xs font-bold uppercase text-gray-600">
+                                        {{ $user->roles->pluck('name')->map(fn($n) => str_replace('_', ' ', $n))->implode(', ') }}
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        @if ($user->status === 'active')
-                                            <span class="text-green-600 font-bold text-xs uppercase">Active</span>
-                                        @else
-                                            <span class="text-red-600 font-bold text-xs uppercase">Deactive</span>
-                                        @endif
+                                    <td class="px-6 py-4">
+                                        <span
+                                            class="px-2 py-1 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            {{ $user->status }}
+                                        </span>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                        @can('edit_users')
-                                            <a href="{{ route('users.edit', $user->id) }}"
-                                                class="text-indigo-600 hover:text-indigo-900 mr-3">Edit</a>
-                                        @endcan
+                                    <td class="px-6 py-4 text-right">
+                                        <a href="{{ route('users.edit', $user) }}"
+                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-gray-100 transition">
+                                            {{ __('Edit HQ/Staff') }}
+                                        </a>
                                     </td>
                                 </tr>
+
+                                {{-- Branch Sub-Rows: Fulfills "Sub line below HQ" requirement --}}
+                                @if ($user->branches->isNotEmpty())
+                                    @foreach ($user->branches as $branch)
+                                        <tr class="border-b bg-gray-50/50 hover:bg-gray-100 transition-colors">
+                                            <td class="px-6 py-3 pl-12"> {{-- Indented for visual sub-line --}}
+                                                <div class="flex items-center">
+                                                    <span class="text-gray-400 mr-2 text-lg">â†³</span>
+                                                    <div class="flex flex-col">
+                                                        <div class="text-sm font-semibold text-gray-700">
+                                                            {{ $branch->name }}</div>
+                                                        <div class="text-[10px] text-gray-400 font-mono">
+                                                            {{ $branch->login_id }}</div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td class="px-6 py-3 text-[10px] font-bold uppercase text-gray-400 italic">
+                                                {{ __('Branch Account') }}
+                                            </td>
+                                            <td class="px-6 py-3">
+                                                <span
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase {{ $branch->status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600' }}">
+                                                    {{ $branch->status }}
+                                                </span>
+                                            </td>
+                                            <td class="px-6 py-3 text-right">
+                                                <a href="{{ route('users.edit', $branch) }}"
+                                                    class="inline-block bg-gray-200 text-gray-600 px-3 py-1 rounded-md text-[10px] font-bold uppercase hover:bg-gray-300 transition">
+                                                    {{ __('Edit Branch') }}
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                @endif
                             @endforeach
                         </tbody>
                     </table>
@@ -9387,7 +9556,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
 
         // 2. Resource Index
-        // Fulfills Section 5.a: My Fulfillment Workspace [7]
+        // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
 
         // 3. Wildcard Routes (Must come last)
@@ -12831,7 +13000,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 * Separate the claim order and view claimed order into two page.
 * Updated the logic of only un-assign customer order will appear in the "Claiming Queue" page.
-* Added the "My Processed History" to let CS can see all his claimed history list.
+* Added the "My Claimed Orders" to let CS can see all his claimed history list.
 
 --- END_FILE ---
 

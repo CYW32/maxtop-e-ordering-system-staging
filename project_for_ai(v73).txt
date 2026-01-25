@@ -217,8 +217,8 @@ use Illuminate\Support\Facades\DB;
 class OrderManagementController extends Controller
 {
     /**
-     * Fulfills Section 5.a: My Fulfillment Workspace
-     * Displays orders assigned to me or currently handled by me.
+     * Fulfills Section 5.a: On-going Orders
+     * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
     public function index()
     {
@@ -301,7 +301,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Ownership Logic: Claiming an order [5]
+     * Fulfills Ownership Logic and Section 5.a Permanent Cluster Assignment
      */
     public function claim(Order $order)
     {
@@ -309,14 +309,37 @@ class OrderManagementController extends Controller
             return redirect()->back()->with('error', 'This order has already been claimed.');
         }
 
-        $order->update(['handler_id' => auth()->id()]);
+        DB::transaction(function () use ($order) {
+            // 1. Claim the specific order
+            $order->update(['handler_id' => auth()->id()]);
+
+            // 2. Fulfills Section 5.a Cluster Logic:
+            // If the HQ is unassigned, assign the entire hierarchy to this CS
+            $customer = $order->user;
+
+            // Find the "Root HQ" (The user themselves if they have no parent)
+            $hq = $customer->parent_id ? $customer->parent : $customer;
+
+            if (is_null($hq->assigned_cs_id)) {
+                // Assign the HQ
+                $hq->update(['assigned_cs_id' => auth()->id()]);
+
+                // Assign all associated branches
+                $hq->branches()->update(['assigned_cs_id' => auth()->id()]);
+
+                activity('user_assignment')
+                    ->performedOn($hq)
+                    ->causedBy(auth()->user())
+                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: ".auth()->user()->name);
+            }
+        });
 
         activity('order')
             ->performedOn($order)
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        return redirect()->back()->with('success', 'Order claimed. You are now the current handler.');
+        return redirect()->back()->with('success', 'Order claimed. You are now the assigned representative for this entire customer hierarchy.');
     }
 
     /**
@@ -404,6 +427,22 @@ class OrderManagementController extends Controller
 
         return redirect()->back()->with('success', 'Internal notes updated successfully.');
     }
+
+    /**
+     * Fulfills Section 5.c: My Claimed Orders (Master List)
+     * Displays all orders ever claimed by this CS, providing a full historical audit trail.
+     */
+    public function history()
+    {
+        $user = auth()->user();
+
+        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
+        $history = Order::where('handler_id', $user->id)
+            ->latest()
+            ->paginate(15);
+
+        return view('cs.orders.history', compact('history'));
+    }
 }
 
 --- END_FILE ---
@@ -449,22 +488,41 @@ class OrderHistoryController extends Controller
 namespace App\Http\Controllers\Customer;
 
 use App\Http\Controllers\Controller;
+use App\Models\Category;
+use App\Models\Item;
+use Illuminate\Http\Request;
 
 class ProductCatalogController extends Controller
 {
     /**
      * Display the whitelisted products for the logged-in customer.
+     * Fulfills Section 3.a Whitelist Logic.
      */
-    public function index()
+    public function index(Request $request)
     {
         $user = auth()->user();
 
-        // Fulfills Whitelist Logic: Uses the User model method to fetch items [2, 3]
-        $items = $user->getVisibleItems();
+        // Fulfills Whitelist Logic: Customers only see their assigned catalog items [4]
+        $query = Item::whereHas('catalogs', function ($q) use ($user) {
+            $q->where('catalogs.id', $user->getEffectiveCatalogId());
+        });
 
-        // Fulfills Inheritance: getVisibleItems() automatically checks parent catalog if branch is unassigned [2, 3]
+        // Fulfills Request: Optional Category Filtering with Ambiguity Fix
+        if ($request->filled('category')) {
+            $query->whereHas('categories', function ($q) use ($request) {
+                // FIXED: Explicitly qualify 'id' with the table name to prevent SQL STATE
+                $q->where('categories.id', $request->category);
+            });
+        }
 
-        return view('customer.products.index', compact('items'));
+        $items = $query->with('categories')->get();
+
+        // Fulfills UI Requirement: Only show categories available to THIS user's whitelist
+        $availableCategories = Category::whereHas('items', function ($q) use ($user) {
+            $q->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $user->getEffectiveCatalogId()));
+        })->get();
+
+        return view('customer.products.index', compact('items', 'availableCategories'));
     }
 }
 
@@ -529,10 +587,15 @@ class ReservationController extends Controller
     public function store(AddToCartRequest $request)
     {
         $user = auth()->user();
+
+        // Fulfills Request: Check for pending blocks
+        if ($user->hasPendingOrder()) {
+            return redirect()->back()->with('error', 'You have a pending order awaiting review. Please recall it to draft if you wish to make changes or add new items.');
+        }
+
         $draft = $user->getOrCreateDraft();
         $item = Item::findOrFail($request->item_id);
 
-        // Check if item already exists in draft
         $orderItem = $draft->items()->where('item_id', $item->id)->first();
 
         if ($orderItem) {
@@ -540,13 +603,36 @@ class ReservationController extends Controller
         } else {
             $draft->items()->create([
                 'item_id' => $item->id,
-                'snapshot_name' => $item->name, // Initial snapshot
+                'snapshot_name' => $item->name,
                 'quantity' => $request->quantity,
                 'price_at_order' => $item->price,
             ]);
         }
 
         return redirect()->back()->with('success', 'Item added to your reservation draft.');
+    }
+
+    /**
+     * Fulfills Request: Move a 'pending' order back to 'draft' status.
+     */
+    public function recall(\App\Models\Order $order)
+    {
+        // Security check: Ownership and Status
+        if ($order->user_id !== auth()->id() || $order->status !== 'pending') {
+            abort(403, 'Unauthorized recall attempt.');
+        }
+
+        $order->update([
+            'status' => 'draft',
+            'order_number' => null, // Reset order number until re-submitted
+        ]);
+
+        activity('order')
+            ->performedOn($order)
+            ->causedBy(auth()->user())
+            ->log('Customer recalled pending order back to draft');
+
+        return redirect()->route('reservation.index')->with('success', 'Order has been recalled to your draft for editing.');
     }
 
     /**
@@ -733,14 +819,107 @@ class CatalogController extends Controller
 
     public function destroy(Catalog $catalog)
     {
-        // Prevent deletion if customers are currently assigned (Single Catalog Policy) [6]
-        if (\App\Models\User::where('catalog_id', $catalog->id)->exists()) {
+        Gate::authorize('edit_catalogs');
+
+        if (! $catalog->canBeDeleted()) {
             return redirect()->back()->with('error', 'Cannot delete catalog while customers are assigned to it.');
         }
 
         $catalog->delete();
 
         return redirect()->route('catalogs.index')->with('success', 'Catalog removed.');
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\CategoryController.php ---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+use App\Models\Item;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
+
+class CategoryController extends Controller
+{
+    /**
+     * Display a listing of categories with item counts.
+     */
+    public function index()
+    {
+        Gate::authorize('view_items');
+
+        $categories = Category::withCount('items')
+            ->latest()
+            ->paginate(10);
+
+        return view('admin.categories.index', compact('categories'));
+    }
+
+    /**
+     * Store a newly created category.
+     */
+    public function store(Request $request)
+    {
+        Gate::authorize('create_items');
+
+        $validated = $request->validate([
+            'name' => 'required|unique:categories,name|max:255',
+        ]);
+
+        Category::create($validated);
+
+        return redirect()->back()->with('success', 'Category created successfully.');
+    }
+
+    /**
+     * Show the form for editing the category and its assigned items.
+     */
+    public function edit(Category $category)
+    {
+        Gate::authorize('edit_items');
+
+        // Fetch all items to allow staff to group them into this category
+        $items = Item::orderBy('name')->get();
+        $assignedItemIds = $category->items()->pluck('items.id')->toArray();
+
+        return view('admin.categories.edit', compact('category', 'items', 'assignedItemIds'));
+    }
+
+    /**
+     * Update the category name and synchronize item groupings.
+     */
+    public function update(Request $request, Category $category)
+    {
+        Gate::authorize('edit_items');
+
+        $validated = $request->validate([
+            'name' => 'required|max:255|unique:categories,name,'.$category->id,
+            'items' => 'nullable|array',
+            'items.*' => 'exists:items,id',
+        ]);
+
+        $category->update(['name' => $validated['name']]);
+
+        // Fulfills Requirement: Arrange items in groups
+        $category->items()->sync($request->input('items', []));
+
+        return redirect()->route('categories.index')->with('success', 'Category and item groupings updated.');
+    }
+
+    /**
+     * Remove the category (Items are not deleted).
+     */
+    public function destroy(Category $category)
+    {
+        Gate::authorize('edit_items');
+
+        $category->delete();
+
+        return redirect()->route('categories.index')->with('success', 'Category removed. Items remain in the system.');
     }
 }
 
@@ -830,17 +1009,19 @@ class ItemController extends Controller
             'name' => 'required|string|max:255',
             'price' => 'required|numeric|min:0',
             'description' => 'nullable|string',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048', // 2MB max
+            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
         ]);
 
         if ($request->hasFile('image')) {
-            // Requirement 7: Automated image compression placeholder [3]
-            // For now, we store it in the public disk
             $path = $request->file('image')->store('items', 'public');
             $validated['image_path'] = $path;
         }
 
-        Item::create($validated);
+        // FIX: Assign the created instance to $item so it can be used for relationship syncing
+        $item = Item::create($validated);
+
+        // Fulfills Category Assignment requirement
+        $item->categories()->sync($request->input('categories', []));
 
         return redirect()->route('items.index')->with('success', 'Item created successfully.');
     }
@@ -877,6 +1058,7 @@ class ItemController extends Controller
         }
 
         $item->update($validated);
+        $item->categories()->sync($request->input('categories', []));
 
         return redirect()->route('items.index')->with('success', 'Item updated successfully.');
     }
@@ -1022,116 +1204,122 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\Rules;
 use Spatie\Permission\Models\Role;
 
 class UserController extends Controller
 {
-    // // 1. LIST USERS
-    // public function index(Request $request)
-    // {
-    //     // Get Roles for the filter dropdown
-    //     // plucking name/name creates an array like ['admin' => 'admin']
-    //     $roles = Role::pluck('name', 'name');
-
-    //     $users = User::with('roles')
-    //         ->search($request->search) // <--- Magic happens here(The 'search()' method now exists automatically!)
-    //         ->filterByDate() // <--- Date Filter (Defaults to created_at)
-    //         ->filterByRole()
-    //         ->latest()
-    //         ->paginate(10)
-    //         ->withQueryString(); // Keep the search term when changing pages
-
-    //     return view('users.index', compact('users', 'roles'));
-    // }
-
     public function index(Request $request)
     {
-        // Get Roles for the filter dropdown
-        // plucking name/name creates an array like ['admin' => 'admin']
-        $roles = Role::pluck('name', 'name');
+        $roles = \Spatie\Permission\Models\Role::pluck('name', 'name');
 
-        $query = User::with('roles');
+        // Fulfills Section 3.a & User Request: Fetch only top-level accounts (no parent)
+        $query = User::with(['roles', 'parent', 'branches.roles', 'details'])
+            ->whereNull('parent_id');
 
-        // CS Leaders cannot see Admins or other CS Leaders [7]
         if (auth()->user()->hasRole('cs_leader')) {
-            $query->whereDoesntHave('roles', function ($q) {
-                $q->whereIn('name', ['admin', 'cs_leader']);
-            });
+            $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
         }
 
-        // DATA ISOLATION LOGIC:
-        // If the user is CS Staff and the 'view_assigned_customers' permission is ON
         if (auth()->user()->hasPermissionTo('view_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-
-            // They ONLY see customers assigned to them
             $query->where('assigned_cs_id', auth()->id());
         }
 
-        $roles = Role::pluck('name', 'name');
         $users = $query->search($request->search)
             ->filterByDate()
             ->filterByRole()
             ->latest()
-            ->paginate(10)
-            ->withQueryString(); // Keep the search term when changing pages
+            ->paginate(15)
+            ->withQueryString();
 
         return view('users.index', compact('users', 'roles'));
     }
 
     public function assignedIndex(Request $request)
     {
-        // Fetch only users where assigned_cs_id matches the logged-in staff member
+        // Fulfills Section 5.a & User Request: Only top-level assigned customers
         $users = User::where('assigned_cs_id', auth()->id())
-            ->with('roles')
+            ->whereNull('parent_id')
+            ->with(['roles', 'parent', 'branches.roles', 'details'])
             ->search($request->search)
             ->filterByDate()
             ->latest()
-            ->paginate(10);
+            ->paginate(15);
 
-        // We only need the 'customer' role for the filter in this view
         $roles = ['customer' => 'customer'];
 
         return view('users.assigned', compact('users', 'roles'));
     }
 
     // SHOW CREATE FORM
-    public function create()
+    public function create(Request $request)
     {
-        // Get all roles except 'admin' if you want to restrict that
-        // For now, let's fetch all available roles so you can choose
-        $roles = Role::all();
+        $roles = \Spatie\Permission\Models\Role::all();
+        $parent = null;
 
-        return view('users.create', compact('roles'));
+        // Fulfills Section 3.a.2: Branch inheritance context
+        if ($request->has('parent_id')) {
+            $parent = User::with('details')->findOrFail($request->parent_id);
+        }
+
+        $catalogs = \App\Models\Catalog::all();
+        $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
+
+        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers'));
     }
 
-    // STORE NEW USER
+    // Save new user
     public function store(Request $request)
     {
-        // A. Validate the input
+        // 1. Updated Validation to include all Detail fields
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'login_id' => ['required', 'string', 'max:255', 'unique:users'],
             'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
-            'role' => ['required', 'exists:roles,name'], // Must pick a valid role
+            'password' => ['required', 'confirmed', \Illuminate\Validation\Rules\Password::defaults()],
+            'role' => ['required', 'exists:roles,name'],
+            'parent_id' => ['nullable', 'exists:users,id'],
+            'catalog_id' => ['nullable', 'exists:catalogs,id'],
+            'assigned_cs_id' => ['nullable', 'exists:users,id'],
+            'company_name' => ['nullable', 'string', 'max:255'],
+            'company_reg_no' => ['nullable', 'string', 'max:255'],
+            'pic_name' => ['nullable', 'string', 'max:255'],
+            'pic_phone' => ['nullable', 'string', 'max:255'],
+            'delivery_address' => ['nullable', 'string'],
+            'city' => ['nullable', 'string', 'max:100'],
+            'state' => ['nullable', 'string', 'max:100'],
+            'postal_code' => ['nullable', 'string', 'max:20'],
         ]);
 
-        // B. Create the User
+        // 2. Create the User with Hierarchy data
         $user = User::create([
             'name' => $request->name,
             'login_id' => $request->login_id,
             'email' => $request->email,
-            'status' => 'active', // Default status
             'password' => Hash::make($request->password),
+            'status' => 'active',
+            'parent_id' => $request->parent_id, // Fulfills Branch Architecture [3]
+            'catalog_id' => $request->catalog_id,
+            'assigned_cs_id' => $request->assigned_cs_id ?? (auth()->user()->hasRole('cs_staff') ? auth()->id() : null),
         ]);
 
-        // C. Assign the Role (Spatie Logic)
         $user->assignRole($request->role);
 
-        // D. Go back to list with success message
-        return redirect()->route('users.index')
+        // 3. Fulfills Request: Persist ALL detail fields, not just company_name
+        if ($request->role === 'customer') {
+            $user->details()->create($request->only([
+                'company_name',
+                'company_reg_no',
+                'pic_name',
+                'pic_phone',
+                'delivery_address',
+                'city',
+                'state',
+                'postal_code',
+            ]));
+        }
+
+        return redirect()->route($request->has('parent_id') || auth()->user()->hasRole('cs_staff') ? 'users.assigned' : 'users.index')
             ->with('success', 'User created successfully.');
     }
 
@@ -1218,6 +1406,19 @@ class UserController extends Controller
         }
 
         return redirect()->route('users.assigned')->with('success', 'Customer info updated.');
+    }
+
+    public function destroy(User $user)
+    {
+        Gate::authorize('edit_users');
+
+        if (! $user->canBeDeleted()) {
+            return redirect()->back()->with('error', 'This user has existing order records or sub-branches and cannot be deleted to protect data integrity.');
+        }
+
+        $user->delete();
+
+        return redirect()->route('users.index')->with('success', 'User removed successfully.');
     }
 }
 
@@ -1430,6 +1631,41 @@ class Catalog extends Model
     {
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
+
+    public function canBeDeleted(): bool
+    {
+        // Fulfills Single Catalog Policy: Lock if users are assigned
+        // or if the system needs to maintain the record for history.
+        return ! (\App\Models\User::where('catalog_id', $this->id)->exists());
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Category.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+
+class Category extends Model
+{
+    use LogsActivity;
+
+    protected $fillable = ['name'];
+
+    public function items()
+    {
+        return $this->belongsToMany(Item::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
 }
 
 --- END_FILE ---
@@ -1506,16 +1742,19 @@ class Item extends Model
      */
     public function canBeDeleted(): bool
     {
-        return ! $this->orderItems()
-            ->whereHas('order', function ($q) {
-                // Updated to include 'draft' and 'pending' per Section 3C [1]
-                $q->whereIn('status', ['draft', 'pending', 'approved', 'in_transit', 'completed']);
-            })->exists();
+        // Fulfills Section 3.c.1 & 3.c.2: Lock if in ANY order status
+        return ! $this->orderItems()->exists();
     }
 
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+
+    // Inside Item class
+    public function categories()
+    {
+        return $this->belongsToMany(Category::class);
     }
 }
 
@@ -1771,6 +2010,14 @@ class User extends Authenticatable
         })->get();
     }
 
+    /**
+     * Fulfills Request: Check if the user has an order currently awaiting review.
+     */
+    public function hasPendingOrder(): bool
+    {
+        return $this->orders()->where('status', 'pending')->exists();
+    }
+
     public function orders()
     {
         return $this->hasMany(\App\Models\Order::class);
@@ -1786,18 +2033,28 @@ class User extends Authenticatable
     }
 
     /**
-     * Fulfills Section 3A & 3B: Ordering Scope
-     * Direct Ordering: Orders are always tied to the logged-in user.
+     * Refined Section 4.a.1: Logic to prevent draft creation if a pending order exists.
      */
     public function getOrCreateDraft()
     {
         $draft = $this->currentDraft();
 
         if (! $draft) {
+            // Architecture Check: Block creation if a pending order is already in the queue
+            if ($this->hasPendingOrder()) {
+                return null;
+            }
             $draft = $this->orders()->create(['status' => 'draft']);
         }
 
         return $draft;
+    }
+
+    public function canBeDeleted(): bool
+    {
+        // Protect historical data: If a user has placed any order (Draft to Completed),
+        // they are permanent.
+        return ! $this->orders()->exists() && ! $this->branches()->exists();
     }
 }
 
@@ -4180,6 +4437,39 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_02_01_000001_create_categories_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('categories', function (Blueprint $table) {
+            $table->id();
+            $table->string('name')->unique();
+            $table->timestamps();
+        });
+
+        Schema::create('category_item', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('category_id')->constrained()->onDelete('cascade');
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('category_item');
+        Schema::dropIfExists('categories');
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
@@ -4678,6 +4968,147 @@ class RoleSeeder extends Seeder
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\categories\edit.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('âš™ï¸ Manage Group:') }} {{ $category->name }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <form method="POST" action="{{ route('categories.update', $category) }}">
+                @csrf @method('PUT')
+
+                <div class="bg-white shadow sm:rounded-lg p-6 mb-6">
+                    <x-input-label for="name" :value="__('Rename Category')" />
+                    <x-text-input id="name" class="block mt-1 w-2/3 md:w-1/3" type="text" name="name"
+                        :value="old('name', $category->name)" required />
+                </div>
+
+                <div class="bg-white shadow sm:rounded-lg p-6">
+                    <h3 class="font-bold text-gray-700 border-b pb-2 mb-4 uppercase text-xs tracking-widest">
+                        {{ __('Select Items for this Group') }}</h3>
+
+                    @if ($items->isEmpty())
+                        <p class="text-gray-500 italic">
+                            {{ __('No items available. Create items in Product Management first.') }}</p>
+                    @else
+                        <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            @foreach ($items as $item)
+                                <label
+                                    class="relative flex items-center p-3 border rounded-lg hover:bg-gray-50 transition-colors cursor-pointer {{ in_array($item->id, $assignedItemIds) ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200' }}">
+                                    <input value="{{ $item->id }}" name="items[]" type="checkbox"
+                                        class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                        {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}>
+                                    <div class="ml-3">
+                                        <div class="text-xs font-bold text-gray-900">{{ $item->name }}</div>
+                                        <div class="text-[10px] text-gray-400 font-mono">{{ $item->sku }}</div>
+                                    </div>
+                                </label>
+                            @endforeach
+                        </div>
+                    @endif
+
+                    <div class="flex items-center justify-end mt-8 border-t pt-6">
+                        <a href="{{ route('categories.index') }}"
+                            class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
+                        <x-primary-button>{{ __('Save Changes') }}</x-primary-button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\categories\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('ðŸ“‚ Item Categories Management') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+                <!-- Quick Create Category -->
+                @can('create_items')
+                    <div class="bg-white p-6 shadow sm:rounded-lg h-fit">
+                        <h3 class="font-bold text-gray-700 mb-4 uppercase text-xs tracking-widest">
+                            {{ __('Create New Group') }}</h3>
+                        <form method="POST" action="{{ route('categories.store') }}">
+                            @csrf
+                            <div>
+                                <x-input-label for="name" :value="__('Category Name')" />
+                                <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
+                                    required placeholder="e.g. Spare Parts" />
+                                <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                            </div>
+                            <div class="mt-4">
+                                <x-primary-button
+                                    class="w-full justify-center">{{ __('Create Category') }}</x-primary-button>
+                            </div>
+                        </form>
+                    </div>
+                @endcan
+
+                <!-- Categories Table -->
+                <div class="md:col-span-2 bg-white overflow-hidden shadow sm:rounded-lg p-6">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-50 border-b">
+                                <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Group Name') }}
+                                </th>
+                                <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-center">
+                                    {{ __('Items') }}</th>
+                                <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                    {{ __('Actions') }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach ($categories as $category)
+                                <tr class="border-b hover:bg-gray-50 transition-colors">
+                                    <td class="px-4 py-4 text-sm font-bold text-gray-900">{{ $category->name }}</td>
+                                    <td class="px-4 py-4 text-center">
+                                        <span
+                                            class="px-2 py-1 rounded-full bg-blue-100 text-blue-800 text-[10px] font-black uppercase">
+                                            {{ $category->items_count }} {{ __('Linked') }}
+                                        </span>
+                                    </td>
+                                    <td class="px-4 py-4 text-right flex justify-end space-x-2">
+                                        <a href="{{ route('categories.edit', $category) }}"
+                                            class="text-indigo-600 hover:text-indigo-900 text-xs font-black uppercase border border-indigo-200 px-3 py-1 rounded hover:bg-indigo-50">
+                                            {{ __('Manage Items') }}
+                                        </a>
+                                        <form action="{{ route('categories.destroy', $category) }}" method="POST"
+                                            onsubmit="return confirm('Only the group will be deleted. Items will not be removed. Continue?')">
+                                            @csrf @method('DELETE')
+                                            <button type="submit"
+                                                class="text-red-600 hover:text-red-900 text-xs font-black uppercase border border-red-200 px-3 py-1 rounded hover:bg-red-50">
+                                                {{ __('Delete') }}
+                                            </button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                    <div class="mt-4">
+                        {{ $categories->links() }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\items\create.blade.php ---
 <x-app-layout>
     <x-slot name="header">
@@ -4813,6 +5244,21 @@ class RoleSeeder extends Seeder
                         </div>
                     </div>
 
+                    <div class="mt-6">
+                        <x-input-label :value="__('Assign Categories')" />
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
+                            @foreach (\App\Models\Category::all() as $category)
+                                <label
+                                    class="flex items-center text-xs font-bold uppercase text-gray-700 bg-gray-50 p-2 border rounded cursor-pointer hover:bg-gray-100">
+                                    <input type="checkbox" name="categories[]" value="{{ $category->id }}"
+                                        class="rounded border-gray-300 text-indigo-600 mr-2"
+                                        {{ $item->categories->contains($category->id) ? 'checked' : '' }}>
+                                    {{ $category->name }}
+                                </label>
+                            @endforeach
+                        </div>
+                    </div>
+
                     <!-- Description -->
                     <div class="mt-6">
                         <x-input-label for="description" :value="__('Description')" />
@@ -4913,20 +5359,27 @@ class RoleSeeder extends Seeder
                                     RM {{ number_format($item->price, 2) }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                    <!-- Requirement: Show Edit ONLY if View, Create, AND Edit are ticked -->
-                                    @if (auth()->user()->can('view_items') && auth()->user()->can('create_items') && auth()->user()->can('edit_items'))
-                                        <a href="{{ route('items.edit', $item->id) }}"
-                                            class="text-indigo-600 hover:text-indigo-900 mr-4">
-                                            {{ __('Edit') }}
-                                        </a>
-                                    @endif
+                                    @foreach ($items as $item)
+                                        <div class="flex items-center space-x-4">
+                                            <a href="{{ route('items.edit', $item) }}"
+                                                class="text-indigo-600 hover:text-indigo-900 font-bold uppercase text-xs">{{ __('Edit') }}</a>
 
-                                    {{-- @role('admin')
-                                        <form action="{{ route('items.destroy', $item->id) }}" method="POST" class="inline" onsubmit="return confirm('Delete this item?')">
-                                            @csrf @method('DELETE')
-                                            <button type="submit" class="text-red-600 hover:text-red-900">{{ __('Delete') }}</button>
-                                        </form>
-                                    @endrole --}}
+                                            @if ($item->canBeDeleted())
+                                                <form action="{{ route('items.destroy', $item) }}" method="POST"
+                                                    onsubmit="return confirm('Hard delete this item?');">
+                                                    @csrf @method('DELETE')
+                                                    <button type="submit"
+                                                        class="text-red-600 hover:text-red-900 font-bold uppercase text-xs">{{ __('Delete') }}</button>
+                                                </form>
+                                            @else
+                                                <span
+                                                    class="text-gray-400 text-[10px] font-black uppercase italic cursor-help"
+                                                    title="Item is linked to orders and locked.">
+                                                    {{ __('Locked') }}
+                                                </span>
+                                            @endif
+                                        </div>
+                                    @endforeach
                                 </td>
                             </tr>
                         @endforeach
@@ -5581,11 +6034,96 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\history.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('ðŸ“‹ My Claimed Orders Master List') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+                @if ($history->isEmpty())
+                    <div class="text-center py-8">
+                        <p class="text-gray-500 italic">{{ __('You have not claimed any orders yet.') }}</p>
+                    </div>
+                @else
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-50 border-b">
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Order #') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Customer') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">
+                                        {{ __('Last Update') }}</th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600">{{ __('Status') }}
+                                    </th>
+                                    <th class="px-4 py-3 text-xs font-bold uppercase text-gray-600 text-right">
+                                        {{ __('Actions') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($history as $order)
+                                    <tr class="border-b hover:bg-gray-50 transition-colors">
+                                        <td class="px-4 py-4 font-mono text-sm font-bold text-blue-600">
+                                            {{ $order->order_number }}</td>
+                                        <td class="px-4 py-4 text-sm">
+                                            <div class="font-bold text-gray-900">
+                                                {{ $order->user->details->company_name ?? $order->user->name }}</div>
+                                            <div class="text-xs text-gray-400">{{ $order->user->email }}</div>
+                                        </td>
+                                        <td class="px-4 py-4 text-sm text-gray-600">
+                                            {{ $order->updated_at->format('Y-m-d H:i') }}
+                                        </td>
+                                        <td class="px-4 py-4 text-sm">
+                                            {{-- Fulfills Section 4: All Lifecycle Statuses --}}
+                                            @php
+                                                $statusClasses = match ($order->status) {
+                                                    'pending' => 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                                                    'approved' => 'bg-green-100 text-green-800 border-green-300',
+                                                    'in_transit' => 'bg-blue-100 text-blue-800 border-blue-300',
+                                                    'completed' => 'bg-gray-100 text-gray-800 border-gray-300',
+                                                    'cancelled' => 'bg-red-100 text-red-800 border-red-300',
+                                                    default => 'bg-gray-50 text-gray-600 border-gray-200',
+                                                };
+                                            @endphp
+                                            <span
+                                                class="px-2 py-1 rounded-full text-[10px] font-black uppercase border shadow-sm {{ $statusClasses }}">
+                                                {{ $order->status }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-4 text-right">
+                                            <a href="{{ route('office.orders.show', $order) }}"
+                                                class="inline-block bg-white text-gray-700 hover:bg-gray-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-gray-200">
+                                                {{ in_array($order->status, ['completed', 'cancelled']) ? __('View Summary') : __('Process Order') }}
+                                            </a>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="mt-6">
+                        {{ $history->links() }}
+                    </div>
+                @endif
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\index.blade.php ---
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('My Fulfillment Workspace') }}
+            {{ __('On-going Orders (My Active Tasks)') }}
         </h2>
     </x-slot>
 
@@ -5973,17 +6511,22 @@ $classes = ($active ?? false)
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
             {{-- Status Summary Card --}}
-            <div class="bg-white shadow rounded-lg p-6 flex flex-wrap justify-between items-center gap-4">
+            <div class="flex justify-between items-center">
                 <div>
-                    <p class="text-xs font-bold uppercase text-gray-400">{{ __('Current Status') }}</p>
-                    <p class="text-xl font-black uppercase text-blue-700">{{ $order->status }}</p>
+                    <p class="text-xs text-gray-500 uppercase font-bold">{{ __('Current Status') }}</p>
+                    <p class="font-black text-blue-600 uppercase">{{ $order->status }}</p>
                 </div>
-                @if ($order->tracking_number)
-                    <div>
-                        <p class="text-xs font-bold uppercase text-gray-400">{{ __('Logistics') }}</p>
-                        <p class="text-sm font-bold text-gray-800">{{ $order->logistics_carrier }}:
-                            {{ $order->tracking_number }}</p>
-                    </div>
+
+                {{-- Fulfills Request: Recall functionality --}}
+                @if ($order->status === 'pending')
+                    <form action="{{ route('reservation.recall', $order) }}" method="POST"
+                        onsubmit="return confirm('Move this order back to draft for editing?');">
+                        @csrf
+                        <button type="submit"
+                            class="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-md">
+                            {{ __('Recall to Draft') }}
+                        </button>
+                    </form>
                 @endif
             </div>
 
@@ -6054,6 +6597,19 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8 flex flex-wrap gap-2">
+            <a href="{{ route('customer.products.index') }}"
+                class="px-4 py-2 rounded-full text-xs font-black uppercase border {{ !request('category') ? 'bg-blue-600 text-white' : 'bg-white text-gray-600' }}">
+                {{ __('All Items') }}
+            </a>
+            @foreach ($availableCategories as $cat)
+                <a href="{{ route('customer.products.index', ['category' => $cat->id]) }}"
+                    class="px-4 py-2 rounded-full text-xs font-black uppercase border {{ request('category') == $cat->id ? 'bg-blue-600 text-white' : 'bg-white text-gray-600' }}">
+                    {{ $cat->name }}
+                </a>
+            @endforeach
+        </div>
+
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             @if ($items->isEmpty())
                 <div class="bg-white p-6 rounded-lg shadow text-center text-gray-500">
@@ -6082,18 +6638,27 @@ $classes = ($active ?? false)
                                 </p>
 
                                 <div class="mt-4">
-                                    <form action="{{ route('reservation.store') }}" method="POST">
-                                        @csrf
-                                        <input type="hidden" name="item_id" value="{{ $item->id }}">
-                                        <div class="flex items-center gap-2">
-                                            <input type="number" name="quantity" value="1" min="1"
-                                                class="w-20 rounded border-gray-300 text-sm">
-                                            <button type="submit"
-                                                class="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition text-sm font-bold">
-                                                {{ __('Add to Reservation') }}
-                                            </button>
+                                    @if (auth()->user()->hasPendingOrder())
+                                        <div
+                                            class="bg-amber-50 border border-amber-200 p-2 rounded text-[10px] text-amber-700 font-bold uppercase text-center">
+                                            {{ __('Order Pending Review') }}
+                                            <br>
+                                            <span
+                                                class="font-normal normal-case italic">{{ __('Recall pending order to add items.') }}</span>
                                         </div>
-                                    </form>
+                                    @else
+                                        <form action="{{ route('reservation.store') }}" method="POST"
+                                            class="flex gap-2">
+                                            @csrf
+                                            <input type="hidden" name="item_id" value="{{ $item->id }}">
+                                            <x-text-input type="number" name="quantity" value="1" min="1"
+                                                max="999" class="w-20 rounded border-gray-300 text-sm" />
+                                            <x-primary-button
+                                                class="flex-1 justify-center bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition text-sm font-bold">
+                                                {{ __('Add to Reservation') }}
+                                            </x-primary-button>
+                                        </form>
+                                    @endif
                                 </div>
                             </div>
                         </div>
@@ -6309,118 +6874,117 @@ $classes = ($active ?? false)
 --- END_FILE ---
 
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\layouts\navigation.blade.php ---
-<div class="py-4 flex flex-col h-full justify-between">
-
-    <div class="space-y-4">
-        <div class="px-6 flex items-center justify-center">
-            <a href="{{ route('dashboard') }}">
-                <x-application-logo class="block h-16 w-auto fill-current text-gray-800" />
-            </a>
-        </div>
-
-        <!-- Primary Navigation Menu -->
-        <div class="flex flex-col h-full py-4">
-            <!-- Section 1: General (Everyone) -->
-            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
-                {{ __('Dashboard') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('dashboard')" :active="false">
-                {{ __('My Orders') }}
-            </x-nav-link>
-
-            @role('customer')
-                <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">
-                    {{ __('Order Products') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">
-                    {{ __('My Order History') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
-                    {{ __('My Reservation Draft') }}
-                </x-nav-link>
-            @endrole
-
-            <!-- Section 2: Staff Operations (Admin, CS Leader, CS Staff) -->
-            @hasanyrole('admin|cs_leader|cs_staff')
-                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('Office Operations') }}
+<nav x-data="{ open: false }" class="bg-white border-b border-gray-100">
+    <!-- Primary Navigation Menu -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex">
+                <!-- Logo -->
+                <div class="shrink-0 flex items-center">
+                    <a href="{{ route('dashboard') }}">
+                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800" />
+                    </a>
                 </div>
-
-                <!-- Product Management -->
-                @can('view_items')
-                    <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
-                        {{ __('Product Items') }}
-                    </x-nav-link>
-                @endcan
-
-                <!-- Catalog Folders -->
-                @can('view_catalogs')
-                    <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
-                        {{ __('Catalog Folders') }}
-                    </x-nav-link>
-                @endcan
-
-                <!-- User/Customer Management -->
-                @can('view_users')
-                    <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                        {{ __('User Management') }}
-                    </x-nav-link>
-                @endcan
-
-                @can('view_assigned_customers')
-                    <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
-                        {{ __('My Customers') }}
-                    </x-nav-link>
-                @endcan
-
-                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.*')">
-                    {{ __('Order Management Queue') }}
-                </x-nav-link>
-
-                <!-- Fulfillment Workspace -->
-                <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
-                    {{ __('My Fulfillment Workspace') }}
-                </x-nav-link>
-
-                <!-- Claiming Queue -->
-                <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
-                    {{ __('Claiming Queue') }}
-                </x-nav-link>
-            @endhasanyrole
-
-            <!-- Section 3: System Controls (Strict Admin Only) -->
-            @role('admin')
-                <div class="pt-4 pb-2 px-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {{ __('System Control') }}
-                </div>
-
-                <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
-                    {{ __('Feature Settings') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('roles.activity.index')" :active="request()->routeIs('roles.activity.index')">
-                    {{ __('Activity Log') }}
-                </x-nav-link>
-            @endrole
+            </div>
 
         </div>
     </div>
 
-    <div class="px-6 border-t border-gray-200 pt-4">
-        <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
-        <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+    <!-- Sidebar -->
+    <div class="pt-4 pb-1 border-t border-gray-200">
+        @role('customer')
+            <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.index')">
+                {{ __('Order Products') }}
+            </x-nav-link>
 
-        <form method="POST" action="{{ route('logout') }}" class="mt-3">
-            @csrf
-            <button type="submit" class="text-sm text-red-600 hover:text-red-900">
-                {{ __('Log Out') }}
-            </button>
-        </form>
+            <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.index')">
+                {{ __('My Order History') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
+                {{ __('My Reservation Draft') }}
+            </x-nav-link>
+        @endrole
+        @hasanyrole('admin|cs_leader|cs_staff')
+            <div class="px-4 py-2 font-black text-xs uppercase text-gray-400 tracking-widest">{{ __('Office Operations') }}
+            </div>
+
+            @can('view_items')
+                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
+                    {{ __('Product Items') }}
+                </x-nav-link>
+
+                {{-- Fulfills Item Grouping Management Requirement --}}
+                <x-nav-link :href="route('categories.index')" :active="request()->routeIs('categories.*')">
+                    {{ __('Product Categories') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_catalogs')
+                <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
+                    {{ __('Catalog Folders') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_users')
+                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
+                    {{ __('User Management') }}
+                </x-nav-link>
+            @endcan
+
+            @can('view_assigned_customers')
+                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
+                    {{ __('My Customers') }}
+                </x-nav-link>
+            @endcan
+
+            {{-- Fulfills Section 5: Assignment Logic Separation --}}
+            <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
+                {{ __('On-going Orders') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
+                {{ __('Claiming Queue') }}
+            </x-nav-link>
+
+            <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
+                {{ __('My Claimed Orders') }}
+            </x-nav-link>
+        @endhasanyrole
+
+        @role('admin')
+            <div class="mt-4 px-4 py-2 font-black text-xs uppercase text-red-600 tracking-widest">
+                {{ __('System Control') }}</div>
+            <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
+                {{ __('Feature Settings') }}
+            </x-nav-link>
+            <x-nav-link :href="route('activity.index')" :active="request()->routeIs('activity.index')">
+                {{ __('Activity Log') }}
+            </x-nav-link>
+        @endrole
     </div>
-</div>
+
+    <!-- Responsive Settings Options -->
+    <div class="pt-4 pb-1 border-t border-gray-200">
+        {{-- Consolidated Identity & Profile Link: Fulfills standard UI/UX consolidation --}}
+        <a href="{{ route('profile.edit') }}"
+            class="block px-4 py-2 hover:bg-gray-100 transition duration-150 ease-in-out">
+            <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
+            <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+        </a>
+
+        <div class="mt-3 space-y-1">
+            <form method="POST" action="{{ route('logout') }}">
+                @csrf
+                <x-responsive-nav-link :href="route('logout')"
+                    onclick="event.preventDefault();
+                                    this.closest('form').submit();">
+                    {{ __('Log Out') }}
+                </x-responsive-nav-link>
+            </form>
+        </div>
+    </div>
+</nav>
 
 --- END_FILE ---
 
@@ -6657,6 +7221,14 @@ $classes = ($active ?? false)
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
                 <div class="p-6 text-gray-900">
 
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-gray-800">{{ __('My Assigned Customers') }}</h2>
+                        <a href="{{ route('users.create') }}"
+                            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
+                            {{ __('+ Onboard New Customer') }}
+                        </a>
+                    </div>
+
                     {{-- Header with Add Button --}}
                     <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
 
@@ -6698,36 +7270,73 @@ $classes = ($active ?? false)
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             @foreach ($users as $user)
-                                <tr>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">{{ $user->name }}</div>
-                                        <div class="text-sm text-gray-500">{{ $user->login_id }}</div>
+                                {{-- Main HQ/Top-Level Row --}}
+                                <tr class="border-b hover:bg-gray-50 transition-colors group">
+                                    <td class="px-6 py-4">
+                                        <div class="flex flex-col">
+                                            <div class="text-sm font-bold text-gray-900">
+                                                {{ $user->name }}
+                                                {{-- Fulfills Request: "MAIN HQ" tag only for Customers with no parent_id --}}
+                                                @if ($user->hasRole('customer') && is_null($user->parent_id))
+                                                    <span
+                                                        class="ml-2 px-1.5 py-0.5 bg-blue-600 text-white rounded text-[10px] uppercase font-black tracking-tighter">
+                                                        {{ __('MAIN HQ') }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                            <div class="text-xs text-gray-500 font-mono">{{ $user->login_id }}</div>
+                                        </div>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        {{-- Spatie helper to get role names --}}
-                                        @foreach ($user->getRoleNames() as $role)
-                                            <span
-                                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                                                {{ ucfirst(str_replace('_', ' ', $role)) }}
-                                            </span>
-                                        @endforeach
+                                    <td class="px-6 py-4 text-xs font-bold uppercase text-gray-600">
+                                        {{ $user->roles->pluck('name')->map(fn($n) => str_replace('_', ' ', $n))->implode(', ') }}
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        @if ($user->status === 'active')
-                                            <span class="text-green-600 font-bold text-xs uppercase">Active</span>
-                                        @else
-                                            <span class="text-red-600 font-bold text-xs uppercase">Deactive</span>
-                                        @endif
+                                    <td class="px-6 py-4">
+                                        <span
+                                            class="px-2 py-1 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            {{ $user->status }}
+                                        </span>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                        @can('edit_assigned_customers')
-                                            <a href="{{ route('users.edit', $user->id) }}"
-                                                class="text-indigo-600 hover:text-indigo-900 mr-3">
-                                                Edit
-                                            </a>
-                                        @endcan
+                                    <td class="px-6 py-4 text-right">
+                                        <a href="{{ route('users.edit', $user) }}"
+                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-gray-100 transition">
+                                            {{ __('Edit') }}
+                                        </a>
                                     </td>
                                 </tr>
+
+                                {{-- Branch Sub-Rows: Fulfills "Sub line below HQ" requirement --}}
+                                @if ($user->branches->isNotEmpty())
+                                    @foreach ($user->branches as $branch)
+                                        <tr class="border-b bg-gray-50/50 hover:bg-gray-100 transition-colors">
+                                            <td class="px-6 py-3 pl-12"> {{-- Indented for visual sub-line --}}
+                                                <div class="flex items-center">
+                                                    <span class="text-gray-400 mr-2 text-lg">â†³</span>
+                                                    <div class="flex flex-col">
+                                                        <div class="text-sm font-semibold text-gray-700">
+                                                            {{ $branch->name }}</div>
+                                                        <div class="text-[10px] text-gray-400 font-mono">
+                                                            {{ $branch->login_id }}</div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td class="px-6 py-3 text-[10px] font-bold uppercase text-gray-400 italic">
+                                                {{ __('Branch Account') }}
+                                            </td>
+                                            <td class="px-6 py-3">
+                                                <span
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase {{ $branch->status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600' }}">
+                                                    {{ $branch->status }}
+                                                </span>
+                                            </td>
+                                            <td class="px-6 py-3 text-right">
+                                                <a href="{{ route('users.edit', $branch) }}"
+                                                    class="inline-block bg-gray-200 text-gray-600 px-3 py-1 rounded-md text-[10px] font-bold uppercase hover:bg-gray-300 transition">
+                                                    {{ __('Edit') }}
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                @endif
                             @endforeach
                         </tbody>
                     </table>
@@ -6749,74 +7358,159 @@ $classes = ($active ?? false)
 <x-app-layout>
     <x-slot name="header">
         <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Create New User') }}
+            {{ $parent ? __('Add Branch for ') . $parent->name : __('Create New User') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            {{-- Logic: If CS Staff is creating or if adding a branch, force 'customer' role --}}
+            @php
+                $isRestricted = auth()->user()->hasRole('cs_staff') || $parent;
+                $fixedRole = $isRestricted ? 'customer' : old('role', '');
+            @endphp
 
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6" x-data="{ role: '{{ $fixedRole }}' }">
                 <form method="POST" action="{{ route('users.store') }}">
                     @csrf
 
-                    <div class="mb-4">
-                        <x-input-label for="name" :value="__('Full Name')" />
-                        <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
-                            :value="old('name')" required autofocus />
-                        <x-input-error :messages="$errors->get('name')" class="mt-2" />
-                    </div>
+                    {{-- Fulfills Request: Link to HQ and inherit settings [3] --}}
+                    @if ($parent)
+                        <input type="hidden" name="parent_id" value="{{ $parent->id }}">
+                        <input type="hidden" name="catalog_id" value="{{ $parent->catalog_id }}">
+                        <input type="hidden" name="assigned_cs_id" value="{{ $parent->assigned_cs_id }}">
+                    @endif
 
-                    <div class="mb-4">
-                        <x-input-label for="login_id" :value="__('Login ID (e.g. staff01)')" />
-                        <x-text-input id="login_id" class="block mt-1 w-full" type="text" name="login_id"
-                            :value="old('login_id')" required />
-                        <x-input-error :messages="$errors->get('login_id')" class="mt-2" />
-                    </div>
+                    {{-- If role is forced, pass it via hidden input since disabled selects don't submit data --}}
+                    @if ($isRestricted)
+                        <input type="hidden" name="role" value="customer">
+                    @endif
 
-                    <div class="mb-4">
-                        <x-input-label for="email" :value="__('Email Address')" />
-                        <x-text-input id="email" class="block mt-1 w-full" type="email" name="email"
-                            :value="old('email')" required />
-                        <x-input-error :messages="$errors->get('email')" class="mt-2" />
-                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-4">
+                            <h3 class="font-bold text-gray-700 border-b pb-2">{{ __('Account Credentials') }}</h3>
 
-                    <div class="mb-4">
-                        <x-input-label for="role" :value="__('Assign Role')" />
-                        <select id="role" name="role"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">
-                            <option value="" disabled selected>Select a Role</option>
-                            @foreach ($roles as $role)
-                                <option value="{{ $role->name }}">
-                                    {{ ucfirst(str_replace('_', ' ', $role->name)) }}
-                                </option>
-                            @endforeach
-                        </select>
-                        <x-input-error :messages="$errors->get('role')" class="mt-2" />
-                    </div>
+                            <div>
+                                <x-input-label for="role" :value="__('User Role')" />
+                                <select id="role" name="role" x-model="role"
+                                    class="block mt-1 w-full border-gray-300 rounded-md shadow-sm @if ($isRestricted) bg-gray-100 cursor-not-allowed @endif"
+                                    @if ($isRestricted) disabled @endif>
+                                    <option value="">{{ __('Select a Role') }}</option>
+                                    @foreach ($roles as $roleOption)
+                                        <option value="{{ $roleOption->name }}"
+                                            @if ($fixedRole == $roleOption->name) selected @endif>
+                                            {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                @if ($isRestricted)
+                                    <p class="text-[10px] text-blue-600 mt-1 uppercase font-bold">
+                                        {{ __('Fixed Context: Customer Role required') }}</p>
+                                @endif
+                            </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="password" :value="__('Password')" />
-                        <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"
-                            required />
-                        <x-input-error :messages="$errors->get('password')" class="mt-2" />
-                    </div>
+                            {{-- ... Name, Login ID, Email, Password inputs (same as current [4, 5]) ... --}}
+                            <div>
+                                <x-input-label for="name" :value="__('Full Name')" />
+                                <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
+                                    :value="old('name')" required />
+                            </div>
 
-                    <div class="mb-6">
-                        <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-                        <x-text-input id="password_confirmation" class="block mt-1 w-full" type="password"
-                            name="password_confirmation" required />
-                        <x-input-error :messages="$errors->get('password_confirmation')" class="mt-2" />
-                    </div>
+                            <div>
+                                <x-input-label for="login_id" :value="__('Login ID')" />
+                                <x-text-input id="login_id" class="block mt-1 w-full" type="text" name="login_id"
+                                    :value="old('login_id')" required />
+                            </div>
 
-                    <div class="flex items-center justify-end">
-                        <a href="{{ route('users.index') }}" class="text-gray-600 hover:text-gray-900 mr-4">Cancel</a>
-                        <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded-md hover:bg-gray-700">
-                            Create User
-                        </button>
+                            <div>
+                                <x-input-label for="email" :value="__('Email Address')" />
+                                <x-text-input id="email" class="block mt-1 w-full" type="email" name="email"
+                                    :value="old('email')" required />
+                            </div>
+
+                            <div>
+                                <x-input-label for="password" :value="__('Password')" />
+                                <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"
+                                    required />
+                            </div>
+
+                            <div>
+                                <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
+                                <x-text-input id="password_confirmation" class="block mt-1 w-full" type="password"
+                                    name="password_confirmation" required />
+                            </div>
+                        </div>
+
+                        <div class="space-y-4" x-show="role === 'customer'" x-transition>
+                            <h3 class="font-bold text-blue-700 border-b pb-2">{{ __('Company & Logistics') }}</h3>
+
+                            @if ($parent)
+                                <div
+                                    class="bg-blue-50 p-3 rounded border border-blue-100 text-[10px] text-blue-700 mb-4">
+                                    <strong>{{ __('INHERITANCE:') }}</strong>
+                                    {{ __('This branch will automatically inherit Catalog and CS Staff from ') }}
+                                    {{ $parent->name }}.
+                                </div>
+                            @endif
+
+                            <div>
+                                <x-input-label for="company_name" :value="__('Company/Branch Name')" />
+                                <x-text-input id="company_name" class="block mt-1 w-full" type="text"
+                                    name="company_name" :value="old('company_name', $parent->details->company_name ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
+                                <x-text-input id="company_reg_no" class="block mt-1 w-full" type="text"
+                                    name="company_reg_no" :value="old('company_reg_no', $parent->details->company_reg_no ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="pic_name" :value="__('PIC Name')" />
+                                <x-text-input id="pic_name" class="block mt-1 w-full" type="text" name="pic_name"
+                                    :value="old('pic_name', $parent->details->pic_name ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="pic_phone" :value="__('PIC Phone')" />
+                                <x-text-input id="pic_phone" class="block mt-1 w-full" type="text" name="pic_phone"
+                                    :value="old('pic_phone', $parent->details->pic_phone ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="delivery_address" :value="__('Delivery Address')" />
+                                <textarea id="delivery_address" class="block mt-1 w-full" type="text" name="delivery_address"
+                                    :value="old('delivery_address', $parent->details->delivery_address ?? '')"></textarea>
+                            </div>
+
+                            <div>
+                                <x-input-label for="city" :value="__('City')" />
+                                <x-text-input id="city" class="block mt-1 w-full" type="text" name="city"
+                                    :value="old('city', $parent->details->city ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="state" :value="__('State')" />
+                                <x-text-input id="state" class="block mt-1 w-full" type="text" name="state"
+                                    :value="old('state', $parent->details->state ?? '')" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="postal_code" :value="__('Postal Code')" />
+                                <x-text-input id="postal_code" class="block mt-1 w-full" type="text"
+                                    name="postal_code" :value="old('postal_code', $parent->details->postal_code ?? '')" />
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-end mt-8 border-t pt-6">
+                        <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
+                            class="text-sm text-gray-600 hover:text-gray-900 underline">
+                            {{ __('Cancel') }}
+                        </a>
+
+                        <x-primary-button>{{ __('Create User') }}</x-primary-button>
                     </div>
                 </form>
-
             </div>
         </div>
     </div>
@@ -6861,16 +7555,19 @@ $classes = ($active ?? false)
 
                     <!-- ROLE SECTION -->
                     <div class="mb-4">
-                        <x-input-label for="role" :value="__('Role')" />
-                        <select name="role" id="role"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
-                            @if ($user->hasRole('admin')) disabled @endif>
+                        <x-input-label for="role" :value="__('User Role')" />
+                        <input type="hidden" name="role" value="{{ $user->roles->first()->name }}">
+                        <select id="role"
+                            class="block mt-1 w-full border-gray-300 bg-gray-100 cursor-not-allowed rounded-md shadow-sm"
+                            disabled>
                             @foreach ($roles as $role)
                                 <option value="{{ $role->name }}" @if ($user->hasRole($role->name)) selected @endif>
                                     {{ ucfirst(str_replace('_', ' ', $role->name)) }}
                                 </option>
                             @endforeach
                         </select>
+                        <p class="text-[10px] text-red-600 mt-1 uppercase font-bold">
+                            {{ __('Role cannot be changed after creation for security integrity.') }}</p>
                         {{-- CRITICAL: Reason and Hidden Field for Admin Stability --}}
                         @if ($user->hasRole('admin'))
                             <p class="text-xs text-red-500 mt-1 italic">Reason: The System Admin role is permanent to
@@ -7008,6 +7705,20 @@ $classes = ($active ?? false)
                             class="text-sm text-gray-600 hover:text-gray-900 underline">
                             {{ __('Cancel') }}
                         </a>
+
+                        @if ($user->hasRole('customer') && is_null($user->parent_id))
+                            <div class="mt-6 p-4 bg-gray-50 border rounded-lg flex justify-between items-center">
+                                <div>
+                                    <h4 class="font-bold text-sm text-gray-900">{{ __('Branch Management') }}</h4>
+                                    <p class="text-xs text-gray-500">
+                                        {{ __('Create a sub-account that inherits this HQ\'s settings.') }}</p>
+                                </div>
+                                <a href="{{ route('users.create', ['parent_id' => $user->id]) }}"
+                                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
+                                    {{ __('+ Add New Branch') }}
+                                </a>
+                            </div>
+                        @endif
                     </div>
                 </form>
 
@@ -7087,34 +7798,82 @@ $classes = ($active ?? false)
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             @foreach ($users as $user)
-                                <tr>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">{{ $user->name }}</div>
-                                        <div class="text-sm text-gray-500">{{ $user->login_id }}</div>
+                                {{-- Main HQ/Top-Level Row --}}
+                                <tr class="border-b hover:bg-gray-50 transition-colors group">
+                                    <td class="px-6 py-4">
+                                        <div class="flex flex-col">
+                                            <div class="text-sm font-bold text-gray-900">
+                                                {{ $user->name }}
+                                                {{-- Fulfills Request: "MAIN HQ" tag only for Customers with no parent_id --}}
+                                                @if ($user->hasRole('customer') && is_null($user->parent_id))
+                                                    <span
+                                                        class="ml-2 px-1.5 py-0.5 bg-blue-600 text-white rounded text-[10px] uppercase font-black tracking-tighter">
+                                                        {{ __('MAIN HQ') }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                            <div class="text-xs text-gray-500 font-mono">{{ $user->login_id }}</div>
+                                        </div>
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        {{-- Spatie helper to get role names --}}
-                                        @foreach ($user->getRoleNames() as $role)
-                                            <span
-                                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                                                {{ ucfirst(str_replace('_', ' ', $role)) }}
-                                            </span>
-                                        @endforeach
+                                    <td class="px-6 py-4 text-xs font-bold uppercase text-gray-600">
+                                        {{ $user->roles->pluck('name')->map(fn($n) => str_replace('_', ' ', $n))->implode(', ') }}
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        @if ($user->status === 'active')
-                                            <span class="text-green-600 font-bold text-xs uppercase">Active</span>
-                                        @else
-                                            <span class="text-red-600 font-bold text-xs uppercase">Deactive</span>
+                                    <td class="px-6 py-4">
+                                        <span
+                                            class="px-2 py-1 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            {{ $user->status }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 text-right">
+                                        <a href="{{ route('users.edit', $user) }}"
+                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-gray-100 transition">
+                                            {{ __('Edit') }}
+                                        </a>
+
+                                        @if ($user->canBeDeleted())
+                                            <form action="{{ route('users.destroy', $user) }}" method="POST"
+                                                onsubmit="return confirm('Delete this user account?');">
+                                                @csrf @method('DELETE')
+                                                <button type="submit"
+                                                    class="text-red-600 hover:text-red-900 font-bold uppercase text-xs">{{ __('Delete') }}</button>
+                                            </form>
                                         @endif
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                        @can('edit_users')
-                                            <a href="{{ route('users.edit', $user->id) }}"
-                                                class="text-indigo-600 hover:text-indigo-900 mr-3">Edit</a>
-                                        @endcan
-                                    </td>
                                 </tr>
+
+                                {{-- Branch Sub-Rows: Fulfills "Sub line below HQ" requirement --}}
+                                @if ($user->branches->isNotEmpty())
+                                    @foreach ($user->branches as $branch)
+                                        <tr class="border-b bg-gray-50/50 hover:bg-gray-100 transition-colors">
+                                            <td class="px-6 py-3 pl-12"> {{-- Indented for visual sub-line --}}
+                                                <div class="flex items-center">
+                                                    <span class="text-gray-400 mr-2 text-lg">â†³</span>
+                                                    <div class="flex flex-col">
+                                                        <div class="text-sm font-semibold text-gray-700">
+                                                            {{ $branch->name }}</div>
+                                                        <div class="text-[10px] text-gray-400 font-mono">
+                                                            {{ $branch->login_id }}</div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td class="px-6 py-3 text-[10px] font-bold uppercase text-gray-400 italic">
+                                                {{ __('Branch Account') }}
+                                            </td>
+                                            <td class="px-6 py-3">
+                                                <span
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase {{ $branch->status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600' }}">
+                                                    {{ $branch->status }}
+                                                </span>
+                                            </td>
+                                            <td class="px-6 py-3 text-right">
+                                                <a href="{{ route('users.edit', $branch) }}"
+                                                    class="inline-block bg-gray-200 text-gray-600 px-3 py-1 rounded-md text-[10px] font-bold uppercase hover:bg-gray-300 transition">
+                                                    {{ __('Edit') }}
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                @endif
                             @endforeach
                         </tbody>
                     </table>
@@ -9217,6 +9976,14 @@ Route::middleware(['auth'])->group(function () {
     // DASHBOARD
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
+    /**
+     * Profile Management Routes
+     * Fulfills standard user self-service requirements.
+     */
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
     // USER MANAGEMENT
     // We split this because viewing and creating require different permissions.
     Route::prefix('users')->name('users.')->group(function () {
@@ -9236,6 +10003,8 @@ Route::middleware(['auth'])->group(function () {
         Route::middleware('permission:edit_users|edit_assigned_customers')->group(function () {
             Route::get('/{user}/edit', [UserController::class, 'edit'])->name('edit');
             Route::put('/{user}', [UserController::class, 'update'])->name('update');
+            Route::delete('/{user}', [UserController::class, 'destroy'])->name('destroy');
+
         });
     });
 
@@ -9245,38 +10014,54 @@ Route::middleware(['auth'])->group(function () {
         ->name('users.assigned');
 
     // SYSTEM SETTINGS (Strict Admin Only)
-    // Only 'admin' role can touch these, regardless of permissions.
-    Route::middleware('role:admin')->prefix('admin')->name('roles.')->group(function () {
+    // Fulfills Section 2.a: Administrator overseeing Activity Logs and assignments
+    Route::middleware('role:admin')->prefix('admin')->group(function () {
 
-        Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
-        Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        // Feature Settings (Feature Matrix) - keep the 'roles.' prefix here
+        Route::name('roles.')->group(function () {
+            Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
+            Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+        });
 
-        // Activity Log Route
+        // Activity Log Route - Moved outside roles naming to match navigation
+        // Results in: activity.index
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
     // Only Admin & CS accessible
     Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
-        // Fulfills Section 5.b: General Claiming Queue
+
+        // 1. Static Routes (Must come first to prevent shadowing)
+        // Fulfills Section 5.b: General Claiming Queue [4]
         Route::get('/orders/queue', [\App\Http\Controllers\CS\OrderManagementController::class, 'queue'])->name('orders.queue');
 
-        // Fulfills Section 5.a: My Fulfillment Workspace (Personalized Inbox)
+        // Fulfills visibility for Completed/Cancelled orders [5, 6]
+        Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
+
+        // 2. Resource Index
+        // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
 
+        // 3. Wildcard Routes (Must come last)
+        // Fulfills Section 5: Handler Visibility & Handover [8]
         Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
+
         Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
         Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
         Route::post('/orders/{order}/cancel', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancel'])->name('orders.cancel');
         Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
         Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
     });
-
     // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
         ->middleware(['auth', 'verified']);
 
     // CATALOG MANAGEMENT
     Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
+        ->middleware(['auth', 'verified']);
+
+    // Fulfills Requirement: Item Categories Management
+    Route::resource('categories', \App\Http\Controllers\CategoryController::class)
         ->middleware(['auth', 'verified']);
 
     // CUSTOMER PRODUCT VIEWING
@@ -9294,6 +10079,7 @@ Route::middleware(['auth'])->group(function () {
             Route::put('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'update'])->name('update');
             Route::delete('/{orderItem}', [\App\Http\Controllers\Customer\ReservationController::class, 'destroy'])->name('destroy');
             Route::post('/submit', [\App\Http\Controllers\Customer\ReservationController::class, 'submit'])->name('submit');
+            Route::post('/{order}/recall', [\App\Http\Controllers\Customer\ReservationController::class, 'recall'])->name('recall');
         });
 
         // 3. Order History (customer.orders. index, show) [3]
@@ -12698,10 +13484,12 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v9)
+## Update details(v11)
 
-* Added the order function and UI for customer.
-* Added the "claim the order from customer" & "approve/reject order from customer"  & "hand over to other CS" function and UI for CS role.
+* Added a filed(DB table) that can point a branch to its HQ, if the CS handle the HQ also handle all the HQ branch.
+* "Create User" form will showing the company input details when role is "Customer".
+* Added "Product Categories" feature.
+* Updated to every customer can have 1 pending order at once.
 
 --- END_FILE ---
 

@@ -37,6 +37,11 @@
                 <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
                     {{ __('Product Items') }}
                 </x-nav-link>
+
+                {{-- Fulfills Item Grouping Management Requirement --}}
+                <x-nav-link :href="route('categories.index')" :active="request()->routeIs('categories.*')">
+                    {{ __('Product Categories') }}
+                </x-nav-link>
             @endcan
 
             @can('view_catalogs')

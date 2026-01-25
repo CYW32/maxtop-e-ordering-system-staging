@@ -46,17 +46,19 @@ class ItemController extends Controller
             'name' => 'required|string|max:255',
             'price' => 'required|numeric|min:0',
             'description' => 'nullable|string',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048', // 2MB max
+            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
         ]);
 
         if ($request->hasFile('image')) {
-            // Requirement 7: Automated image compression placeholder [3]
-            // For now, we store it in the public disk
             $path = $request->file('image')->store('items', 'public');
             $validated['image_path'] = $path;
         }
 
-        Item::create($validated);
+        // FIX: Assign the created instance to $item so it can be used for relationship syncing
+        $item = Item::create($validated);
+
+        // Fulfills Category Assignment requirement
+        $item->categories()->sync($request->input('categories', []));
 
         return redirect()->route('items.index')->with('success', 'Item created successfully.');
     }
@@ -83,16 +85,23 @@ class ItemController extends Controller
             'price' => 'required|numeric|min:0',
             'description' => 'nullable|string',
             'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+            'status' => 'required|in:active,deactive',
         ]);
+
+        // Fulfills Section 3.c.2: Draft Protection Logic
+        if ($validated['status'] === 'deactive' && $item->isInDraft()) {
+            return redirect()->back()->with('error', 'Item is currently in a customer draft and cannot be deactivated.');
+        }
 
         if ($request->hasFile('image')) {
             if ($item->image_path) {
-                Storage::disk('public')->delete($item->image_path);
+                \Illuminate\Support\Facades\Storage::disk('public')->delete($item->image_path);
             }
             $validated['image_path'] = $request->file('image')->store('items', 'public');
         }
 
         $item->update($validated);
+        $item->categories()->sync($request->input('categories', []));
 
         return redirect()->route('items.index')->with('success', 'Item updated successfully.');
     }

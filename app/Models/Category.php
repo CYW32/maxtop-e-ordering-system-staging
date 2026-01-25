@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-class Catalog extends Model
+class Category extends Model
 {
     use LogsActivity;
 
@@ -22,10 +22,14 @@ class Catalog extends Model
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 
+    /**
+     * Fulfills Section 3.c Deletion Restriction:
+     * A category can only be hard deleted if none of the items
+     * currently assigned to it have transaction history.
+     */
     public function canBeDeleted(): bool
     {
-        // Fulfills Single Catalog Policy: Lock if users are assigned
-        // or if the system needs to maintain the record for history.
-        return ! (\App\Models\User::where('catalog_id', $this->id)->exists());
+        // Check if any items in this category exist in the order_items table
+        return ! $this->items()->whereHas('orderItems')->exists();
     }
 }

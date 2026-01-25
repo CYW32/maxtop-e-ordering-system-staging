@@ -10,7 +10,7 @@ class Item extends Model
 {
     use LogsActivity;
 
-    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path'];
+    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path', 'status'];
 
     public function catalogs()
     {
@@ -28,15 +28,28 @@ class Item extends Model
      */
     public function canBeDeleted(): bool
     {
-        return ! $this->orderItems()
-            ->whereHas('order', function ($q) {
-                // Updated to include 'draft' and 'pending' per Section 3C [1]
-                $q->whereIn('status', ['draft', 'pending', 'approved', 'in_transit', 'completed']);
-            })->exists();
+        // Fulfills Section 3.c.1 & 3.c.2: Lock if in ANY order status
+        return ! $this->orderItems()->exists();
     }
 
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+
+    // Inside Item class
+    public function categories()
+    {
+        return $this->belongsToMany(Category::class);
+    }
+
+    /**
+     * Fulfills Section 3.c.2: Check if item is in any active draft.
+     */
+    public function isInDraft(): bool
+    {
+        return $this->orderItems()->whereHas('order', function ($query) {
+            $query->where('status', 'draft');
+        })->exists();
     }
 }
