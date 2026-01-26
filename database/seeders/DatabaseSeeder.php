@@ -2,29 +2,56 @@
 
 namespace Database\Seeders;
 
+use App\Models\Catalog;
+use App\Models\Category;
+use App\Models\Item;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // 1. Ensure Roles and Permissions are created first [3, 4]
+        // --- CONTROL KNOBS START ---
+        $totalItems = 60;  // Total items in the global master list
+        $totalCategories = 6;   // Sidebar categories for filtering
+        $totalCatalogs = 3;   // Whitelist folders for different customers
+        $branchesPerHQ = 4;   // Sub-accounts per Main HQ
+        // --- CONTROL KNOBS END ---
+
+        // 1. Initialize Roles and Permissions [4]
+        // CRITICAL: Must be first so users can be assigned roles
         $this->call(RoleSeeder::class);
 
-        // 2. Create the Admin User (Developer Only) [1, 3]
+        // 2. Generate Product Items [5]
+        $items = Item::factory()->count($totalItems)->create();
+
+        // 3. Generate Categories & Link Items [6]
+        // Fulfills Item Grouping Management
+        $categories = Category::factory()->count($totalCategories)->create()->each(function ($category) use ($items) {
+            $category->items()->attach(
+                $items->random(rand(5, 12))->pluck('id')->toArray()
+            );
+        });
+
+        // 4. Generate Catalogs & Whitelist Items [7]
+        // Fulfills Section 3.a.3: Customers only see whitelisted items
+        $catalogs = Catalog::factory()->count($totalCatalogs)->create()->each(function ($catalog) use ($items) {
+            $catalog->items()->attach(
+                $items->random(rand(15, 30))->pluck('id')->toArray()
+            );
+        });
+
+        // 5. Create Internal Staff [8, 9]
         $admin = User::factory()->create([
             'name' => 'System Admin',
-            'email' => 'admin@test.com',
             'login_id' => 'admin001',
+            'email' => 'admin@maxtop.com',
             'status' => 'active',
         ]);
         $admin->assignRole('admin');
 
-        // 3. Create a CS Leader (Manages CS Staff and Customers) [1]
+        // Create a CS Leader (Manages CS Staff and Customers) [1]
         $leader = User::factory()->create([
             'name' => 'CS Leader User',
             'email' => 'leader@test.com',
@@ -33,7 +60,7 @@ class DatabaseSeeder extends Seeder
         ]);
         $leader->assignRole('cs_leader');
 
-        // 4. Create a CS Staff (Handles Items/Catalogs/Orders) [1]
+        // Create a CS Staff (Handles Items/Catalogs/Orders) [1]
         $staff = User::factory()->create([
             'name' => 'CS Staff User',
             'email' => 'staff@test.com',
@@ -42,43 +69,34 @@ class DatabaseSeeder extends Seeder
         ]);
         $staff->assignRole('cs_staff');
 
-        // 5. Create a Main Customer (Total Store / HQ) [1, 2]
-        $mainCustomer = User::factory()->create([
-            'name' => 'HQ Customer Corp',
-            'email' => 'hq@customer.com',
+        // 6. Create Customer Hierarchy [1, 2]
+        // Create Main HQ and assign to the first available Catalog
+        $hq = User::factory()->create([
+            'name' => 'Main HQ Corp',
             'login_id' => 'customer001',
-            'status' => 'active',
+            'email' => 'hq@customer.com',
+            'catalog_id' => $catalogs->first()->id, // Assigned to Folder 1
             'assigned_cs_id' => $staff->id,
-        ]);
-        $mainCustomer->assignRole('customer');
-
-        // Attach details to the HQ
-        $mainCustomer->details()->create([
-            'company_name' => 'HQ Customer Corp Sdn Bhd',
-            'company_reg_no' => '202301012345',
-            'pic_name' => 'Mr. Tan',
-            'pic_phone' => '012-3456789',
-            'delivery_address' => '123 Main St, HQ Office',
-        ]);
-
-        // 6. Create a Branch Customer (Linked to HQ) [1, 2]
-        $branchCustomer = User::factory()->create([
-            'name' => 'Branch Store Alpha',
-            'email' => 'branch@customer.com',
-            'login_id' => 'branch001',
             'status' => 'active',
-            'parent_id' => $mainCustomer->id, // Branch Logic: Linked via parent_id [2, 5]
-            'assigned_cs_id' => $staff->id,
         ]);
-        $branchCustomer->assignRole('customer');
+        $hq->assignRole('customer');
+        $hq->details()->create([
+            'company_name' => 'Maxtop HQ Group',
+            'delivery_address' => '123 Industrial Park, KL',
+        ]);
 
-        // Attach details to the Branch
-        $branchCustomer->details()->create([
-            'company_name' => 'HQ Customer Corp (Branch Alpha)',
-            'company_reg_no' => '202301012345', // Usually same as HQ
-            'pic_name' => 'Ms. Siti',
-            'pic_phone' => '012-9876543',
-            'delivery_address' => '456 Side St, Branch Alpha',
-        ]);
+        // Create Branches using the control knob [Section 3.a.2 Inheritance]
+        User::factory()->count($branchesPerHQ)->create([
+            'parent_id' => $hq->id,
+            'catalog_id' => null, // NULL forces inheritance from HQ [10]
+            'assigned_cs_id' => $staff->id,
+            'status' => 'active',
+        ])->each(function ($branch) {
+            $branch->assignRole('customer');
+            $branch->details()->create([
+                'company_name' => $branch->name.' Branch',
+                'delivery_address' => 'Branch Location Address',
+            ]);
+        });
     }
 }

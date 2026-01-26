@@ -60,6 +60,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v13)
+## Update details(v14)
 
-* Solve the bug that will make the branch become HQ when update the branch profile(Cause it assign to empty parent_id field).
+* Added a controllable dummy data at "\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php" by running "php artisan migrate:fresh --seed"
