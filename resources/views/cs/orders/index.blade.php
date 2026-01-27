@@ -6,6 +6,18 @@
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <x-filter-toolbar :placeholder="__('Search Order # or Customer Name...')" :showDates="true">
+                <select name="status" class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                    <option value="">{{ __('All Status') }}</option>
+                    @foreach ($status as $statusName)
+                        <option value="{{ $statusName }}" {{ request('status') == $statusName ? 'selected' : '' }}>
+                            {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                        </option>
+                    @endforeach
+                </select>
+            </x-filter-toolbar>
+        </div>
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
                 @if ($myOrders->isEmpty())

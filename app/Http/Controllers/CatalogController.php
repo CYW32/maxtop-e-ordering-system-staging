@@ -9,10 +9,17 @@ use Illuminate\Support\Facades\Gate;
 
 class CatalogController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        Gate::authorize('view_catalogs'); // Strict check
-        $catalogs = Catalog::withCount('items')->latest()->paginate(10);
+        Gate::authorize('view_catalogs');
+
+        $query = Catalog::query();
+
+        if ($request->filled('search')) {
+            $query->search($request->search); // Uses Searchable trait [1]
+        }
+
+        $catalogs = $query->withCount('items')->latest()->paginate(10)->withQueryString();
 
         return view('admin.catalogs.index', compact('catalogs'));
     }

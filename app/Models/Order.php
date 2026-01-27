@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -10,7 +11,7 @@ use Spatie\Activitylog\Traits\LogsActivity;
 
 class Order extends Model
 {
-    use LogsActivity;
+    use LogsActivity,Searchable;
 
     protected $fillable = [
         'order_number',
@@ -19,6 +20,10 @@ class Order extends Model
         'status',
         'cancellation_reason',
         'internal_notes',
+    ];
+
+    protected $searchable = [
+        'order_number', 'status',
     ];
 
     /**

@@ -8,6 +8,12 @@
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
+                <div class="mb-6">
+                    <form action="{{ route('office.orders.queue') }}" method="GET">
+                        <x-filter-toolbar :placeholder="__('Search queue by Order # or Customer Name...')" />
+                    </form>
+                </div>
+
                 @if ($unassigned->isEmpty())
                     <p class="text-gray-500 italic">{{ __('No new orders from unassigned customers.') }}</p>
                 @else

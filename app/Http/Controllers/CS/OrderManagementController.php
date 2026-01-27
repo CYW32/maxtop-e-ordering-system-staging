@@ -15,39 +15,69 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.a: On-going Orders
      * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
-    public function index()
+    public function index(Request $request)
     {
         $user = auth()->user();
 
-        $myOrders = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade [3]
+        $status = ['pending', 'approved', 'in_transit'];
+
+        $query = Order::whereIn('status', $status)
             ->where(function ($query) use ($user) {
-                $query->where('handler_id', $user->id) // Already claimed
+                $query->where('handler_id', $user->id)
                     ->orWhere(function ($sub) use ($user) {
-                        $sub->whereNull('handler_id') // New but assigned customer
+                        $sub->whereNull('handler_id')
                             ->whereHas('user', function ($u) use ($user) {
                                 $u->where('assigned_cs_id', $user->id);
                             });
                     });
-            })
-            ->latest()
-            ->paginate(15);
+            });
 
-        return view('cs.orders.index', compact('myOrders'));
+        // Apply Dynamic Search [1, 5]
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term)
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // ARCHITECTURE FIX: Apply the Status Filter from the dynamic dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        // Finalize with Pagination and Query String Persistence
+        $myOrders = $query->latest()
+            ->paginate(15)
+            ->withQueryString();
+
+        // Pass $status to resolve the ErrorException in the Blade view [3]
+        return view('cs.orders.index', compact('myOrders', 'status'));
     }
 
     /**
      * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
      * Displays orders from customers who have NO assigned CS Staff.
      */
-    public function queue()
+    public function queue(Request $request) // Inject Request
     {
-        $unassigned = Order::where('status', 'pending')
+        $query = Order::where('status', 'pending')
             ->whereNull('handler_id')
-            ->whereHas('user', function ($query) {
-                $query->whereNull('assigned_cs_id');
-            })
-            ->latest()
-            ->get();
+            ->whereHas('user', function ($q) {
+                $q->whereNull('assigned_cs_id');
+            });
+
+        // ARCHITECTURE FIX: Enable search by Order # or Customer Name
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Hits order_number [12]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        $unassigned = $query->latest()->paginate(15)->withQueryString();
 
         return view('cs.orders.queue', compact('unassigned'));
     }
@@ -227,15 +257,35 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.c: My Claimed Orders (Master List)
      * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
-    public function history()
+    public function history(Request $request) // Added Request injection
     {
         $user = auth()->user();
 
-        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
-        $history = Order::where('handler_id', $user->id)
-            ->latest()
-            ->paginate(15);
+        // Define the statuses available for filtering
+        $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'];
 
-        return view('cs.orders.history', compact('history'));
+        // 1. Initialize query scoped to the current handler [Section 5.c]
+        $query = \App\Models\Order::where('handler_id', $user->id);
+
+        // 2. Apply Dynamic Search (Order Number or Customer Name)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Uses Searchable trait [4]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // 3. ARCHITECTURE FIX: Apply the Status Filter from the dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        // 4. Finalize with Pagination and Query String Persistence
+        $history = $query->latest()
+            ->paginate(15)
+            ->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
+
+        return view('cs.orders.history', compact('history', 'status'));
     }
 }

@@ -22,12 +22,10 @@
                     <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
 
                         {{-- THE TOOLBAR --}}
-                        <x-filter-toolbar placeholder="Search name, ID...">
-
-                            {{-- INJECTING THE EXTRA FILTER (The Slot) --}}
+                        <x-filter-toolbar :placeholder="__('Search by Name, Email or Login ID...')">
                             <select name="role"
-                                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-                                <option value="">All Roles</option>
+                                class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                                <option value="">{{ __('All Roles') }}</option>
                                 @foreach ($roles as $roleName)
                                     <option value="{{ $roleName }}"
                                         {{ request('role') == $roleName ? 'selected' : '' }}>
@@ -35,7 +33,16 @@
                                     </option>
                                 @endforeach
                             </select>
-
+                            <select name="status"
+                                class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                                <option value="">{{ __('All Status') }}</option>
+                                @foreach ($status as $statusName)
+                                    <option value="{{ $statusName }}"
+                                        {{ request('status') == $statusName ? 'selected' : '' }}>
+                                        {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                                    </option>
+                                @endforeach
+                            </select>
                         </x-filter-toolbar>
 
                         @can('create_users')

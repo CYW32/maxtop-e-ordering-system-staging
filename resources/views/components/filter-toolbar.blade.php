@@ -1,54 +1,48 @@
-@props(['actionUrl' => null, 'placeholder' => 'Search...'])
+@props(['placeholder' => __('Search...'), 'showDates' => false])
 
-<form method="GET" action="{{ $actionUrl ?? url()->current() }}"
-    class="flex flex-col md:flex-row gap-3 items-end md:items-center bg-gray-50 p-3 rounded-lg border border-gray-200">
+<div x-data="{
+    submit() { this.$refs.filterForm.submit() }
+}" class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm mb-8">
+    <form x-ref="filterForm" action="{{ url()->current() }}" method="GET"
+        class="flex flex-col md:flex-row gap-4 items-center">
 
-    {{-- SEARCH INPUT --}}
-    <div class="relative w-full md:w-64">
-        <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-            <svg class="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 20 20" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z" />
-            </svg>
+        {{-- Smart Search Input --}}
+        <div class="relative w-full md:grow">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+            </div>
+            <input type="text" name="search" value="{{ request('search') }}" @keyup.enter="submit()"
+                class="block w-full pl-10 pr-3 py-2 border-gray-200 rounded-xl text-sm focus:ring-maxtop focus:border-maxtop transition-all placeholder-gray-400"
+                placeholder="{{ $placeholder }}">
         </div>
-        <input type="text" name="search" value="{{ request('search') }}"
-            class="block w-full p-2 pl-10 text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-            placeholder="{{ $placeholder }}">
-    </div>
 
-    {{-- DYNAMIC SLOT (For extra dropdowns like Role, Status, Category) --}}
-    {{-- This is the magic part. If we pass content here, it renders. --}}
-    @if (!$slot->isEmpty())
-        <div class="flex items-center gap-2">
-            {{ $slot }}
-        </div>
-    @endif
+        {{-- Dynamic "Smart" Slot for Dropdowns (Role, Status, Category) --}}
+        @if (!$slot->isEmpty())
+            <div class="flex gap-2 w-full md:w-auto" @change="submit()">
+                {{ $slot }}
+            </div>
+        @endif
 
-    {{-- DATE RANGE INPUTS --}}
-    <div class="flex items-center gap-2">
-        <div class="relative">
-            <input type="date" name="start_date" value="{{ request('start_date') }}"
-                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" title="Start Date">
-        </div>
-        <span class="text-gray-500">-</span>
-        <div class="relative">
-            <input type="date" name="end_date" value="{{ request('end_date') }}"
-                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" title="End Date">
-        </div>
-    </div>
+        {{-- Contextual Date Ranges (Hidden by default) --}}
+        @if ($showDates)
+            <div class="flex items-center gap-2">
+                <input type="date" name="start_date" value="{{ request('start_date') }}" @change="submit()"
+                    class="text-xs border-gray-200 rounded-lg focus:ring-maxtop focus:border-maxtop">
+                <span class="text-gray-300">-</span>
+                <input type="date" name="end_date" value="{{ request('end_date') }}" @change="submit()"
+                    class="text-xs border-gray-200 rounded-lg focus:ring-maxtop focus:border-maxtop">
+            </div>
+        @endif
 
-    {{-- FILTER & RESET BUTTONS --}}
-    <div class="flex gap-2">
-        <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded-md text-sm hover:bg-gray-700 transition">
-            Filter
-        </button>
-
-        {{-- Reset Link: clear all params --}}
-        @if (request()->hasAny(['search', 'start_date', 'end_date']))
+        {{-- Reset Button --}}
+        @if (request()->hasAny(['search', 'role', 'status', 'category', 'start_date', 'end_date']))
             <a href="{{ url()->current() }}"
-                class="bg-white border border-gray-300 text-gray-700 px-3 py-2 rounded-md text-sm hover:bg-gray-50">
-                Clear
+                class="text-[10px] font-black uppercase text-gray-400 hover:text-red-600 transition-colors">
+                {{ __('Clear All') }}
             </a>
         @endif
-    </div>
-</form>
+    </form>
+</div>

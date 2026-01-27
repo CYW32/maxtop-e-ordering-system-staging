@@ -503,28 +503,36 @@ class ProductCatalogController extends Controller
         $user = auth()->user();
         $catalogId = $user->getEffectiveCatalogId();
 
-        // Fulfills Request: If the assigned catalog is deactivated, show nothing
+        // Fulfills Section 3.a: If the assigned catalog is deactivated, show nothing
         $catalog = \App\Models\Catalog::find($catalogId);
         if (! $catalog || $catalog->status === 'deactive') {
-            return view('customer.products.index', ['items' => collect(), 'availableCategories' => collect()]);
+            return view('customer.products.index', [
+                'items' => collect(),
+                'availableCategories' => collect(),
+            ]);
         }
 
-        // Fulfills Whitelist Logic + Request: Only show 'active' items [7]
+        // Initialize Query Builder with Whitelist Logic [Section 3.a.3]
         $query = Item::where('status', 'active')
             ->whereHas('catalogs', function ($q) use ($catalogId) {
                 $q->where('catalogs.id', $catalogId);
             });
 
+        // Apply Sidebar Category Filtering
         if ($request->filled('category')) {
             $query->whereHas('categories', function ($q) use ($request) {
                 $q->where('categories.id', $request->category)
-                    ->where('categories.status', 'active'); // Fulfills Category deactivation
+                    ->where('categories.status', 'active');
             });
         }
 
-        $items = $query->with('categories')->get();
+        // ARCHITECTURE FIX: Merge Eager Loading, Sorting, and Pagination into a single execution
+        $items = $query->with('categories') // Prevents N+1 in Blade
+            ->latest()           // Orders by created_at DESC
+            ->paginate(12)       // Control Knobs: Increased to 12 for better grid alignment
+            ->withQueryString(); // Preserves ?category=ID during page turns
 
-        // Only show active categories containing active items for this catalog
+        // Fetch active categories containing active items for this specific catalog whitelist
         $availableCategories = Category::where('status', 'active')
             ->whereHas('items', function ($q) use ($catalogId) {
                 $q->where('items.status', 'active')
@@ -1009,7 +1017,7 @@ class ItemController extends Controller
                 ->orWhere('sku', 'like', "%{$request->search}%");
         }
 
-        $items = $query->latest()->paginate(15)->withQueryString();
+        $items = $query->latest()->paginate(10)->withQueryString();
 
         return view('admin.items.index', compact('items'));
     }
@@ -1662,13 +1670,14 @@ class ProfileUpdateRequest extends FormRequest
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
 class Catalog extends Model
 {
-    use LogsActivity;
+    use HasFactory, LogsActivity;
 
     protected $fillable = ['name', 'status'];
 
@@ -1697,13 +1706,14 @@ class Catalog extends Model
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
 class Category extends Model
 {
-    use LogsActivity;
+    use HasFactory, LogsActivity;
 
     protected $fillable = ['name', 'status'];
 
@@ -1777,13 +1787,14 @@ class CustomerDetail extends Model
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
 class Item extends Model
 {
-    use LogsActivity;
+    use HasFactory, LogsActivity;
 
     protected $fillable = ['sku', 'name', 'description', 'price', 'image_path', 'status'];
 
@@ -3809,6 +3820,78 @@ return [
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\factories\CatalogFactory.php ---
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Catalog;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class CatalogFactory extends Factory
+{
+    protected $model = Catalog::class;
+
+    public function definition(): array
+    {
+        return [
+            'name' => $this->faker->city().' Region Catalog',
+            'status' => 'active',
+        ];
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\factories\CategoryFactory.php ---
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Category;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class CategoryFactory extends Factory
+{
+    protected $model = Category::class;
+
+    public function definition(): array
+    {
+        return [
+            'name' => $this->faker->unique()->word().' Group',
+            'status' => 'active',
+        ];
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\factories\ItemFactory.php ---
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Item;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class ItemFactory extends Factory
+{
+    protected $model = Item::class;
+
+    public function definition(): array
+    {
+        return [
+            'sku' => 'MT-'.$this->faker->unique()->numberBetween(1000, 9999),
+            'name' => $this->faker->words(3, true),
+            'description' => $this->faker->sentence(),
+            'price' => $this->faker->randomFloat(2, 5, 1000),
+            'status' => 'active', // Defaulting to active for visibility [3]
+        ];
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\factories\UserFactory.php ---
 <?php
 
@@ -4594,29 +4677,56 @@ return new class extends Migration
 
 namespace Database\Seeders;
 
+use App\Models\Catalog;
+use App\Models\Category;
+use App\Models\Item;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // 1. Ensure Roles and Permissions are created first [3, 4]
+        // --- CONTROL KNOBS START ---
+        $totalItems = 60;  // Total items in the global master list
+        $totalCategories = 6;   // Sidebar categories for filtering
+        $totalCatalogs = 3;   // Whitelist folders for different customers
+        $branchesPerHQ = 4;   // Sub-accounts per Main HQ
+        // --- CONTROL KNOBS END ---
+
+        // 1. Initialize Roles and Permissions [4]
+        // CRITICAL: Must be first so users can be assigned roles
         $this->call(RoleSeeder::class);
 
-        // 2. Create the Admin User (Developer Only) [1, 3]
+        // 2. Generate Product Items [5]
+        $items = Item::factory()->count($totalItems)->create();
+
+        // 3. Generate Categories & Link Items [6]
+        // Fulfills Item Grouping Management
+        $categories = Category::factory()->count($totalCategories)->create()->each(function ($category) use ($items) {
+            $category->items()->attach(
+                $items->random(rand(5, 12))->pluck('id')->toArray()
+            );
+        });
+
+        // 4. Generate Catalogs & Whitelist Items [7]
+        // Fulfills Section 3.a.3: Customers only see whitelisted items
+        $catalogs = Catalog::factory()->count($totalCatalogs)->create()->each(function ($catalog) use ($items) {
+            $catalog->items()->attach(
+                $items->random(rand(15, 30))->pluck('id')->toArray()
+            );
+        });
+
+        // 5. Create Internal Staff [8, 9]
         $admin = User::factory()->create([
             'name' => 'System Admin',
-            'email' => 'admin@test.com',
             'login_id' => 'admin001',
+            'email' => 'admin@maxtop.com',
             'status' => 'active',
         ]);
         $admin->assignRole('admin');
 
-        // 3. Create a CS Leader (Manages CS Staff and Customers) [1]
+        // Create a CS Leader (Manages CS Staff and Customers) [1]
         $leader = User::factory()->create([
             'name' => 'CS Leader User',
             'email' => 'leader@test.com',
@@ -4625,7 +4735,7 @@ class DatabaseSeeder extends Seeder
         ]);
         $leader->assignRole('cs_leader');
 
-        // 4. Create a CS Staff (Handles Items/Catalogs/Orders) [1]
+        // Create a CS Staff (Handles Items/Catalogs/Orders) [1]
         $staff = User::factory()->create([
             'name' => 'CS Staff User',
             'email' => 'staff@test.com',
@@ -4634,44 +4744,35 @@ class DatabaseSeeder extends Seeder
         ]);
         $staff->assignRole('cs_staff');
 
-        // 5. Create a Main Customer (Total Store / HQ) [1, 2]
-        $mainCustomer = User::factory()->create([
-            'name' => 'HQ Customer Corp',
-            'email' => 'hq@customer.com',
+        // 6. Create Customer Hierarchy [1, 2]
+        // Create Main HQ and assign to the first available Catalog
+        $hq = User::factory()->create([
+            'name' => 'Main HQ Corp',
             'login_id' => 'customer001',
-            'status' => 'active',
+            'email' => 'hq@customer.com',
+            'catalog_id' => $catalogs->first()->id, // Assigned to Folder 1
             'assigned_cs_id' => $staff->id,
-        ]);
-        $mainCustomer->assignRole('customer');
-
-        // Attach details to the HQ
-        $mainCustomer->details()->create([
-            'company_name' => 'HQ Customer Corp Sdn Bhd',
-            'company_reg_no' => '202301012345',
-            'pic_name' => 'Mr. Tan',
-            'pic_phone' => '012-3456789',
-            'delivery_address' => '123 Main St, HQ Office',
-        ]);
-
-        // 6. Create a Branch Customer (Linked to HQ) [1, 2]
-        $branchCustomer = User::factory()->create([
-            'name' => 'Branch Store Alpha',
-            'email' => 'branch@customer.com',
-            'login_id' => 'branch001',
             'status' => 'active',
-            'parent_id' => $mainCustomer->id, // Branch Logic: Linked via parent_id [2, 5]
-            'assigned_cs_id' => $staff->id,
         ]);
-        $branchCustomer->assignRole('customer');
+        $hq->assignRole('customer');
+        $hq->details()->create([
+            'company_name' => 'Maxtop HQ Group',
+            'delivery_address' => '123 Industrial Park, KL',
+        ]);
 
-        // Attach details to the Branch
-        $branchCustomer->details()->create([
-            'company_name' => 'HQ Customer Corp (Branch Alpha)',
-            'company_reg_no' => '202301012345', // Usually same as HQ
-            'pic_name' => 'Ms. Siti',
-            'pic_phone' => '012-9876543',
-            'delivery_address' => '456 Side St, Branch Alpha',
-        ]);
+        // Create Branches using the control knob [Section 3.a.2 Inheritance]
+        User::factory()->count($branchesPerHQ)->create([
+            'parent_id' => $hq->id,
+            'catalog_id' => null, // NULL forces inheritance from HQ [10]
+            'assigned_cs_id' => $staff->id,
+            'status' => 'active',
+        ])->each(function ($branch) {
+            $branch->assignRole('customer');
+            $branch->details()->create([
+                'company_name' => $branch->name.' Branch',
+                'delivery_address' => 'Branch Location Address',
+            ]);
+        });
     }
 }
 
@@ -6878,6 +6979,9 @@ $classes = ($active ?? false)
                     @endforeach
                 </div>
             @endif
+        </div>
+        <div class="p-6 border-t border-gray-50">
+            {{ $items->links() }}
         </div>
     </div>
 </x-app-layout>
@@ -13705,9 +13809,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v13)
+## Update details(v14)
 
-* Solve the bug that will make the branch become HQ when update the branch profile(Cause it assign to empty parent_id field).
+* Added a controllable dummy data at "\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php" by running "php artisan migrate:fresh --seed"
 
 --- END_FILE ---
 

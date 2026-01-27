@@ -60,6 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v14)
+## Update details(v15)
 
-* Added a controllable dummy data at "\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php" by running "php artisan migrate:fresh --seed"
+* Added the search function in:
+- Admin > User Management.
+- Customer > Product Items.
+- Admin/CS > My Claimed Orders & On-going Orders & Product Categories & Catalog Folders & Claiming Queue.

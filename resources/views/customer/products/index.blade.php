@@ -6,6 +6,12 @@
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <form action="{{ route('customer.products.index') }}" method="GET">
+                <x-filter-toolbar :placeholder="__('Search items in my catalog...')"></x-filter-toolbar>
+            </form>
+        </div>
+
         <div class="mb-8 flex flex-wrap gap-2">
             <a href="{{ route('customer.products.index') }}"
                 class="px-4 py-2 rounded-full text-xs font-black uppercase border {{ !request('category') ? 'bg-blue-600 text-white' : 'bg-white text-gray-600' }}">
@@ -74,6 +80,9 @@
                     @endforeach
                 </div>
             @endif
+        </div>
+        <div class="p-6 border-t border-gray-50">
+            {{ $items->links() }}
         </div>
     </div>
 </x-app-layout>

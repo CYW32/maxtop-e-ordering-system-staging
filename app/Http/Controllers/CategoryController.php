@@ -12,13 +12,20 @@ class CategoryController extends Controller
     /**
      * Display a listing of categories with item counts.
      */
-    public function index()
+    public function index(Request $request) // Inject Request
     {
         Gate::authorize('view_items');
 
-        $categories = Category::withCount('items')
-            ->latest()
-            ->paginate(10);
+        $query = Category::withCount('items');
+
+        // ARCHITECTURE FIX: Apply Searchable scope
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+
+        $categories = $query->latest()
+            ->paginate(10)
+            ->withQueryString(); // Preserve search on pagination [6]
 
         return view('admin.categories.index', compact('categories'));
     }

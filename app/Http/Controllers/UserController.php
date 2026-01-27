@@ -13,21 +13,28 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
-        $roles = \Spatie\Permission\Models\Role::pluck('name', 'name');
+        // 1. Prepare data for the Smart Search Bar dropdowns
+        $roles = Role::pluck('name', 'name');
 
-        // Fulfills Section 3.a & User Request: Fetch only top-level accounts (no parent)
+        // ARCHITECTURE FIX: Define the status array requested by the Blade view
+        $status = ['active', 'deactive'];
+
+        // 2. Build the query for top-level accounts [Section 3.a.1]
         $query = User::with(['roles', 'parent', 'branches.roles', 'details'])
             ->whereNull('parent_id');
 
+        // 3. Security: Role-based data scoping [Section 2.b]
         if (auth()->user()->hasRole('cs_leader')) {
             $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
         }
 
+        // 4. Security: Assignment-based scoping [Section 5.a]
         if (auth()->user()->hasPermissionTo('view_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             $query->where('assigned_cs_id', auth()->id());
         }
 
+        // 5. Apply Smart Filters from the Traits [Searchable, RoleFilterable, DateFilterable]
         $users = $query->search($request->search)
             ->filterByDate()
             ->filterByRole()
@@ -35,7 +42,8 @@ class UserController extends Controller
             ->paginate(15)
             ->withQueryString();
 
-        return view('users.index', compact('users', 'roles'));
+        // 6. Pass all variables to the view
+        return view('users.index', compact('users', 'roles', 'status'));
     }
 
     public function assignedIndex(Request $request)

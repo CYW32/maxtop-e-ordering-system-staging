@@ -18,6 +18,12 @@
                 </div>
             @endif
 
+            <div class="mb-6">
+                <form action="{{ route('catalogs.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search catalog folders...')" />
+                </form>
+            </div>
+
             @can('create_catalogs')
                 <div class="flex justify-end mb-4">
                     <a href="{{ route('catalogs.create') }}"
