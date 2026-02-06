@@ -87,8 +87,9 @@ class OrderManagementController extends Controller
      */
     public function show(Order $order)
     {
-        // ARCHITECTURE FIX: Load user and then their shared business details [3]
-        $order->load(['items.item', 'user.details', 'handler']);
+        // ARCHITECTURE FIX: Change 'user.details' to 'user.company' [Addendum 1.a]
+        // Also load 'items.uom' to ensure unit names display correctly in the CS view.
+        $order->load(['items.item', 'items.uom', 'user.company', 'handler']);
 
         $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
             ->where('id', '!=', auth()->id())

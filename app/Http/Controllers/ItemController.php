@@ -75,9 +75,12 @@ class ItemController extends Controller
         return view('admin.items.edit', compact('item'));
     }
 
+    /**
+     * Fulfills Addendum 5.a & 5.c: Synchronize Items and dynamic UOMs.
+     */
     public function update(Request $request, Item $item)
     {
-        Gate::authorize('edit_items');
+        \Illuminate\Support\Facades\Gate::authorize('edit_items');
 
         $validated = $request->validate([
             'sku' => 'required|unique:items,sku,'.$item->id,
@@ -86,28 +89,65 @@ class ItemController extends Controller
             'description' => 'nullable|string',
             'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
             'status' => 'sometimes|in:active,deactive',
+            // UOM Validation Logic [5.a]
+            'uoms' => 'nullable|array',
+            'uoms.*.id' => 'nullable|exists:uoms,id',
+            'uoms.*.uom_name' => 'required|string|max:100',
+            'uoms.*.rate_qty' => 'required|integer|min:1',
+            'uoms.*.price' => 'required|numeric|min:0',
         ]);
 
-        if (isset($validated['status']) && $validated['status'] === 'deactive' && $item->isInDraft()) {
-            return redirect()->back()->with('error', 'Item is currently in a customer draft and cannot be deactivated.');
-        }
-
-        if ($request->hasFile('image')) {
-            if ($item->image_path) {
-                Storage::disk('public')->delete($item->image_path);
+        \Illuminate\Support\Facades\DB::transaction(function () use ($item, $request, $validated) {
+            // Handle image updates per Section 7.b
+            if ($request->hasFile('image')) {
+                if ($item->image_path) {
+                    \Illuminate\Support\Facades\Storage::disk('public')->delete($item->image_path);
+                }
+                $validated['image_path'] = $request->file('image')->store('items', 'public');
             }
-            $validated['image_path'] = $request->file('image')->store('items', 'public');
-        }
 
-        $validated['status'] = $validated['status'] ?? $item->status;
-        $item->update($validated);
+            // 1. Update Core Item Details
+            $item->update($validated);
 
-        // FIX: Only sync if categories are provided (prevents clearing during status toggle)
-        if ($request->has('categories')) {
-            $item->categories()->sync($request->input('categories', []));
-        }
+            // 2. Synchronize Categories
+            if ($request->has('categories')) {
+                $item->categories()->sync($request->input('categories', []));
+            }
 
-        return redirect()->route('items.index')->with('success', 'Item details updated successfully.');
+            // 3. Synchronize Unit of Measure (UOM) Collection [5.a]
+            if ($request->has('uoms')) {
+                $incomingUomIds = [];
+
+                foreach ($request->uoms as $uomData) {
+                    $uom = $item->uoms()->updateOrCreate(
+                        ['id' => $uomData['id'] ?? null],
+                        [
+                            'uom_name' => $uomData['uom_name'],
+                            'rate_qty' => $uomData['rate_qty'],
+                            'price' => $uomData['price'],
+                        ]
+                    );
+
+                    // Handle Visibility: Restore if 'is_active' is checked, otherwise Soft Delete [1]
+                    isset($uomData['is_active']) ? $uom->restore() : $uom->delete();
+
+                    $incomingUomIds[] = $uom->id;
+                }
+
+                // 4. Handle Deletion of Removed (Orphaned) UOMs [5.c]
+                // We find UOMs that were on the item but not in the current form submission
+                $orphans = $item->uoms()->withTrashed()->whereNotIn('id', $incomingUomIds)->get();
+                foreach ($orphans as $orphan) {
+                    if ($orphan->canBeDeleted()) {
+                        $orphan->forceDelete(); // Hard Delete allowed if no history [1]
+                    } else {
+                        $orphan->delete(); // Fallback to Soft Delete (Hide) to preserve history
+                    }
+                }
+            }
+        });
+
+        return redirect()->route('items.index')->with('success', 'Product and UOM configurations updated.');
     }
 
     public function destroy(Item $item)

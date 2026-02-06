@@ -5,7 +5,7 @@ namespace App\Models;
 use App\Traits\DateFilterable;
 use App\Traits\RoleFilterable;
 use App\Traits\Searchable;
-use Illuminate\Database\Eloquent\Factories\HasFactory; // ARCHITECTURE FIX: Required for factories
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Spatie\Activitylog\LogOptions;
@@ -14,26 +14,19 @@ use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
-    // ARCHITECTURE FIX: Added HasFactory trait to resolve the "Call to undefined method" error
     use DateFilterable, HasFactory, HasRoles, LogsActivity, Notifiable, RoleFilterable, Searchable;
 
     protected $fillable = ['name', 'login_id', 'email', 'password', 'status', 'company_id', 'assigned_cs_id'];
 
     protected $searchable = ['name', 'login_id', 'email', 'status'];
 
-    /**
-     * Fulfills Spatie LogsActivity requirement.
-     * Captures changes to user credentials and company assignments [6].
-     */
     public function getActivitylogOptions(): LogOptions
     {
-        return LogOptions::defaults()
-            ->logFillable()
-            ->logOnlyDirty();
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 
     /**
-     * Many Users -> One Company [7, 8]
+     * Many Users -> One Company
      */
     public function company(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
@@ -41,7 +34,45 @@ class User extends Authenticatable
     }
 
     /**
-     * Whitelist Logic: Traverses Company -> Parent Company [9]
+     * Relationship: Historical and active orders/drafts.
+     */
+    public function orders(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    /**
+     * Fulfills Backbone 4.b: Pending Review check.
+     * Prevents adding new items to a draft if an order is currently awaiting CS review.
+     */
+    public function hasPendingOrder(): bool
+    {
+        return $this->orders()->where('status', 'pending')->exists();
+    }
+
+    /**
+     * Fulfills Backbone 4.a: Single Draft Policy.
+     * Retrieves the current active draft for this user.
+     */
+    public function currentDraft(): ?Order
+    {
+        return $this->orders()->where('status', 'draft')->first();
+    }
+
+    /**
+     * Fulfills ReservationController@store requirement.
+     * Returns the existing draft or initializes a new one.
+     */
+    public function getOrCreateDraft(): Order
+    {
+        return $this->orders()->firstOrCreate(
+            ['status' => 'draft'],
+            ['order_number' => null]
+        );
+    }
+
+    /**
+     * Whitelist Logic: Traverses Company -> Parent Company
      */
     public function getEffectiveCatalogId()
     {
@@ -49,12 +80,11 @@ class User extends Authenticatable
             return null;
         }
 
-        // Return direct company catalog or inherit from parent HQ [9]
         return $this->company->catalog_id ?? $this->company->parent?->catalog_id;
     }
 
     /**
-     * Retrieve items based on the Single Catalog Policy whitelist [9].
+     * Retrieve items based on the Single Catalog Policy whitelist.
      */
     public function getVisibleItems(): \Illuminate\Support\Collection
     {
@@ -67,11 +97,9 @@ class User extends Authenticatable
 
     /**
      * Fulfills Section 3.c Deletion Restriction.
-     * A user login can only be deleted if they have no order history.
      */
     public function canBeDeleted(): bool
     {
-        // Check for existence in the orders table
-        return ! $this->hasMany(Order::class)->exists();
+        return ! $this->orders()->exists();
     }
 }

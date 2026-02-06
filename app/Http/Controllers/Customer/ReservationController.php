@@ -16,7 +16,11 @@ class ReservationController extends Controller
     public function index()
     {
         $draft = auth()->user()->currentDraft();
-        $items = $draft ? $draft->items()->with('item')->get() : collect();
+
+        // ARCHITECTURE FIX: Eager load 'uom' to resolve the display bug in the draft view.
+        $items = $draft
+            ? $draft->items()->with(['item', 'uom'])->get()
+            : collect();
 
         return view('customer.reservation.index', compact('draft', 'items'));
     }
@@ -56,29 +60,32 @@ class ReservationController extends Controller
     public function store(AddToCartRequest $request)
     {
         $user = auth()->user();
-
-        // Fulfills Request: Check for pending blocks
         if ($user->hasPendingOrder()) {
-            return redirect()->back()->with('error', 'You have a pending order awaiting review. Please recall it to draft if you wish to make changes or add new items.');
+            return redirect()->back()->with('error', 'You have a pending order awaiting review.');
         }
 
         $draft = $user->getOrCreateDraft();
         $item = Item::findOrFail($request->item_id);
 
-        $orderItem = $draft->items()->where('item_id', $item->id)->first();
+        // ARCHITECTURE FIX: Match by BOTH Item and UOM [Addendum 5.a]
+        $orderItem = $draft->items()
+            ->where('item_id', $item->id)
+            ->where('uom_id', $request->uom_id)
+            ->first();
 
         if ($orderItem) {
             $orderItem->increment('quantity', $request->quantity);
         } else {
             $draft->items()->create([
                 'item_id' => $item->id,
+                'uom_id' => $request->uom_id,
                 'snapshot_name' => $item->name,
                 'quantity' => $request->quantity,
-                'price_at_order' => $item->price,
+                'price_at_order' => 0, // Enforce Price Blind Policy [Addendum 4.b]
             ]);
         }
 
-        return redirect()->back()->with('success', 'Item added to your reservation draft.');
+        return redirect()->back()->with('success', 'Added to reservation.');
     }
 
     /**

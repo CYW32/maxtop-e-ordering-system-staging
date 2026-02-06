@@ -53,4 +53,17 @@ class Item extends Model
             $query->where('status', 'draft');
         })->exists();
     }
+
+    // ... inside Item class
+    public function uoms(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        // Retrieve all, including hidden (soft-deleted) ones for admin
+        return $this->hasMany(Uom::class);
+    }
+
+    public function activeUoms(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        // Filtered for customer visibility
+        return $this->hasMany(Uom::class)->whereNull('deleted_at');
+    }
 }

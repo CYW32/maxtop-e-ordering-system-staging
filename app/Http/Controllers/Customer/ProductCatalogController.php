@@ -17,37 +17,31 @@ class ProductCatalogController extends Controller
     {
         $user = auth()->user();
         $catalogId = $user->getEffectiveCatalogId();
-
         $catalog = \App\Models\Catalog::find($catalogId);
+
         if (! $catalog || $catalog->status === 'deactive') {
-            return view('customer.products.index', ['items' => collect(), 'availableCategories' => collect()]);
+            return view('customer.products.index', ['items' => collect(), 'availableCategories' => collect(), 'draftItems' => collect()]);
         }
 
         $query = Item::where('status', 'active')
-            ->whereHas('catalogs', function ($q) use ($catalogId) {
-                $q->where('catalogs.id', $catalogId);
-            });
+            ->whereHas('catalogs', fn ($q) => $q->where('catalogs.id', $catalogId));
 
-        // ARCHITECTURE FIX: Enable item name and SKU search within the whitelist
         if ($request->filled('search')) {
-            $query->where(function ($q) use ($request) {
-                $q->where('name', 'like', "%{$request->search}%")
-                    ->orWhere('sku', 'like', "%{$request->search}%");
-            });
+            $query->where(fn ($q) => $q->where('name', 'like', "%{$request->search}%")->orWhere('sku', 'like', "%{$request->search}%"));
         }
 
         if ($request->filled('category')) {
             $query->whereHas('categories', fn ($q) => $q->where('categories.id', $request->category));
         }
 
-        $items = $query->with('categories')->latest()->paginate(12)->withQueryString();
-
+        $items = $query->with(['categories', 'activeUoms'])->latest()->paginate(12)->withQueryString();
         $availableCategories = Category::where('status', 'active')
-            ->whereHas('items', function ($q) use ($catalogId) {
-                $q->where('items.status', 'active')
-                    ->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $catalogId));
-            })->get();
+            ->whereHas('items', fn ($q) => $q->where('items.status', 'active')->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $catalogId)))
+            ->get();
 
-        return view('customer.products.index', compact('items', 'availableCategories'));
+        // Fulfills Requirement: Pass draft items to view for "Mark Down" logic
+        $draftItems = $user->currentDraft()?->items ?? collect();
+
+        return view('customer.products.index', compact('items', 'availableCategories', 'draftItems'));
     }
 }
