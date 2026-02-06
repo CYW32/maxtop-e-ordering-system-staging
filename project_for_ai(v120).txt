@@ -220,39 +220,69 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.a: On-going Orders
      * Displays orders assigned to me or currently handled by me that are in active transit states.
      */
-    public function index()
+    public function index(Request $request)
     {
         $user = auth()->user();
 
-        $myOrders = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade [3]
+        $status = ['pending', 'approved', 'in_transit'];
+
+        $query = Order::whereIn('status', $status)
             ->where(function ($query) use ($user) {
-                $query->where('handler_id', $user->id) // Already claimed
+                $query->where('handler_id', $user->id)
                     ->orWhere(function ($sub) use ($user) {
-                        $sub->whereNull('handler_id') // New but assigned customer
+                        $sub->whereNull('handler_id')
                             ->whereHas('user', function ($u) use ($user) {
                                 $u->where('assigned_cs_id', $user->id);
                             });
                     });
-            })
-            ->latest()
-            ->paginate(15);
+            });
 
-        return view('cs.orders.index', compact('myOrders'));
+        // Apply Dynamic Search [1, 5]
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term)
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // ARCHITECTURE FIX: Apply the Status Filter from the dynamic dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        // Finalize with Pagination and Query String Persistence
+        $myOrders = $query->latest()
+            ->paginate(15)
+            ->withQueryString();
+
+        // Pass $status to resolve the ErrorException in the Blade view [3]
+        return view('cs.orders.index', compact('myOrders', 'status'));
     }
 
     /**
      * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
      * Displays orders from customers who have NO assigned CS Staff.
      */
-    public function queue()
+    public function queue(Request $request) // Inject Request
     {
-        $unassigned = Order::where('status', 'pending')
+        $query = Order::where('status', 'pending')
             ->whereNull('handler_id')
-            ->whereHas('user', function ($query) {
-                $query->whereNull('assigned_cs_id');
-            })
-            ->latest()
-            ->get();
+            ->whereHas('user', function ($q) {
+                $q->whereNull('assigned_cs_id');
+            });
+
+        // ARCHITECTURE FIX: Enable search by Order # or Customer Name
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Hits order_number [12]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        $unassigned = $query->latest()->paginate(15)->withQueryString();
 
         return view('cs.orders.queue', compact('unassigned'));
     }
@@ -262,9 +292,9 @@ class OrderManagementController extends Controller
      */
     public function show(Order $order)
     {
+        // ARCHITECTURE FIX: Load user and then their shared business details [3]
         $order->load(['items.item', 'user.details', 'handler']);
 
-        // Corrected: Uses the imported App\Models\User class [2]
         $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
             ->where('id', '!=', auth()->id())
             ->where('status', 'active')
@@ -343,61 +373,54 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger [7, 8]
+     * Fulfills Addendum 5.a: UOM Snapshot during Approval
      */
     public function approve(Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403, 'You are not the handler for this order.');
-        }
-
-        if ($order->status !== 'pending') {
-            return redirect()->back()->with('error', 'Only pending orders can be approved.');
-        }
+        $this->authorizeAction($order);
 
         DB::transaction(function () use ($order) {
             foreach ($order->items as $orderItem) {
+                $uom = $orderItem->uom; // Assumes UOM selected during draft
                 $orderItem->update([
                     'snapshot_name' => $orderItem->item->name,
-                    'price_at_order' => $orderItem->item->price,
+                    'snapshot_uom_name' => $uom?->uom_name ?? 'Unit',
+                    'snapshot_uom_rate' => $uom?->rate_qty ?? 1,
+                    'price_at_order' => $uom?->price ?? $orderItem->item->price,
                 ]);
             }
             $order->update(['status' => 'approved']);
         });
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->log('Order approved and item names snapshotted');
+        activity('order')->performedOn($order)->log('Order approved; Item & UOM names snapshotted');
 
-        return redirect()->route('office.orders.index')->with('success', 'Order approved. Item names are now locked.');
+        return redirect()->back()->with('success', 'Order approved.');
     }
 
     /**
-     * Fulfills Section 4.6: Order Cancellation with Mandatory Reason [9]
+     * Fulfills Addendum 4.b: Cancellation Requested Workflow
      */
     public function cancel(CancelOrderRequest $request, Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403);
+        $user = auth()->user();
+
+        if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
+            $order->update([
+                'status' => 'cancellation_requested', // New Enum Status [4.b]
+                'cancellation_requested_by' => $user->id,
+                'cancellation_request_reason' => $request->cancellation_reason,
+            ]);
+
+            return redirect()->back()->with('success', 'Cancellation request submitted to Leader.');
         }
 
-        if ($order->status === 'completed') {
-            return redirect()->back()->with('error', 'Completed orders cannot be cancelled.');
-        }
-
+        // Leaders/Admins finalize the cancellation
         $order->update([
             'status' => 'cancelled',
-            'cancellation_reason' => $request->cancellation_reason,
+            'cancellation_reason' => $request->cancellation_reason ?? $order->cancellation_request_reason,
         ]);
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->withProperties(['reason' => $request->cancellation_reason])
-            ->log('Order was cancelled');
-
-        return redirect()->route('office.orders.index')->with('success', 'Order has been cancelled.');
+        return redirect()->route('office.orders.index')->with('success', 'Order permanently cancelled.');
     }
 
     /**
@@ -432,16 +455,36 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.c: My Claimed Orders (Master List)
      * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
-    public function history()
+    public function history(Request $request) // Added Request injection
     {
         $user = auth()->user();
 
-        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
-        $history = Order::where('handler_id', $user->id)
-            ->latest()
-            ->paginate(15);
+        // Define the statuses available for filtering
+        $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'];
 
-        return view('cs.orders.history', compact('history'));
+        // 1. Initialize query scoped to the current handler [Section 5.c]
+        $query = \App\Models\Order::where('handler_id', $user->id);
+
+        // 2. Apply Dynamic Search (Order Number or Customer Name)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Uses Searchable trait [4]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // 3. ARCHITECTURE FIX: Apply the Status Filter from the dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        // 4. Finalize with Pagination and Query String Persistence
+        $history = $query->latest()
+            ->paginate(15)
+            ->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
+
+        return view('cs.orders.history', compact('history', 'status'));
     }
 }
 
@@ -503,36 +546,30 @@ class ProductCatalogController extends Controller
         $user = auth()->user();
         $catalogId = $user->getEffectiveCatalogId();
 
-        // Fulfills Section 3.a: If the assigned catalog is deactivated, show nothing
         $catalog = \App\Models\Catalog::find($catalogId);
         if (! $catalog || $catalog->status === 'deactive') {
-            return view('customer.products.index', [
-                'items' => collect(),
-                'availableCategories' => collect(),
-            ]);
+            return view('customer.products.index', ['items' => collect(), 'availableCategories' => collect()]);
         }
 
-        // Initialize Query Builder with Whitelist Logic [Section 3.a.3]
         $query = Item::where('status', 'active')
             ->whereHas('catalogs', function ($q) use ($catalogId) {
                 $q->where('catalogs.id', $catalogId);
             });
 
-        // Apply Sidebar Category Filtering
-        if ($request->filled('category')) {
-            $query->whereHas('categories', function ($q) use ($request) {
-                $q->where('categories.id', $request->category)
-                    ->where('categories.status', 'active');
+        // ARCHITECTURE FIX: Enable item name and SKU search within the whitelist
+        if ($request->filled('search')) {
+            $query->where(function ($q) use ($request) {
+                $q->where('name', 'like', "%{$request->search}%")
+                    ->orWhere('sku', 'like', "%{$request->search}%");
             });
         }
 
-        // ARCHITECTURE FIX: Merge Eager Loading, Sorting, and Pagination into a single execution
-        $items = $query->with('categories') // Prevents N+1 in Blade
-            ->latest()           // Orders by created_at DESC
-            ->paginate(12)       // Control Knobs: Increased to 12 for better grid alignment
-            ->withQueryString(); // Preserves ?category=ID during page turns
+        if ($request->filled('category')) {
+            $query->whereHas('categories', fn ($q) => $q->where('categories.id', $request->category));
+        }
 
-        // Fetch active categories containing active items for this specific catalog whitelist
+        $items = $query->with('categories')->latest()->paginate(12)->withQueryString();
+
         $availableCategories = Category::where('status', 'active')
             ->whereHas('items', function ($q) use ($catalogId) {
                 $q->where('items.status', 'active')
@@ -757,10 +794,17 @@ use Illuminate\Support\Facades\Gate;
 
 class CatalogController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        Gate::authorize('view_catalogs'); // Strict check
-        $catalogs = Catalog::withCount('items')->latest()->paginate(10);
+        Gate::authorize('view_catalogs');
+
+        $query = Catalog::query();
+
+        if ($request->filled('search')) {
+            $query->search($request->search); // Uses Searchable trait [1]
+        }
+
+        $catalogs = $query->withCount('items')->latest()->paginate(10)->withQueryString();
 
         return view('admin.catalogs.index', compact('catalogs'));
     }
@@ -868,13 +912,20 @@ class CategoryController extends Controller
     /**
      * Display a listing of categories with item counts.
      */
-    public function index()
+    public function index(Request $request) // Inject Request
     {
         Gate::authorize('view_items');
 
-        $categories = Category::withCount('items')
-            ->latest()
-            ->paginate(10);
+        $query = Category::withCount('items');
+
+        // ARCHITECTURE FIX: Apply Searchable scope
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+
+        $categories = $query->latest()
+            ->paginate(10)
+            ->withQueryString(); // Preserve search on pagination [6]
 
         return view('admin.categories.index', compact('categories'));
     }
@@ -957,6 +1008,106 @@ class CategoryController extends Controller
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\CompanyController.php ---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Catalog;
+use App\Models\Company;
+use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+
+class CompanyController extends Controller
+{
+    public function index(Request $request)
+    {
+        // Fulfills Addendum 3.c: Visualize HQ/Branch relationships [2]
+        $companys = Company::with(['catalog', 'parent', 'branches'])
+            ->whereNull('parent_id') // Start with HQs to build the hierarchy view
+            ->when($request->search, function ($q) use ($request) {
+                $q->where('company_name', 'like', "%{$request->search}%")
+                    ->orWhere('company_code', 'like', "%{$request->search}%");
+            })
+            ->latest()
+            ->paginate(15);
+
+        return view('admin.companys.index', compact('companys'));
+    }
+
+    public function create(Request $request)
+    {
+        // Fetch active catalogs for assignment [Addendum 1.b]
+        $catalogs = \App\Models\Catalog::where('status', 'active')->orderBy('name')->get();
+
+        // Fetch existing HQs to populate the parent selection dropdown [Addendum 3.c]
+        $hqs = Company::whereNull('parent_id')->orderBy('company_name')->get();
+
+        // Check if we are creating a branch for a specific HQ from its edit page
+        $preselectedParentId = $request->query('parent_id');
+        $preselectedParent = $preselectedParentId ? Company::find($preselectedParentId) : null;
+
+        return view('admin.companys.create', compact('catalogs', 'hqs', 'preselectedParent'));
+    }
+
+    public function store(Request $request)
+    {
+        // Fulfills Addendum 1.d Mutex: company_code for HQ, branch_code for Branch
+        $validated = $request->validate([
+            'company_name' => 'required|string|max:255',
+            'parent_id' => 'nullable|exists:companys,id',
+            // Logic: company_code is required ONLY if it's an HQ (parent_id is null)
+            'company_code' => ['nullable', 'required_without:parent_id', 'unique:companys,company_code'],
+            // Logic: branch_code is required ONLY if it's a Branch (parent_id is present)
+            'branch_code' => ['nullable', 'required_with:parent_id', 'unique:companys,branch_code'],
+            'catalog_id' => 'nullable|exists:catalogs,id',
+            'company_reg_no' => 'nullable|string|max:255',
+            'pic_name' => 'nullable|string|max:255',
+            'pic_phone' => 'nullable|string|max:255',
+            'delivery_address' => 'required|string',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'postal_code' => 'nullable|string|max:10',
+        ]);
+
+        Company::create($validated);
+
+        return redirect()->route('companys.index')->with('success', 'Business entity registered successfully.');
+    }
+
+    public function edit(Company $company)
+    {
+        $hqs = Company::whereNull('parent_id')->where('id', '!=', $company->id)->get();
+        $catalogs = Catalog::where('status', 'active')->get();
+
+        return view('admin.companys.edit', compact('company', 'hqs', 'catalogs'));
+    }
+
+    public function update(Request $request, Company $company)
+    {
+        $validated = $request->validate([
+            'company_name' => 'required|string|max:255',
+            'parent_id' => 'nullable|exists:companys,id',
+            'company_code' => ['nullable', 'required_without:parent_id', Rule::unique('companys')->ignore($company->id)],
+            'branch_code' => ['nullable', 'required_with:parent_id', Rule::unique('companys')->ignore($company->id)],
+            'catalog_id' => 'nullable|exists:catalogs,id',
+            'company_reg_no' => 'nullable|string|max:255',
+            'pic_name' => 'nullable|string|max:255',
+            'pic_phone' => 'nullable|string|max:255',
+            'delivery_address' => 'required|string',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'postal_code' => 'nullable|string|max:10',
+        ]);
+
+        $company->update($validated);
+
+        return redirect()->route('companys.index')->with('success', 'Business details updated.');
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Controller.php ---
 <?php
 
@@ -974,18 +1125,38 @@ abstract class Controller
 
 namespace App\Http\Controllers;
 
+use App\Models\Order;
 use Illuminate\Support\Facades\Auth;
 
 class DashboardController extends Controller
 {
+    /**
+     * Fulfills Addendum Section 4: Unified Order Dashboard
+     * Updated to support Staff-Specific Scoping per user request.
+     */
     public function index()
     {
         $user = Auth::user();
 
-        // Later, we can add logic here.
-        // Example: If user is Admin, fetch system stats.
-        // Example: If user is Customer, fetch their order history.
+        if ($user->hasAnyRole(['admin', 'cs_leader', 'cs_staff'])) {
 
+            // ARCHITECTURE FIX: Initialize scoped query based on current staff [Section 5.a]
+            $baseQuery = Order::assignedTo($user);
+
+            // Clone the scoped query for each status to ensure accurate real-time counts
+            $stats = [
+                'All Orders' => (clone $baseQuery)->count(),
+                'Pending' => (clone $baseQuery)->where('status', 'pending')->count(),
+                'Approved' => (clone $baseQuery)->where('status', 'approved')->count(),
+                'In Transit' => (clone $baseQuery)->where('status', 'in_transit')->count(),
+                'Delivered' => (clone $baseQuery)->where('status', 'completed')->count(),
+                'Cancelled' => (clone $baseQuery)->where('status', 'cancelled')->count(),
+            ];
+
+            return view('cs.orders.dashboard', compact('stats'));
+        }
+
+        // Standard landing page for Customers [Backbone Section 1.b]
         return view('dashboard');
     }
 }
@@ -1254,11 +1425,12 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
-        $roles = \Spatie\Permission\Models\Role::pluck('name', 'name');
+        $roles = Role::pluck('name', 'name');
+        $status = ['active', 'deactive'];
 
-        // Fulfills Section 3.a & User Request: Fetch only top-level accounts (no parent)
-        $query = User::with(['roles', 'parent', 'branches.roles', 'details'])
-            ->whereNull('parent_id');
+        // ARCHITECTURE FIX: Remove ->whereNull('parent_id') [Addendum 2.a]
+        // We now list all Login Credentials, grouped by their linked company.
+        $query = User::with(['roles', 'company']);
 
         if (auth()->user()->hasRole('cs_leader')) {
             $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
@@ -1276,15 +1448,15 @@ class UserController extends Controller
             ->paginate(15)
             ->withQueryString();
 
-        return view('users.index', compact('users', 'roles'));
+        return view('users.index', compact('users', 'roles', 'status'));
     }
 
     public function assignedIndex(Request $request)
     {
-        // Fulfills Section 5.a & User Request: Only top-level assigned customers
+        // ARCHITECTURE FIX: Remove ->whereNull('parent_id') [Addendum 2.a]
+        // This fulfills Section 5.a: Viewing assigned customer logins.
         $users = User::where('assigned_cs_id', auth()->id())
-            ->whereNull('parent_id')
-            ->with(['roles', 'parent', 'branches.roles', 'details'])
+            ->with(['roles', 'company'])
             ->search($request->search)
             ->filterByDate()
             ->latest()
@@ -1300,90 +1472,61 @@ class UserController extends Controller
     {
         $roles = \Spatie\Permission\Models\Role::all();
         $parent = null;
-
-        // Fulfills Section 3.a.2: Branch inheritance context
         if ($request->has('parent_id')) {
-            $parent = User::with('details')->findOrFail($request->parent_id);
+            $parent = User::findOrFail($request->parent_id);
         }
 
+        // ARCHITECTURE FIX: Fetch from Company model (v1.4 Rename) [1.a]
+        $companys = \App\Models\Company::orderBy('company_name')->get();
         $catalogs = \App\Models\Catalog::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
 
-        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers'));
+        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers', 'companys'));
     }
 
     // Save new user
     public function store(Request $request)
     {
-        // 1. Updated Validation to include all Detail fields
+        // Fulfills Addendum 3.b: User Management ONLY for Name, Email, Password, and Company Link
         $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'login_id' => ['required', 'string', 'max:255', 'unique:users'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'confirmed', \Illuminate\Validation\Rules\Password::defaults()],
-            'role' => ['required', 'exists:roles,name'],
-            'parent_id' => ['nullable', 'exists:users,id'],
-            'catalog_id' => ['nullable', 'exists:catalogs,id'],
-            'assigned_cs_id' => ['nullable', 'exists:users,id'],
-            'company_name' => ['nullable', 'string', 'max:255'],
-            'company_reg_no' => ['nullable', 'string', 'max:255'],
-            'pic_name' => ['nullable', 'string', 'max:255'],
-            'pic_phone' => ['nullable', 'string', 'max:255'],
-            'delivery_address' => ['nullable', 'string'],
-            'city' => ['nullable', 'string', 'max:100'],
-            'state' => ['nullable', 'string', 'max:100'],
-            'postal_code' => ['nullable', 'string', 'max:20'],
+            'name' => 'required|string|max:255',
+            'login_id' => 'required|string|unique:users',
+            'email' => 'required|email|unique:users',
+            'password' => 'required|confirmed|min:8',
+            'company_id' => 'required|exists:companys,id', // Mandatory link to a pre-existing business
+            'role' => 'required|exists:roles,name',
         ]);
 
-        // 2. Create the User with Hierarchy data
         $user = User::create([
             'name' => $request->name,
             'login_id' => $request->login_id,
             'email' => $request->email,
             'password' => Hash::make($request->password),
+            'company_id' => $request->company_id,
             'status' => 'active',
-            'parent_id' => $request->parent_id, // Fulfills Branch Architecture [3]
-            'catalog_id' => $request->catalog_id,
-            'assigned_cs_id' => $request->assigned_cs_id ?? (auth()->user()->hasRole('cs_staff') ? auth()->id() : null),
         ]);
 
         $user->assignRole($request->role);
 
-        // 3. Fulfills Request: Persist ALL detail fields, not just company_name
-        if ($request->role === 'customer') {
-            $user->details()->create($request->only([
-                'company_name',
-                'company_reg_no',
-                'pic_name',
-                'pic_phone',
-                'delivery_address',
-                'city',
-                'state',
-                'postal_code',
-            ]));
-        }
-
-        return redirect()->route($request->has('parent_id') || auth()->user()->hasRole('cs_staff') ? 'users.assigned' : 'users.index')
-            ->with('success', 'User created successfully.');
+        return redirect()->route('users.index')->with('success', 'User login created.');
     }
 
     public function edit(User $user)
     {
-        // SECURITY CHECK: If user is CS Staff and has the restricted edit permission
         if (auth()->user()->hasPermissionTo('edit_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-
-            // Block if the customer isn't assigned to them
             if ($user->assigned_cs_id !== auth()->id()) {
-                abort(403, 'You are not authorized to edit this customer.');
+                abort(403, 'Unauthorized.');
             }
         }
 
-        $roles = Role::all();
+        $roles = \Spatie\Permission\Models\Role::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
-        $catalogs = \App\Models\Catalog::all();
 
-        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'catalogs'));
+        // NEW: Pass Companies to Edit view for reassignment [Addendum 3.b]
+        $companys = \App\Models\Company::orderBy('company_name')->get();
+
+        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys'));
     }
 
     public function update(Request $request, User $user)
@@ -1670,6 +1813,7 @@ class ProfileUpdateRequest extends FormRequest
 
 namespace App\Models;
 
+use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
@@ -1677,9 +1821,11 @@ use Spatie\Activitylog\Traits\LogsActivity;
 
 class Catalog extends Model
 {
-    use HasFactory, LogsActivity;
+    use HasFactory, LogsActivity,Searchable;
 
     protected $fillable = ['name', 'status'];
+
+    protected $searchable = ['name', 'status'];
 
     public function items()
     {
@@ -1706,6 +1852,7 @@ class Catalog extends Model
 
 namespace App\Models;
 
+use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
@@ -1713,9 +1860,11 @@ use Spatie\Activitylog\Traits\LogsActivity;
 
 class Category extends Model
 {
-    use HasFactory, LogsActivity;
+    use HasFactory, LogsActivity,Searchable;
 
     protected $fillable = ['name', 'status'];
+
+    protected $searchable = ['name', 'status'];
 
     public function items()
     {
@@ -1741,7 +1890,7 @@ class Category extends Model
 
 --- END_FILE ---
 
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\CustomerDetail.php ---
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Company.php ---
 <?php
 
 namespace App\Models;
@@ -1750,12 +1899,17 @@ use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-class CustomerDetail extends Model
+class Company extends Model
 {
     use LogsActivity;
 
+    protected $table = 'companys'; // Aligning with requested naming
+
     protected $fillable = [
-        'user_id',
+        'company_code', // HQ Code [1.d]
+        'branch_code',  // Branch Code [1.d]
+        'parent_id',    // Links Branch to HQ [3.c]
+        'catalog_id',   // Whitelist control [1.b]
         'company_name',
         'company_reg_no',
         'pic_name',
@@ -1766,17 +1920,29 @@ class CustomerDetail extends Model
         'state',
     ];
 
-    public function user()
+    public function catalog()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Catalog::class);
+    }
+
+    public function users()
+    {
+        return $this->hasMany(User::class, 'company_id');
+    }
+
+    public function parent()
+    {
+        return $this->belongsTo(Company::class, 'parent_id');
+    }
+
+    public function branches()
+    {
+        return $this->hasMany(Company::class, 'parent_id');
     }
 
     public function getActivitylogOptions(): LogOptions
     {
-        return LogOptions::defaults()
-            ->logFillable() // Logs company name, reg no, PIC info, etc. [4]
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 }
 
@@ -1847,6 +2013,7 @@ class Item extends Model
 
 namespace App\Models;
 
+use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -1855,7 +2022,7 @@ use Spatie\Activitylog\Traits\LogsActivity;
 
 class Order extends Model
 {
-    use LogsActivity;
+    use LogsActivity,Searchable;
 
     protected $fillable = [
         'order_number',
@@ -1864,6 +2031,12 @@ class Order extends Model
         'status',
         'cancellation_reason',
         'internal_notes',
+        'cancellation_requested_by',
+        'cancellation_request_reason',
+    ];
+
+    protected $searchable = [
+        'order_number', 'status',
     ];
 
     /**
@@ -1897,6 +2070,49 @@ class Order extends Model
             ->logFillable()
             ->logOnlyDirty()
             ->setDescriptionForEvent(fn (string $eventName) => "Order has been {$eventName}");
+    }
+
+    public function canBeCancelledDirectly(): bool
+    {
+        // Approved orders require a request if the user is CS Staff [Addendum 2.a]
+        if ($this->status === 'approved' && auth()->user()->hasRole('cs_staff')) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if there is an active cancellation request pending review.
+     */
+    public function hasPendingCancellationRequest(): bool
+    {
+        return ! is_null($this->cancellation_requested_by) && $this->status === 'approved';
+    }
+
+    /**
+     * Get the user who requested the cancellation.
+     */
+    public function cancellationRequester(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cancellation_requested_by');
+    }
+
+    /**
+     * Fulfills Section 5: Assignment & Handover Logic
+     * Scopes the query to orders relevant to a specific staff member.
+     */
+    public function scopeAssignedTo($query, $user)
+    {
+        return $query->where(function ($q) use ($user) {
+            $q->where('handler_id', $user->id)
+                ->orWhere(function ($sub) use ($user) {
+                    $sub->whereNull('handler_id')
+                        ->whereHas('user', function ($u) use ($user) {
+                            $u->where('assigned_cs_id', $user->id);
+                        });
+                });
+        });
     }
 }
 
@@ -1939,16 +2155,52 @@ class OrderItem extends Model
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Uom.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Uom extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = ['item_id', 'uom_name', 'rate_qty', 'price'];
+
+    // ARCHITECTURE FIX: Hide price from Customer/Branch roles globally [Addendum 3.b]
+    protected function staffPrice(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return \Illuminate\Database\Eloquent\Casts\Attribute::make(
+            get: function ($value) {
+                if (auth()->check() && auth()->user()->hasRole('customer')) {
+                    return null;
+                }
+
+                return $value;
+            }
+        );
+    }
+
+    public function canBeDeleted(): bool
+    {
+        // Prevent hard delete if referenced in order history [Addendum 3.c]
+        return ! \DB::table('order_items')->where('snapshot_uom_id', $this->id)->exists();
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\User.php ---
 <?php
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use App\Traits\DateFilterable;
 use App\Traits\RoleFilterable;
 use App\Traits\Searchable;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Factories\HasFactory; // ARCHITECTURE FIX: Required for factories
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Spatie\Activitylog\LogOptions;
@@ -1957,202 +2209,65 @@ use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
+    // ARCHITECTURE FIX: Added HasFactory trait to resolve the "Call to undefined method" error
     use DateFilterable, HasFactory, HasRoles, LogsActivity, Notifiable, RoleFilterable, Searchable;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var list<string>
-     */
-    protected $fillable = [
-        'name',
-        'login_id',
-        'email',
-        'password',
-        'status',
-        'parent_id',
-        'assigned_cs_id',
-        'catalog_id',
-    ];
+    protected $fillable = ['name', 'login_id', 'email', 'password', 'status', 'company_id', 'assigned_cs_id'];
 
-    protected $searchable = [
-        'name',
-        'login_id',
-        'email',
-        'status',
-        'parent_id',
-        'assigned_cs_id',
-        'catalog_id',
-    ];
+    protected $searchable = ['name', 'login_id', 'email', 'status'];
 
     /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var list<string>
+     * Fulfills Spatie LogsActivity requirement.
+     * Captures changes to user credentials and company assignments [6].
      */
-    protected $hidden = [
-        'password',
-        'remember_token',
-    ];
-
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
-
-    // æ–°å¢žï¼šèŽ·å–æ‰€å±žæ€»åº—
-    public function parent()
-    {
-        return $this->belongsTo(User::class, 'parent_id');
-    }
-
-    // æ–°å¢žï¼šèŽ·å–ä¸‹å±žåˆ†åº—
-    public function branches()
-    {
-        return $this->hasMany(User::class, 'parent_id');
-    }
-
-    public function details()
-    {
-        // A user has one set of customer details
-        return $this->hasOne(CustomerDetail::class);
-    }
-
-    // For CS Staff: Get all customers they handle
-    public function assignedCustomers()
-    {
-        return $this->hasMany(User::class, 'assigned_cs_id');
-    }
-
-    // For Customers: Get their assigned CS Staff
-    public function assignedStaff()
-    {
-        return $this->belongsTo(User::class, 'assigned_cs_id');
-    }
-
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logFillable() // Automatically logs all fields in $fillable [3]
-            ->logOnlyDirty() // Only log fields that actually changed
-            ->dontSubmitEmptyLogs();
+            ->logFillable()
+            ->logOnlyDirty();
     }
 
     /**
-     * Fulfills Single Catalog Policy
-     * Standard Eloquent relationship for the assigned catalog.
+     * Many Users -> One Company [7, 8]
      */
-    public function catalog()
+    public function company(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
-        return $this->belongsTo(Catalog::class, 'catalog_id');
+        return $this->belongsTo(Company::class, 'company_id');
     }
 
     /**
-     * Inheritance Logic: Get the effective catalog ID
-     * If the branch has no catalog, it looks up the parent (Main) catalog.
+     * Whitelist Logic: Traverses Company -> Parent Company [9]
      */
     public function getEffectiveCatalogId()
     {
-        // 1. Direct Assignment
-        if ($this->catalog_id) {
-            return $this->catalog_id;
+        if (! $this->company) {
+            return null;
         }
 
-        // 2. Inheritance: If Branch, check Main Store
-        if ($this->parent_id) {
-            return $this->parent?->catalog_id;
-        }
-
-        return null;
+        // Return direct company catalog or inherit from parent HQ [9]
+        return $this->company->catalog_id ?? $this->company->parent?->catalog_id;
     }
 
     /**
-     * Whitelist Logic: Restricted Item Visibility
-     * Ensures customers only see items in their specific assigned (or inherited) catalog.
+     * Retrieve items based on the Single Catalog Policy whitelist [9].
      */
-    public function getVisibleItems()
+    public function getVisibleItems(): \Illuminate\Support\Collection
     {
         $catalogId = $this->getEffectiveCatalogId();
 
-        if (! $catalogId) {
-            return collect(); // Return empty if no catalog is assigned to the chain
-        }
-
-        return Item::whereHas('catalogs', function ($q) use ($catalogId) {
-            $q->where('catalogs.id', $catalogId);
-        })->get();
+        return $catalogId
+            ? Item::whereHas('catalogs', fn ($q) => $q->where('catalogs.id', $catalogId))->get()
+            : collect();
     }
 
     /**
-     * Fulfills Request: Check if the user has an order currently awaiting review.
-     */
-    public function hasPendingOrder(): bool
-    {
-        return $this->orders()->where('status', 'pending')->exists();
-    }
-
-    public function orders()
-    {
-        return $this->hasMany(\App\Models\Order::class);
-    }
-
-    /**
-     * Fulfills Section 4.1: Single Draft Policy
-     * Retrieves the current active draft or returns null.
-     */
-    public function currentDraft()
-    {
-        return $this->orders()->where('status', 'draft')->first();
-    }
-
-    /**
-     * Refined Section 4.a.1: Logic to prevent draft creation if a pending order exists.
-     */
-    public function getOrCreateDraft()
-    {
-        $draft = $this->currentDraft();
-
-        if (! $draft) {
-            // Architecture Check: Block creation if a pending order is already in the queue
-            if ($this->hasPendingOrder()) {
-                return null;
-            }
-            $draft = $this->orders()->create(['status' => 'draft']);
-        }
-
-        return $draft;
-    }
-
-    /**
-     * Refined Section 3.c.1: Deletion Restriction Logic
-     * A user can be deleted if they have no orders.
-     * If they are an HQ, all their branches must also have no orders.
+     * Fulfills Section 3.c Deletion Restriction.
+     * A user login can only be deleted if they have no order history.
      */
     public function canBeDeleted(): bool
     {
-        // 1. Check if the specific user has orders [4]
-        if ($this->orders()->exists()) {
-            return false;
-        }
-
-        // 2. Fulfills Request: If Main HQ, check if any branch has orders
-        if (is_null($this->parent_id)) {
-            $hasBranchWithOrders = $this->branches()->whereHas('orders')->exists();
-            if ($hasBranchWithOrders) {
-                return false;
-            }
-        }
-
-        return true;
+        // Check for existence in the orders table
+        return ! $this->hasMany(Order::class)->exists();
     }
 }
 
@@ -4672,52 +4787,240 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_01_000001_refactor_user_customer_relationship.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Update customer_details to include business codes [Addendum 1.c]
+        Schema::table('customer_details', function (Blueprint $table) {
+            $table->dropForeign(['user_id']); // Remove old 1:1 link
+            $table->dropColumn('user_id');
+            $table->string('company_code')->nullable()->unique()->after('id'); // For HQ
+            $table->string('branch_code')->nullable()->unique()->after('company_code'); // For Branches
+        });
+
+        // 2. Update users to link to a shared Customer Detail record [Addendum 1.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('customer_detail_id')->nullable()->constrained('customer_details')->onDelete('set null')->after('parent_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropForeign(['customer_detail_id']);
+            $table->dropColumn('customer_detail_id');
+        });
+        Schema::table('customer_details', function (Blueprint $table) {
+            $table->foreignId('user_id')->nullable()->constrained()->onDelete('cascade');
+            $table->dropColumn(['company_code', 'branch_code']);
+        });
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_01_000002_create_uoms_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('uoms', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+            $table->string('uom_name'); // e.g., "Carton", "Pack" [Addendum 3.a]
+            $table->integer('rate_qty'); // e.g., 24
+            $table->decimal('price', 10, 2); // Hidden from customers
+            $table->softDeletes(); // For "Hide" rule [Addendum 3.c]
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('uoms');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_05_000001_add_cancellation_request_fields_to_orders_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Fulfills Addendum Section 2: Enhanced Order Security
+     * Adds tracking for the "Request-Response" cancellation protocol.
+     */
+    public function up(): void
+    {
+        Schema::table('orders', function (Blueprint $table) {
+            // Stores the ID of the CS Staff who initiated the request
+            $table->foreignId('cancellation_requested_by')
+                ->nullable()
+                ->after('internal_notes')
+                ->constrained('users')
+                ->onDelete('set null');
+
+            // Stores the mandatory reason provided by the staff member
+            $table->text('cancellation_request_reason')
+                ->nullable()
+                ->after('cancellation_requested_by');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('orders', function (Blueprint $table) {
+            $table->dropForeign(['cancellation_requested_by']);
+            $table->dropColumn(['cancellation_requested_by', 'cancellation_request_reason']);
+        });
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_10_000001_rename_details_to_companys_and_refactor_relationships.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Rename the table [Addendum 1.a]
+        Schema::rename('customer_details', 'companys');
+
+        Schema::table('companys', function (Blueprint $table) {
+            // 2. Move catalog_id from users to companys [Addendum 1.b]
+            $table->foreignId('catalog_id')->nullable()->after('id')->constrained('catalogs')->onDelete('set null');
+
+            // 3. Add parent_id to companys to manage business hierarchy directly [Addendum 3.c]
+            $table->foreignId('parent_id')->nullable()->after('catalog_id')->constrained('companys')->onDelete('set null');
+        });
+
+        // 4. Data Migration: Move existing catalog_id assignments from users to their respective companies
+        $usersWithCatalogs = DB::table('users')->whereNotNull('catalog_id')->whereNotNull('customer_detail_id')->get();
+        foreach ($usersWithCatalogs as $user) {
+            DB::table('companys')->where('id', $user->customer_detail_id)->update(['catalog_id' => $user->catalog_id]);
+        }
+
+        // 5. Refactor Users table [Addendum 2.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropForeign(['catalog_id']);
+            $table->dropColumn('catalog_id');
+            $table->renameColumn('customer_detail_id', 'company_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->renameColumn('company_id', 'customer_detail_id');
+            $table->unsignedBigInteger('catalog_id')->nullable();
+            $table->foreign('catalog_id')->references('id')->on('catalogs')->onDelete('set null');
+        });
+
+        Schema::table('companys', function (Blueprint $table) {
+            $table->dropForeign(['parent_id']);
+            $table->dropColumn(['parent_id', 'catalog_id']);
+        });
+
+        Schema::rename('companys', 'customer_details');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_15_000001_update_order_and_items_table_for_v1_4.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Update Order Status Enum
+        Schema::table('orders', function (Blueprint $table) {
+            $table->string('status')->default('draft')->change();
+        });
+
+        // 2. Update Order Items for UOM Snapshots [Addendum 5.a]
+        Schema::table('order_items', function (Blueprint $table) {
+            $table->foreignId('uom_id')->nullable()->after('item_id')->constrained('uoms')->onDelete('set null');
+            $table->string('snapshot_uom_name')->nullable()->after('snapshot_name');
+            $table->integer('snapshot_uom_rate')->nullable()->after('snapshot_uom_name');
+        });
+
+        // 3. ARCHITECTURE FIX: Drop foreign key before dropping column [Addendum 2.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropForeign(['parent_id']); // Must drop constraint first
+            $table->dropColumn('parent_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('parent_id')->nullable()->constrained('users')->onDelete('set null');
+        });
+
+        Schema::table('order_items', function (Blueprint $table) {
+            $table->dropForeign(['uom_id']);
+            $table->dropColumn(['uom_id', 'snapshot_uom_name', 'snapshot_uom_rate']);
+        });
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
 namespace Database\Seeders;
 
 use App\Models\Catalog;
-use App\Models\Category;
+use App\Models\Company;
 use App\Models\Item;
-use App\Models\User;
+use App\Models\User; // NEW
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // --- CONTROL KNOBS START ---
-        $totalItems = 60;  // Total items in the global master list
-        $totalCategories = 6;   // Sidebar categories for filtering
-        $totalCatalogs = 3;   // Whitelist folders for different customers
-        $branchesPerHQ = 4;   // Sub-accounts per Main HQ
-        // --- CONTROL KNOBS END ---
-
-        // 1. Initialize Roles and Permissions [4]
-        // CRITICAL: Must be first so users can be assigned roles
         $this->call(RoleSeeder::class);
 
-        // 2. Generate Product Items [5]
-        $items = Item::factory()->count($totalItems)->create();
-
-        // 3. Generate Categories & Link Items [6]
-        // Fulfills Item Grouping Management
-        $categories = Category::factory()->count($totalCategories)->create()->each(function ($category) use ($items) {
-            $category->items()->attach(
-                $items->random(rand(5, 12))->pluck('id')->toArray()
-            );
+        $items = Item::factory()->count(60)->create();
+        $catalogs = Catalog::factory()->count(3)->create()->each(function ($catalog) use ($items) {
+            $catalog->items()->attach($items->random(rand(15, 30))->pluck('id')->toArray());
         });
 
-        // 4. Generate Catalogs & Whitelist Items [7]
-        // Fulfills Section 3.a.3: Customers only see whitelisted items
-        $catalogs = Catalog::factory()->count($totalCatalogs)->create()->each(function ($catalog) use ($items) {
-            $catalog->items()->attach(
-                $items->random(rand(15, 30))->pluck('id')->toArray()
-            );
-        });
-
-        // 5. Create Internal Staff [8, 9]
         $admin = User::factory()->create([
             'name' => 'System Admin',
             'login_id' => 'admin001',
@@ -4735,44 +5038,53 @@ class DatabaseSeeder extends Seeder
         ]);
         $leader->assignRole('cs_leader');
 
-        // Create a CS Staff (Handles Items/Catalogs/Orders) [1]
+        // 1. Create Internal Staff [Backbone 2.c]
         $staff = User::factory()->create([
             'name' => 'CS Staff User',
-            'email' => 'staff@test.com',
             'login_id' => 'csstaff001',
+            'email' => 'staff@test.com',
             'status' => 'active',
         ]);
         $staff->assignRole('cs_staff');
 
-        // 6. Create Customer Hierarchy [1, 2]
-        // Create Main HQ and assign to the first available Catalog
-        $hq = User::factory()->create([
-            'name' => 'Main HQ Corp',
-            'login_id' => 'customer001',
-            'email' => 'hq@customer.com',
-            'catalog_id' => $catalogs->first()->id, // Assigned to Folder 1
-            'assigned_cs_id' => $staff->id,
-            'status' => 'active',
-        ]);
-        $hq->assignRole('customer');
-        $hq->details()->create([
+        // 2. Create Main HQ Company [Addendum 1.a & 1.b]
+        // Note: Catalog is now assigned to the COMPANY, not the User.
+        $hqCompany = Company::create([
+            'company_code' => 'MAX-HQ-001',
             'company_name' => 'Maxtop HQ Group',
+            'catalog_id' => $catalogs->first()->id,
             'delivery_address' => '123 Industrial Park, KL',
         ]);
 
-        // Create Branches using the control knob [Section 3.a.2 Inheritance]
-        User::factory()->count($branchesPerHQ)->create([
-            'parent_id' => $hq->id,
-            'catalog_id' => null, // NULL forces inheritance from HQ [10]
+        // 3. Create Multiple HQ Users (Many-to-One) [Addendum 2.a]
+        $hqUser = User::factory()->create([
+            'name' => 'Main HQ Admin',
+            'login_id' => 'customer001',
+            'company_id' => $hqCompany->id, // Linked to Company entity
             'assigned_cs_id' => $staff->id,
             'status' => 'active',
-        ])->each(function ($branch) {
-            $branch->assignRole('customer');
-            $branch->details()->create([
-                'company_name' => $branch->name.' Branch',
-                'delivery_address' => 'Branch Location Address',
+        ]);
+        $hqUser->assignRole('customer');
+
+        // 4. Create Branch Companies and Users [Addendum 3.c]
+        for ($i = 1; $i <= 4; $i++) {
+            $branchCompany = Company::create([
+                'parent_id' => $hqCompany->id, // Business hierarchy
+                'branch_code' => "BR-00{$i}",
+                'company_name' => "Maxtop Branch {$i}",
+                'catalog_id' => null, // Forces inheritance from HQ Catalog [Backbone 3.a.2]
+                'delivery_address' => "Branch {$i} Location Address",
             ]);
-        });
+
+            $branchUser = User::factory()->create([
+                'name' => "Branch User {$i}",
+                'login_id' => "branch00{$i}",
+                'company_id' => $branchCompany->id,
+                'assigned_cs_id' => $staff->id,
+                'status' => 'active',
+            ]);
+            $branchUser->assignRole('customer');
+        }
     }
 }
 
@@ -5153,6 +5465,12 @@ class RoleSeeder extends Seeder
                 </div>
             @endif
 
+            <div class="mb-6">
+                <form action="{{ route('catalogs.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search catalog folders...')" />
+                </form>
+            </div>
+
             @can('create_catalogs')
                 <div class="flex justify-end mb-4">
                     <a href="{{ route('catalogs.create') }}"
@@ -5332,6 +5650,11 @@ class RoleSeeder extends Seeder
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div class="mb-6">
+                <form action="{{ route('categories.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search groups by name...')" />
+                </form>
+            </div>
             {{-- Left Column: Create Form --}}
             @can('create_items')
                 <div class="md:col-span-1">
@@ -5392,6 +5715,470 @@ class RoleSeeder extends Seeder
                     <div class="p-4 bg-gray-50 border-t">
                         {{ $categories->links() }}
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\companys\create.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ $preselectedParent ? __('Add Branch to ') . $preselectedParent->company_name : __('Register New Business') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div x-data="{
+                isBranch: {{ $preselectedParent ? 'true' : 'false' }},
+                parentId: '{{ $preselectedParent->id ?? '' }}'
+            }"
+                class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
+
+                <form method="POST" action="{{ route('companys.store') }}" class="space-y-8">
+                    @csrf
+
+                    <!-- STEP 1: DEFINE ENTITY TYPE [Addendum 3.c] -->
+                    <div class="p-6 bg-blue-50 rounded-2xl border border-blue-100">
+                        <h3 class="text-[10px] font-black uppercase text-blue-600 mb-4 tracking-widest">
+                            {{ __('Business Entity Type') }}</h3>
+
+                        <div class="flex gap-8">
+                            <label class="flex items-center cursor-pointer group">
+                                <input type="radio" x-model="isBranch" :value="false"
+                                    class="w-4 h-4 text-blue-600" @if ($preselectedParent) disabled @endif>
+                                <span
+                                    class="ml-2 text-xs font-black text-gray-700 uppercase {{ $preselectedParent ? 'opacity-50' : '' }}">{{ __('Main HQ Company') }}</span>
+                            </label>
+                            <label class="flex items-center cursor-pointer group">
+                                <input type="radio" x-model="isBranch" :value="true"
+                                    class="w-4 h-4 text-blue-600"
+                                    @if ($preselectedParent) checked disabled @endif>
+                                <span
+                                    class="ml-2 text-xs font-black text-gray-700 uppercase">{{ __('Branch Office') }}</span>
+                            </label>
+                        </div>
+
+                        {{-- HQ Selection Logic --}}
+                        <div x-show="isBranch" x-transition class="mt-6">
+                            <x-input-label for="parent_id" :value="__('Select Parent HQ')" class="text-[10px] uppercase font-black" />
+                            <select name="parent_id" x-model="parentId"
+                                class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm"
+                                @if ($preselectedParent) readonly @endif>
+                                <option value="">{{ __('-- Choose HQ --') }}</option>
+                                @foreach ($hqs as $hq)
+                                    <option value="{{ $hq->id }}">{{ $hq->company_name }}
+                                        ({{ $hq->company_code }})</option>
+                                @endforeach
+                            </select>
+                            {{-- Force hidden input if locked --}}
+                            @if ($preselectedParent)
+                                <input type="hidden" name="parent_id" value="{{ $preselectedParent->id }}">
+                            @endif
+                        </div>
+                    </div>
+
+                    <!-- STEP 2: LOGISTICS & CODES [Addendum 1.d] -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div x-show="!isBranch">
+                            <x-input-label for="company_code" :value="__('Company Code (HQ)')"
+                                class="text-[10px] font-black uppercase" />
+                            <x-text-input name="company_code" type="text"
+                                class="mt-1 block w-full uppercase font-mono" placeholder="MA-XXXX" />
+                            <x-input-error :messages="$errors->get('company_code')" class="mt-2" />
+                        </div>
+
+                        <div x-show="isBranch">
+                            <x-input-label for="branch_code" :value="__('Branch Code')"
+                                class="text-[10px] font-black uppercase" />
+                            <x-text-input name="branch_code" type="text"
+                                class="mt-1 block w-full uppercase font-mono" placeholder="BR-XXXX" />
+                            <x-input-error :messages="$errors->get('branch_code')" class="mt-2" />
+                        </div>
+
+                        <div>
+                            <x-input-label for="company_name" :value="__('Registered Business Name')"
+                                class="text-[10px] font-black uppercase" />
+                            <x-text-input name="company_name" type="text" class="mt-1 block w-full" required />
+                            <x-input-error :messages="$errors->get('company_name')" class="mt-2" />
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <x-input-label for="catalog_id" :value="__('Assign Order Catalog')"
+                                class="text-[10px] font-black uppercase" />
+                            <select name="catalog_id"
+                                class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                <option value="">{{ __('No specific catalog (Inherit from HQ)') }}</option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}">{{ $catalog->name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div>
+                            <x-input-label for="company_reg_no" :value="__('SSM / Registration No.')"
+                                class="text-[10px] font-black uppercase" />
+                            <x-text-input name="company_reg_no" type="text" class="mt-1 block w-full" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <x-input-label for="delivery_address" :value="__('Primary Delivery Address')"
+                            class="text-[10px] font-black uppercase" />
+                        <textarea name="delivery_address" class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm" rows="3"
+                            required></textarea>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="flex items-center justify-end pt-6 border-t border-gray-100 gap-4">
+                        <a href="{{ route('companys.index') }}"
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition">{{ __('Cancel') }}</a>
+                        <x-primary-button
+                            class="bg-blue-600 hover:bg-blue-700 py-3 px-8 rounded-2xl shadow-lg transition-all uppercase text-[10px] font-black">
+                            {{ __('Register Entity') }}
+                        </x-primary-button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\companys\edit.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+                <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                    {{ __('Manage Business Entity') }}
+                </h2>
+                <p class="text-xs font-bold text-blue-600 uppercase tracking-widest mt-1">
+                    {{ $company->company_name }}
+                    <span class="text-gray-400">({{ $company->company_code ?? $company->branch_code }})</span>
+                </p>
+            </div>
+
+            {{-- Fulfills Addendum 3.c: Contextual Branch Creation for HQs --}}
+            @if (is_null($company->parent_id))
+                <a href="{{ route('companys.create', ['parent_id' => $company->id]) }}"
+                    class="bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-green-100">
+                    {{ __('+ Add New Branch') }}
+                </a>
+            @endif
+        </div>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+            {{-- ARCHITECTURE: Server-Aware Alpine State for Mutex Logic [Addendum 1.d] --}}
+            <div x-data="{
+                isBranch: {{ $company->parent_id ? 'true' : 'false' }},
+                parentId: '{{ old('parent_id', $company->parent_id) }}'
+            }"
+                class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
+
+                <form method="POST" action="{{ route('companys.update', $company) }}" class="space-y-10">
+                    @csrf
+                    @method('PUT')
+
+                    <!-- SECTION 1: BUSINESS HIERARCHY [Addendum 3.c] -->
+                    <div class="p-6 bg-blue-50 rounded-2xl border border-blue-100">
+                        <h3
+                            class="text-[10px] font-black uppercase text-blue-600 mb-4 tracking-widest flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="2.5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                            </svg>
+                            {{ __('Hierarchy Configuration') }}
+                        </h3>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div>
+                                <x-input-label :value="__('Entity Relationship')"
+                                    class="text-[10px] uppercase font-black text-gray-500 mb-2" />
+                                <div class="flex gap-6">
+                                    <label class="flex items-center cursor-pointer group">
+                                        <input type="radio" x-model="isBranch" :value="false"
+                                            class="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500">
+                                        <span
+                                            class="ml-2 text-xs font-black text-gray-700 uppercase group-hover:text-blue-600 transition">{{ __('Main HQ') }}</span>
+                                    </label>
+                                    <label class="flex items-center cursor-pointer group">
+                                        <input type="radio" x-model="isBranch" :value="true"
+                                            class="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500">
+                                        <span
+                                            class="ml-2 text-xs font-black text-gray-700 uppercase group-hover:text-blue-600 transition">{{ __('Branch Office') }}</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div x-show="isBranch" x-transition.duration.300ms>
+                                <x-input-label for="parent_id" :value="__('Parent Headquarters')"
+                                    class="text-[10px] uppercase font-black text-gray-500" />
+                                <select id="parent_id" name="parent_id" x-model="parentId"
+                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm">
+                                    <option value="">{{ __('-- Select Parent HQ --') }}</option>
+                                    @foreach ($hqs as $hq)
+                                        <option value="{{ $hq->id }}">{{ $hq->company_name }}
+                                            ({{ $hq->company_code }})</option>
+                                    @endforeach
+                                </select>
+                                <x-input-error :messages="$errors->get('parent_id')" class="mt-2" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- SECTION 2: IDENTIFICATION & BRANDING [Addendum 1.d] -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div x-show="!isBranch">
+                            <x-input-label for="company_code" :value="__('Company Code (HQ)')"
+                                class="text-[10px] uppercase font-black" />
+                            <x-text-input id="company_code" name="company_code" type="text"
+                                class="mt-1 block w-full uppercase font-mono bg-gray-50" :value="old('company_code', $company->company_code)" />
+                            <x-input-error :messages="$errors->get('company_code')" class="mt-2" />
+                        </div>
+
+                        <div x-show="isBranch">
+                            <x-input-label for="branch_code" :value="__('Branch Code')"
+                                class="text-[10px] uppercase font-black" />
+                            <x-text-input id="branch_code" name="branch_code" type="text"
+                                class="mt-1 block w-full uppercase font-mono" :value="old('branch_code', $company->branch_code)" />
+                            <x-input-error :messages="$errors->get('branch_code')" class="mt-2" />
+                        </div>
+
+                        <div class="md:col-span-2">
+                            <x-input-label for="company_name" :value="__('Registered Business Name')"
+                                class="text-[10px] uppercase font-black" />
+                            <x-text-input id="company_name" name="company_name" type="text" class="mt-1 block w-full"
+                                :value="old('company_name', $company->company_name)" required />
+                            <x-input-error :messages="$errors->get('company_name')" class="mt-2" />
+                        </div>
+                    </div>
+
+                    <!-- SECTION 3: LOGISTICS & PIC [Preserved Attributes] -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 pt-6 border-t border-gray-100">
+                        <div class="space-y-6">
+                            <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest">
+                                {{ __('Logistics & Delivery') }}</h3>
+
+                            <div>
+                                <x-input-label for="delivery_address" :value="__('Primary Delivery Address')"
+                                    class="text-[10px] uppercase font-black" />
+                                <textarea id="delivery_address" name="delivery_address" rows="3"
+                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm focus:ring-blue-500" required>{{ old('delivery_address', $company->delivery_address) }}</textarea>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <x-input-label for="city" :value="__('City')"
+                                        class="text-[10px] uppercase font-black" />
+                                    <x-text-input id="city" name="city" type="text" class="mt-1 block w-full"
+                                        :value="old('city', $company->city)" />
+                                </div>
+                                <div>
+                                    <x-input-label for="postal_code" :value="__('Postal Code')"
+                                        class="text-[10px] uppercase font-black" />
+                                    <x-text-input id="postal_code" name="postal_code" type="text"
+                                        class="mt-1 block w-full" :value="old('postal_code', $company->postal_code)" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6">
+                            <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest">
+                                {{ __('Contact Information') }}</h3>
+
+                            <div>
+                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="company_reg_no" name="company_reg_no" type="text"
+                                    class="mt-1 block w-full" :value="old('company_reg_no', $company->company_reg_no)" />
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <x-input-label for="pic_name" :value="__('PIC Name')"
+                                        class="text-[10px] uppercase font-black" />
+                                    <x-text-input id="pic_name" name="pic_name" type="text"
+                                        class="mt-1 block w-full" :value="old('pic_name', $company->pic_name)" />
+                                </div>
+                                <div>
+                                    <x-input-label for="pic_phone" :value="__('PIC Phone')"
+                                        class="text-[10px] uppercase font-black" />
+                                    <x-text-input id="pic_phone" name="pic_phone" type="text"
+                                        class="mt-1 block w-full" :value="old('pic_phone', $company->pic_phone)" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- SECTION 4: CATALOG ASSIGNMENT [Addendum 1.b & Backbone 3.a.2] -->
+                    <div class="p-6 bg-gray-900 rounded-2xl text-white shadow-xl">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-[10px] font-black uppercase text-blue-400 tracking-widest">
+                                {{ __('Ordering Configuration') }}</h3>
+                            <span
+                                class="px-2 py-1 bg-blue-500/20 text-blue-300 text-[8px] font-black uppercase rounded border border-blue-500/30">{{ __('Single Catalog Policy') }}</span>
+                        </div>
+
+                        <x-input-label for="catalog_id" :value="__('Assigned Item Whitelist')"
+                            class="text-gray-400 text-[10px] font-black uppercase" />
+                        <select id="catalog_id" name="catalog_id"
+                            class="mt-2 block w-full bg-gray-800 border-gray-700 text-white rounded-xl shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">
+                                {{ $company->parent_id ? __('-- Inherit from Headquarters --') : __('-- No Catalog Assigned --') }}
+                            </option>
+                            @foreach ($catalogs as $catalog)
+                                <option value="{{ $catalog->id }}"
+                                    {{ old('catalog_id', $company->catalog_id) == $catalog->id ? 'selected' : '' }}>
+                                    {{ $catalog->name }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <p class="mt-3 text-[10px] text-gray-500 italic">
+                            {{ __('Visibility Rationale: Changing the catalog here updates the item whitelist for all linked users immediately.') }}
+                            [1]
+                        </p>
+                    </div>
+
+                    <div class="flex items-center justify-end pt-6 border-t border-gray-100 gap-4">
+                        <a href="{{ route('companys.index') }}"
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">{{ __('Cancel') }}</a>
+                        <x-primary-button
+                            class="bg-blue-600 hover:bg-blue-700 py-3 px-10 rounded-2xl shadow-lg shadow-blue-100 transition-all uppercase text-[10px] font-black">
+                            {{ __('Update Business Entity') }}
+                        </x-primary-button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\admin\companys\index.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <div class="flex justify-between items-center">
+            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                {{ __('Business Entities') }}
+            </h2>
+        </div>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
+            <a href="{{ route('companys.create') }}"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-xs font-black uppercase shadow-lg shadow-blue-200 transition-all">
+                {{ __('Register New Business') }}
+            </a>
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100">
+                <table class="min-w-full divide-y divide-gray-100">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th
+                                class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Business Name / Code') }}</th>
+                            <th
+                                class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Assigned Catalog') }}</th>
+                            <th
+                                class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Logistics') }}</th>
+                            <th
+                                class="px-6 py-4 text-right text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Actions') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-50">
+                        @foreach ($companys as $hq)
+                            {{-- HQ Row --}}
+                            <tr class="bg-blue-50/30">
+                                <td class="px-6 py-4">
+                                    <div class="flex items-center gap-3">
+                                        <div
+                                            class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white text-xs font-black">
+                                            HQ</div>
+                                        <div class="flex flex-col">
+                                            <span class="text-sm font-bold text-gray-900">{{ $hq->company_name }}</span>
+                                            <span
+                                                class="text-[10px] font-mono text-blue-500 uppercase font-black">{{ $hq->company_code }}</span>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <span
+                                        class="px-3 py-1 rounded-full bg-white border border-blue-200 text-blue-700 text-[9px] font-black uppercase">
+                                        {{ $hq->catalog->name ?? __('No Catalog') }}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 text-xs text-gray-500 truncate max-w-xs">
+                                    {{ $hq->delivery_address }}
+                                </td>
+                                <td class="px-6 py-4 text-right">
+                                    <div class="flex justify-end gap-3">
+                                        {{-- Fulfills requirement: Create branch directly for this HQ --}}
+                                        <a href="{{ route('companys.create', ['parent_id' => $hq->id]) }}"
+                                            class="text-[10px] font-black uppercase text-green-600 hover:underline">
+                                            {{ __('Add Branch') }}
+                                        </a>
+                                        <a href="{{ route('companys.edit', $hq) }}"
+                                            class="text-[10px] font-black uppercase text-blue-600 hover:underline">
+                                            {{ __('Manage') }}
+                                        </a>
+                                    </div>
+                                </td>
+                            </tr>
+
+                            {{-- Branch Sub-Rows [Addendum 3.c] --}}
+                            @foreach ($hq->branches as $branch)
+                                <tr>
+                                    <td class="px-6 py-3 pl-16">
+                                        <div class="flex items-center gap-2 text-gray-400 italic">
+                                            <span>Ã¢â€ Â³</span>
+                                            <div class="flex flex-col">
+                                                <span
+                                                    class="text-xs font-bold text-gray-700">{{ $branch->company_name }}</span>
+                                                <span
+                                                    class="text-[9px] font-mono uppercase tracking-tighter">{{ $branch->branch_code }}</span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-3">
+                                        @if ($branch->catalog_id)
+                                            <span
+                                                class="px-2 py-1 rounded-full bg-gray-100 text-gray-600 text-[9px] font-black uppercase">
+                                                {{ $branch->catalog->name }}
+                                            </span>
+                                        @else
+                                            <span class="text-[9px] text-gray-400 font-bold italic uppercase">
+                                                {{ __('Inherited: ') }} {{ $hq->catalog->name ?? 'None' }}
+                                            </span>
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-3 text-[10px] text-gray-400">
+                                        {{ $branch->city }}, {{ $branch->state }}
+                                    </td>
+                                    <td class="px-6 py-3 text-right">
+                                        <a href="{{ route('companys.edit', $branch) }}"
+                                            class="text-[10px] font-black uppercase text-gray-400 hover:text-blue-600">{{ __('Edit Branch') }}</a>
+                                    </td>
+                                </tr>
+                            @endforeach
+                        @endforeach
+                    </tbody>
+                </table>
+                <div class="p-6 border-t border-gray-100">
+                    {{ $companys->links() }}
                 </div>
             </div>
         </div>
@@ -6135,60 +6922,54 @@ $width = match ($width) {
 --- END_FILE ---
 
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\components\filter-toolbar.blade.php ---
-@props(['actionUrl' => null, 'placeholder' => 'Search...'])
+@props(['placeholder' => __('Search...'), 'showDates' => false])
 
-<form method="GET" action="{{ $actionUrl ?? url()->current() }}"
-    class="flex flex-col md:flex-row gap-3 items-end md:items-center bg-gray-50 p-3 rounded-lg border border-gray-200">
+<div x-data="{
+    submit() { this.$refs.filterForm.submit() }
+}" class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm mb-8">
+    <form x-ref="filterForm" action="{{ url()->current() }}" method="GET"
+        class="flex flex-col md:flex-row gap-4 items-center">
 
-    {{-- SEARCH INPUT --}}
-    <div class="relative w-full md:w-64">
-        <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-            <svg class="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 20 20" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z" />
-            </svg>
+        {{-- Smart Search Input --}}
+        <div class="relative w-full md:grow">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+            </div>
+            <input type="text" name="search" value="{{ request('search') }}" @keyup.enter="submit()"
+                class="block w-full pl-10 pr-3 py-2 border-gray-200 rounded-xl text-sm focus:ring-maxtop focus:border-maxtop transition-all placeholder-gray-400"
+                placeholder="{{ $placeholder }}">
         </div>
-        <input type="text" name="search" value="{{ request('search') }}"
-            class="block w-full p-2 pl-10 text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-            placeholder="{{ $placeholder }}">
-    </div>
 
-    {{-- DYNAMIC SLOT (For extra dropdowns like Role, Status, Category) --}}
-    {{-- This is the magic part. If we pass content here, it renders. --}}
-    @if (!$slot->isEmpty())
-        <div class="flex items-center gap-2">
-            {{ $slot }}
-        </div>
-    @endif
+        {{-- Dynamic "Smart" Slot for Dropdowns (Role, Status, Category) --}}
+        @if (!$slot->isEmpty())
+            <div class="flex gap-2 w-full md:w-auto" @change="submit()">
+                {{ $slot }}
+            </div>
+        @endif
 
-    {{-- DATE RANGE INPUTS --}}
-    <div class="flex items-center gap-2">
-        <div class="relative">
-            <input type="date" name="start_date" value="{{ request('start_date') }}"
-                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" title="Start Date">
-        </div>
-        <span class="text-gray-500">-</span>
-        <div class="relative">
-            <input type="date" name="end_date" value="{{ request('end_date') }}"
-                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" title="End Date">
-        </div>
-    </div>
+        {{-- Contextual Date Ranges (Hidden by default) --}}
+        @if ($showDates)
+            <div class="flex items-center gap-2">
+                <input type="date" name="start_date" value="{{ request('start_date') }}" @change="submit()"
+                    class="text-xs border-gray-200 rounded-lg focus:ring-maxtop focus:border-maxtop">
+                <span class="text-gray-300">-</span>
+                <input type="date" name="end_date" value="{{ request('end_date') }}" @change="submit()"
+                    class="text-xs border-gray-200 rounded-lg focus:ring-maxtop focus:border-maxtop">
+            </div>
+        @endif
 
-    {{-- FILTER & RESET BUTTONS --}}
-    <div class="flex gap-2">
-        <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded-md text-sm hover:bg-gray-700 transition">
-            Filter
-        </button>
-
-        {{-- Reset Link: clear all params --}}
-        @if (request()->hasAny(['search', 'start_date', 'end_date']))
+        {{-- Reset Button --}}
+        @if (request()->hasAny(['search', 'role', 'status', 'category', 'start_date', 'end_date']))
             <a href="{{ url()->current() }}"
-                class="bg-white border border-gray-300 text-gray-700 px-3 py-2 rounded-md text-sm hover:bg-gray-50">
-                Clear
+                class="text-[10px] font-black uppercase text-gray-400 hover:text-red-600 transition-colors">
+                {{ __('Clear All') }}
             </a>
         @endif
-    </div>
-</form>
+    </form>
+</div>
 
 --- END_FILE ---
 
@@ -6348,6 +7129,98 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\dashboard.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('Unified Order Dashboard') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+
+            {{-- Stats Container: Addendum Section 4.b --}}
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+                @foreach ($stats as $label => $count)
+                    <div
+                        class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 text-center transition-transform hover:scale-105">
+                        <p class="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">
+                            {{ $label }}</p>
+                        <p class="text-3xl font-black text-gray-800">{{ number_format($count) }}</p>
+                    </div>
+                @endforeach
+            </div>
+
+            {{-- Operational Shortcuts Container --}}
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
+                    <h3 class="font-black text-gray-800 uppercase text-sm mb-6 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        {{ __('Quick Actions') }}
+                    </h3>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {{-- On-going Orders: Fulfills Section 5.a --}}
+                        <a href="{{ route('office.orders.index') }}"
+                            class="flex items-center justify-center bg-blue-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-blue-700 transition shadow-sm">
+                            {{ __('On-going Orders') }}
+                        </a>
+
+                        {{-- Claiming Queue: Fulfills Section 5.b --}}
+                        <a href="{{ route('office.orders.queue') }}"
+                            class="flex items-center justify-center bg-orange-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 transition shadow-sm">
+                            {{ __('Claiming Queue') }}
+                        </a>
+
+                        {{-- My Claimed Orders: Fulfills Section 5.c --}}
+                        <a href="{{ route('office.orders.history') }}"
+                            class="flex items-center justify-center bg-gray-800 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-gray-900 transition shadow-sm">
+                            {{ __('My Claimed Orders') }}
+                        </a>
+
+                        {{-- Product Management: Fulfills Section 2.c.1 --}}
+                        <a href="{{ route('items.index') }}"
+                            class="flex items-center justify-center border-2 border-blue-600 text-blue-600 px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-blue-50 transition">
+                            {{ __('Manage Products') }}
+                        </a>
+                    </div>
+                </div>
+
+                {{-- Active Session Context --}}
+                <div
+                    class="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between">
+                    <div class="flex items-center">
+                        <div class="p-4 bg-blue-50 rounded-2xl mr-4 text-blue-600">
+                            <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 font-bold uppercase tracking-widest">
+                                {{ __('Active Staff') }}</p>
+                            <p class="text-xl font-black text-gray-800 capitalize">{{ auth()->user()->name }}</p>
+                            <p class="text-[10px] text-blue-500 font-mono font-bold">
+                                {{ auth()->user()->roles->first()->name }}</p>
+                        </div>
+                    </div>
+
+                    <div class="text-right">
+                        <p class="text-[10px] text-gray-400 font-black uppercase mb-1">{{ __('Today') }}</p>
+                        <p class="text-sm font-black text-gray-800">{{ now()->format('d M Y') }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\history.blade.php ---
 <x-app-layout>
     <x-slot name="header">
@@ -6357,6 +7230,18 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <x-filter-toolbar :placeholder="__('Search Order # or Customer Name...')" :showDates="true">
+                <select name="status" class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                    <option value="">{{ __('All Status') }}</option>
+                    @foreach ($status as $statusName)
+                        <option value="{{ $statusName }}" {{ request('status') == $statusName ? 'selected' : '' }}>
+                            {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                        </option>
+                    @endforeach
+                </select>
+            </x-filter-toolbar>
+        </div>
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
                 @if ($history->isEmpty())
@@ -6442,6 +7327,18 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <x-filter-toolbar :placeholder="__('Search Order # or Customer Name...')" :showDates="true">
+                <select name="status" class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                    <option value="">{{ __('All Status') }}</option>
+                    @foreach ($status as $statusName)
+                        <option value="{{ $statusName }}" {{ request('status') == $statusName ? 'selected' : '' }}>
+                            {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                        </option>
+                    @endforeach
+                </select>
+            </x-filter-toolbar>
+        </div>
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
                 @if ($myOrders->isEmpty())
@@ -6516,6 +7413,12 @@ $classes = ($active ?? false)
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
+                <div class="mb-6">
+                    <form action="{{ route('office.orders.queue') }}" method="GET">
+                        <x-filter-toolbar :placeholder="__('Search queue by Order # or Customer Name...')" />
+                    </form>
+                </div>
+
                 @if ($unassigned->isEmpty())
                     <p class="text-gray-500 italic">{{ __('No new orders from unassigned customers.') }}</p>
                 @else
@@ -6646,12 +7549,28 @@ $classes = ($active ?? false)
 
                 {{-- Right: Fulfillment Controls --}}
                 <div class="space-y-6">
-                    {{-- Customer Details Card --}}
-                    <div class="bg-white shadow rounded-lg p-6">
-                        <h3 class="font-black text-gray-700 uppercase mb-2">{{ __('Customer Info') }}</h3>
-                        <p class="text-sm font-bold">{{ $order->user->details->company_name ?? $order->user->name }}
-                        </p>
-                        <p class="text-xs text-gray-500">{{ $order->user->details->delivery_address }}</p>
+                    {{-- Customer Details Card: Line 84 Refactoring [4] --}}
+                    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                        <h4 class="text-[10px] font-black uppercase text-gray-400 mb-4 tracking-widest">
+                            {{ __('Customer Info') }}</h4>
+
+                        <div class="space-y-1">
+                            {{-- Use null-safe operator to prevent Attempt to read property on null --}}
+                            <p class="text-sm font-black text-gray-800 uppercase">
+                                {{ $order->user->details?->company_name ?? $order->user->name }}
+                            </p>
+
+                            <p class="text-xs text-gray-500 leading-relaxed">
+                                {{-- ARCHITECTURE FIX: Defensive check for delivery address --}}
+                                @if ($order->user->details?->delivery_address)
+                                    {{ $order->user->details->delivery_address }}
+                                @else
+                                    <span class="text-red-400 italic text-[10px] uppercase font-bold">
+                                        {{ __('No business address on file') }}
+                                    </span>
+                                @endif
+                            </p>
+                        </div>
                     </div>
 
                     {{-- Status Controls: Fulfills Section 4 lifecycle --}}
@@ -6693,18 +7612,60 @@ $classes = ($active ?? false)
                             </form>
                         @endif
 
+                        {{-- Danger Zone: Addendum Section 2 --}}
                         @if ($order->status !== 'completed' && $order->status !== 'cancelled' && $order->handler_id === auth()->id())
-                            <hr class="my-4">
-                            <h4 class="text-xs font-black text-red-600 uppercase mb-2">{{ __('Danger Zone') }}</h4>
-                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
-                                @csrf
-                                <textarea name="cancellation_reason" required class="w-full text-xs rounded border-gray-300 mb-2"
-                                    placeholder="Mandatory cancellation reason..."></textarea>
-                                <button type="submit"
-                                    class="w-full border border-red-600 text-red-600 py-2 rounded text-xs font-black uppercase hover:bg-red-50">
-                                    {{ __('Cancel Order') }}
-                                </button>
-                            </form>
+                            <div class="mt-8 pt-8 border-t border-gray-100">
+                                <h3 class="text-[10px] font-black uppercase text-red-600 tracking-widest mb-4">
+                                    {{ __('Danger Zone') }}</h3>
+
+                                @if ($order->hasPendingCancellationRequest())
+                                    {{-- Display Request for Everyone --}}
+                                    <div class="bg-red-50 border border-red-100 p-6 rounded-2xl mb-4">
+                                        <p class="text-[10px] font-black uppercase text-red-700 mb-2">
+                                            {{ __('Cancellation Request Pending') }}</p>
+                                        <p class="text-xs text-red-600 italic">
+                                            "{{ $order->cancellation_request_reason }}"</p>
+                                        <p class="text-[9px] text-red-400 mt-2 uppercase font-bold">â€”
+                                            {{ __('Requested by') }} {{ $order->cancellationRequester->name }}</p>
+                                    </div>
+
+                                    {{-- Leader/Admin Approval Form [Addendum 2.b] --}}
+                                    @hasanyrole('admin|cs_leader')
+                                        <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
+                                            @csrf
+                                            <input type="hidden" name="cancellation_reason"
+                                                value="Approved Request: {{ $order->cancellation_request_reason }}">
+                                            <button type="submit"
+                                                class="w-full bg-red-600 text-white py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-700 shadow-lg transition">
+                                                {{ __('Approve Cancellation Request') }}
+                                            </button>
+                                        </form>
+                                    @else
+                                        <div class="p-4 border-2 border-dashed border-gray-200 rounded-xl text-center">
+                                            <p class="text-[10px] font-black uppercase text-gray-400">
+                                                {{ __('Waiting for Management Approval') }}</p>
+                                        </div>
+                                    @endhasanyrole
+                                @else
+                                    {{-- Standard Cancellation Form [Backbone 4.f] --}}
+                                    <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                        class="space-y-3">
+                                        @csrf
+                                        <textarea name="cancellation_reason"
+                                            class="w-full text-xs rounded-xl border-gray-200 focus:ring-red-500 focus:border-red-500"
+                                            placeholder="{{ __('Provide mandatory reason for cancellation...') }}" required></textarea>
+
+                                        <button type="submit"
+                                            class="w-full border-2 border-red-600 text-red-600 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-50 transition">
+                                            @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
+                                                {{ __('Submit Cancellation Request') }}
+                                            @else
+                                                {{ __('Cancel Order Permanently') }}
+                                            @endif
+                                        </button>
+                                    </form>
+                                @endif
+                            </div>
                         @endif
                     </div>
 
@@ -6911,6 +7872,12 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <form action="{{ route('customer.products.index') }}" method="GET">
+                <x-filter-toolbar :placeholder="__('Search items in my catalog...')"></x-filter-toolbar>
+            </form>
+        </div>
+
         <div class="mb-8 flex flex-wrap gap-2">
             <a href="{{ route('customer.products.index') }}"
                 class="px-4 py-2 rounded-full text-xs font-black uppercase border {{ !request('category') ? 'bg-blue-600 text-white' : 'bg-white text-gray-600' }}">
@@ -7244,8 +8211,14 @@ $classes = ($active ?? false)
             @endcan
 
             @can('view_users')
+                <div class="mt-4 mb-2 px-4 border-t border-gray-100 pt-4">
+                    <p class="text-[9px] font-black uppercase text-gray-400 tracking-widest">{{ __('Accounts') }}</p>
+                </div>
+                <x-nav-link :href="route('companys.index')" :active="request()->routeIs('companys.*')">
+                    {{ __('Business Entities') }}
+                </x-nav-link>
                 <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                    {{ __('User Management') }}
+                    {{ __('Login Credentials') }}
                 </x-nav-link>
             @endcan
 
@@ -7255,17 +8228,8 @@ $classes = ($active ?? false)
                 </x-nav-link>
             @endcan
 
-            {{-- Fulfills Section 5: Assignment Logic Separation --}}
-            <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
-                {{ __('On-going Orders') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
-                {{ __('Claiming Queue') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
-                {{ __('My Claimed Orders') }}
+            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
+                {{ __('Order Overview') }}
             </x-nav-link>
         @endhasanyrole
 
@@ -7520,150 +8484,124 @@ $classes = ($active ?? false)
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\users\assigned.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('My Assigned Customers') }}
-        </h2>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                {{ __('My Assigned Customers') }}
+            </h2>
+            <a href="{{ route('users.create') }}"
+                class="inline-flex items-center bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-blue-200">
+                <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                {{ __('Onboard New Login') }}
+            </a>
+        </div>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
-            {{-- Success Message --}}
-            @if (session('success'))
-                <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4">
-                    {{ session('success') }}
-                </div>
-            @endif
+            {{-- Search & Filter Toolbar: Fulfills UI consistency requirements --}}
+            <div class="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                <form method="GET" action="{{ route('users.assigned') }}">
+                    <x-filter-toolbar :placeholder="__('Search assigned names or login IDs...')" :showDates="false">
+                        <select name="role"
+                            class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600 focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Roles') }}</option>
+                            @foreach ($roles as $roleName)
+                                <option value="{{ $roleName }}"
+                                    {{ request('role') == $roleName ? 'selected' : '' }}>
+                                    {{ ucfirst($roleName) }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </x-filter-toolbar>
+                </form>
+            </div>
 
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                <div class="p-6 text-gray-900">
-
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-xl font-bold text-gray-800">{{ __('My Assigned Customers') }}</h2>
-                        <a href="{{ route('users.create') }}"
-                            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition">
-                            {{ __('+ Onboard New Customer') }}
-                        </a>
-                    </div>
-
-                    {{-- Header with Add Button --}}
-                    <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
-
-                        {{-- THE TOOLBAR --}}
-                        <x-filter-toolbar placeholder="Search name, ID...">
-
-                            {{-- INJECTING THE EXTRA FILTER (The Slot) --}}
-                            <select name="role"
-                                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-                                <option value="">All Roles</option>
-                                @foreach ($roles as $roleName)
-                                    <option value="{{ $roleName }}"
-                                        {{ request('role') == $roleName ? 'selected' : '' }}>
-                                        {{ ucfirst(str_replace('_', ' ', $roleName)) }}
-                                    </option>
-                                @endforeach
-                            </select>
-
-                        </x-filter-toolbar>
-                    </div>
-
-                    {{-- THE TABLE --}}
-                    <table class="min-w-full divide-y divide-gray-200">
+            {{-- Assigned Users Table --}}
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-100">
                         <thead class="bg-gray-50">
                             <tr>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Name / Login ID</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Login Identity') }}</th>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Role</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Representing Business') }}</th>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Status</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Status') }}</th>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Actions</th>
+                                    class="px-6 py-4 text-right text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Actions') }}</th>
                             </tr>
                         </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            @foreach ($users as $user)
-                                {{-- Main HQ/Top-Level Row --}}
-                                <tr class="border-b hover:bg-gray-50 transition-colors group">
-                                    <td class="px-6 py-4">
+                        <tbody class="bg-white divide-y divide-gray-50">
+                            @forelse ($users as $user)
+                                <tr class="hover:bg-gray-50/50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap">
                                         <div class="flex flex-col">
-                                            <div class="text-sm font-bold text-gray-900">
-                                                {{ $user->name }}
-                                                {{-- Fulfills Request: "MAIN HQ" tag only for Customers with no parent_id --}}
-                                                @if ($user->hasRole('customer') && is_null($user->parent_id))
-                                                    <span
-                                                        class="ml-2 px-1.5 py-0.5 bg-blue-600 text-white rounded text-[10px] uppercase font-black tracking-tighter">
-                                                        {{ __('MAIN HQ') }}
-                                                    </span>
-                                                @endif
-                                            </div>
-                                            <div class="text-xs text-gray-500 font-mono">{{ $user->login_id }}</div>
+                                            <span class="text-sm font-bold text-gray-900">{{ $user->name }}</span>
+                                            <span
+                                                class="text-[10px] font-black text-blue-500 uppercase tracking-tighter">{{ $user->login_id }}</span>
                                         </div>
                                     </td>
-                                    <td class="px-6 py-4 text-xs font-bold uppercase text-gray-600">
-                                        {{ $user->roles->pluck('name')->map(fn($n) => str_replace('_', ' ', $n))->implode(', ') }}
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        @if ($user->company)
+                                            <div class="flex flex-col">
+                                                <div class="flex items-center gap-2">
+                                                    <span
+                                                        class="text-xs font-bold text-gray-700">{{ $user->company->company_name }}</span>
+                                                    {{-- Visual Tag for HQ/Branch status based on Company hierarchy --}}
+                                                    @if (is_null($user->company->parent_id))
+                                                        <span
+                                                            class="px-1.5 py-0.5 bg-blue-600 text-white rounded text-[8px] font-black uppercase">{{ __('HQ') }}</span>
+                                                    @else
+                                                        <span
+                                                            class="px-1.5 py-0.5 bg-gray-100 text-gray-500 border border-gray-200 rounded text-[8px] font-black uppercase">{{ __('Branch') }}</span>
+                                                    @endif
+                                                </div>
+                                                <span class="text-[10px] font-mono text-gray-400 uppercase">
+                                                    {{ $user->company->company_code ?? $user->company->branch_code }}
+                                                </span>
+                                            </div>
+                                        @else
+                                            <span
+                                                class="text-[10px] text-red-400 font-black uppercase italic">{{ __('Company Unassigned') }}</span>
+                                        @endif
                                     </td>
-                                    <td class="px-6 py-4">
+                                    <td class="px-6 py-4 whitespace-nowrap">
                                         <span
-                                            class="px-2 py-1 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
                                             {{ $user->status }}
                                         </span>
                                     </td>
-                                    <td class="px-6 py-4 text-right">
+                                    <td class="px-6 py-4 whitespace-nowrap text-right">
                                         <a href="{{ route('users.edit', $user) }}"
-                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-gray-100 transition">
-                                            {{ __('Edit') }}
+                                            class="inline-flex items-center bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-gray-50 transition shadow-sm">
+                                            {{ __('Edit Login') }}
                                         </a>
                                     </td>
                                 </tr>
-
-                                {{-- Branch Sub-Rows: Fulfills "Sub line below HQ" requirement --}}
-                                @if ($user->branches->isNotEmpty())
-                                    @foreach ($user->branches as $branch)
-                                        <tr class="border-b bg-gray-50/50 hover:bg-gray-100 transition-colors">
-                                            <td class="px-6 py-3 pl-12"> {{-- Indented for visual sub-line --}}
-                                                <div class="flex items-center">
-                                                    <span class="text-gray-400 mr-2 text-lg">â†³</span>
-                                                    <div class="flex flex-col">
-                                                        <div class="text-sm font-semibold text-gray-700">
-                                                            {{ $branch->name }}</div>
-                                                        <div class="text-[10px] text-gray-400 font-mono">
-                                                            {{ $branch->login_id }}</div>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td class="px-6 py-3 text-[10px] font-bold uppercase text-gray-400 italic">
-                                                {{ __('Branch Account') }}
-                                            </td>
-                                            <td class="px-6 py-3">
-                                                <span
-                                                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase {{ $branch->status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600' }}">
-                                                    {{ $branch->status }}
-                                                </span>
-                                            </td>
-                                            <td class="px-6 py-3 text-right">
-                                                <a href="{{ route('users.edit', $branch) }}"
-                                                    class="inline-block bg-gray-200 text-gray-600 px-3 py-1 rounded-md text-[10px] font-bold uppercase hover:bg-gray-300 transition">
-                                                    {{ __('Edit') }}
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    @endforeach
-                                @endif
-                            @endforeach
+                            @empty
+                                <tr>
+                                    <td colspan="4" class="px-6 py-12 text-center">
+                                        <p class="text-gray-400 text-xs font-bold uppercase tracking-widest">
+                                            {{ __('No assigned customers found.') }}</p>
+                                    </td>
+                                </tr>
+                            @endforelse
                         </tbody>
                     </table>
-
-                    {{-- Pagination Links --}}
-                    <div class="mt-4">
+                </div>
+                @if ($users->hasPages())
+                    <div class="p-6 bg-gray-50 border-t border-gray-100">
                         {{ $users->links() }}
                     </div>
-
-                </div>
+                @endif
             </div>
         </div>
     </div>
@@ -7680,164 +8618,158 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100" x-data="{ role: '{{ old('role', $parent ? 'customer' : '') }}' }">
-                {{-- Fulfills dynamic visibility request --}}
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            {{-- ARCHITECTURE FIX: Server-Aware Alpine State [Addendum 1.b] --}}
+            <div x-data="{
+                isBranch: {{ $parent ? 'true' : 'false' }},
+                {{-- Logic: Use 'Existing' if we have an old ID, otherwise default to 'New' --}}
+                useExisting: {{ old('customer_detail_id') ? 'true' : 'false' }},
+                role: '{{ old('role', $parent ? 'customer' : '') }}'
+            }"
+                class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
 
-                <form action="{{ route('users.store') }}" method="POST" class="space-y-6">
+                <form method="POST" action="{{ route('users.store') }}" class="space-y-8">
                     @csrf
 
-                    @php
-                        $isRestricted = auth()->user()->hasRole('cs_staff') || $parent;
-                    @endphp
+                    <!-- SECTION 1: COMPANY LINK [Addendum 3.d] -->
+                    <div class="mb-8 p-6 bg-blue-50 rounded-2xl border border-blue-100">
+                        <x-input-label for="company_search" :value="__('Assign to Business Entity (Searchable)')"
+                            class="text-blue-600 font-black uppercase text-[10px]" />
 
-                    @if ($parent)
-                        <input type="hidden" name="parent_id" value="{{ $parent->id }}">
-                    @endif
-
-                    @if ($isRestricted)
-                        <input type="hidden" name="role" value="customer">
-                    @endif
-
-                    <div class="border-b border-gray-100 pb-4">
-                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest">
-                            {{ __('Account Credentials') }}</h3>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {{-- Role Selection --}}
-                        <div class="md:col-span-2">
-                            <x-input-label for="role" :value="__('Select User Role')" />
-                            <select id="role" name="role" x-model="role" {{-- Alpine Binding --}}
-                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
-                                @if ($isRestricted) disabled @endif>
-                                <option value="">{{ __('Select a Role') }}</option>
-                                @foreach ($roles as $roleOption)
-                                    <option value="{{ $roleOption->name }}">
-                                        {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
+                        <div x-data="{
+                            selectedId: '{{ old('company_id') }}',
+                            companys: @js($companys)
+                        }" class="mt-2 relative">
+                            <input list="company-list" id="company_search" name="company_name_display"
+                                class="w-full border-gray-200 rounded-xl focus:ring-blue-500 text-sm"
+                                placeholder="Type to search Business Name or Code..."
+                                @change="val = $event.target.value; let match = companys.find(c => c.company_name === val || (c.company_code && c.company_code === val) || (c.branch_code && c.branch_code === val)); if(match) selectedId = match.id;">
+                            <datalist id="company-list">
+                                @foreach ($companys as $company)
+                                    <option value="{{ $company->company_name }}">
+                                        {{ $company->company_code ?? $company->branch_code }}
                                     </option>
                                 @endforeach
-                            </select>
-                            <x-input-error class="mt-2" :messages="$errors->get('role')" />
-                        </div>
+                            </datalist>
 
-                        <div>
-                            <x-input-label for="name" :value="__('Full Name')" />
-                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
-                                :value="old('name')" required autofocus />
-                            <x-input-error class="mt-2" :messages="$errors->get('name')" />
+                            {{-- Hidden input holds the actual foreign key [2.a] --}}
+                            <input type="hidden" name="company_id" x-model="selectedId">
                         </div>
-
-                        <div>
-                            <x-input-label for="login_id" :value="__('Login ID (Unique)')" />
-                            <x-text-input id="login_id" name="login_id" type="text"
-                                class="mt-1 block w-full uppercase" :value="old('login_id')" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('login_id')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="email" :value="__('Email Address')" />
-                            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
-                                :value="old('email')" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('email')" />
-                        </div>
+                        <x-input-error :messages="$errors->get('company_id')" class="mt-2" />
+                        <p class="mt-2 text-[10px] text-gray-400 italic">
+                            {{ __('Many Users can be assigned to One Company. Visibility is inherited from the Company Catalog.') }}
+                        </p>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <x-input-label for="password" :value="__('Password')" />
-                            <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
-                                required />
-                            <x-input-error class="mt-2" :messages="$errors->get('password')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-                            <x-text-input id="password_confirmation" name="password_confirmation" type="password"
-                                class="mt-1 block w-full" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('password_confirmation')" />
-                        </div>
-                    </div>
-
-                    {{-- Customer Specific Information: Section 3.a Hierarchy --}}
-                    <div x-show="role === 'customer'" x-transition:enter="transition ease-out duration-300"
-                        x-transition:enter-start="opacity-0 transform -translate-y-2"
-                        x-transition:enter-end="opacity-100 transform translate-y-0"
-                        class="pt-6 border-t border-gray-100">
-
-                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
-                            {{ __('Company & Logistics') }}</h3>
-
-                        @if ($parent)
-                            <div class="bg-blue-50 p-3 rounded border border-blue-100 text-[10px] text-blue-700 mb-4">
-                                *{{ __('INHERITANCE:') }}*
-                                {{ __('This branch will automatically inherit settings from ') }} {{ $parent->name }}
-                                [6].
-                            </div>
-                        @endif
+                    <!-- SECTION 2: ACCOUNT CREDENTIALS [Preserved from v102] -->
+                    <div class="pt-8 border-t border-gray-100">
+                        <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
+                            {{ __('Account Access Credentials') }}</h3>
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <x-input-label for="company_name" :value="__('Company Name')" />
-                                <x-text-input id="company_name" name="company_name" type="text"
-                                    class="mt-1 block w-full" :value="old('company_name', $parent->details->company_name ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('company_name')" />
+                                <x-input-label for="role" :value="__('System Role')"
+                                    class="text-[10px] uppercase font-black" />
+                                @php $isRestricted = auth()->user()->hasRole('cs_staff') || $parent; @endphp
+                                <select id="role" name="role" x-model="role"
+                                    class="block mt-1 w-full border-gray-300 rounded-xl shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
+                                    @if ($isRestricted) readonly @endif>
+                                    <option value="">{{ __('Select a Role') }}</option>
+                                    @foreach ($roles as $roleOption)
+                                        <option value="{{ $roleOption->name }}"
+                                            {{ old('role') == $roleOption->name || ($parent && $roleOption->name == 'customer') ? 'selected' : '' }}>
+                                            {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                @if ($isRestricted)
+                                    <input type="hidden" name="role"
+                                        value="{{ $parent ? 'customer' : old('role') }}">
+                                @endif
                             </div>
+
                             <div>
-                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
-                                <x-text-input id="company_reg_no" name="company_reg_no" type="text"
-                                    class="mt-1 block w-full" :value="old('company_reg_no', $parent->details->company_reg_no ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('company_reg_no')" />
-                            </div>
-                            <div>
-                                <x-input-label for="pic_name" :value="__('PIC Name')" />
-                                <x-text-input id="pic_name" name="pic_name" type="text" class="mt-1 block w-full"
-                                    :value="old('pic_name', $parent->details->pic_name ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('pic_name')" />
-                            </div>
-                            <div>
-                                <x-input-label for="pic_phone" :value="__('PIC Phone')" />
-                                <x-text-input id="pic_phone" name="pic_phone" type="text" class="mt-1 block w-full"
-                                    :value="old('pic_phone', $parent->details->pic_phone ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('pic_phone')" />
+                                <x-input-label for="name" :value="__('Full Name (User)')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                    :value="old('name')" required />
+                                <x-input-error :messages="$errors->get('name')" class="mt-2" />
                             </div>
                         </div>
 
-                        <div class="mt-6">
-                            <x-input-label for="delivery_address" :value="__('Delivery Address')" />
-                            <textarea id="delivery_address" name="delivery_address" rows="3"
-                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm text-sm">{{ old('delivery_address', $parent->details->delivery_address ?? '') }}</textarea>
-                            <x-input-error class="mt-2" :messages="$errors->get('delivery_address')" />
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                            <div>
+                                <x-input-label for="login_id" :value="__('Login ID (Unique)')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="login_id" name="login_id" type="text"
+                                    class="mt-1 block w-full uppercase font-bold" :value="old('login_id')" required />
+                                <x-input-error :messages="$errors->get('login_id')" class="mt-2" />
+                            </div>
+                            <div>
+                                <x-input-label for="email" :value="__('Email Address')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
+                                    :value="old('email')" required />
+                                <x-input-error :messages="$errors->get('email')" class="mt-2" />
+                            </div>
                         </div>
 
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
                             <div>
-                                <x-input-label for="city" :value="__('City')" />
-                                <x-text-input id="city" name="city" type="text" class="mt-1 block w-full"
-                                    :value="old('city', $parent->details->city ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('city')" />
+                                <x-input-label for="password" :value="__('Password')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
+                                    required autocomplete="new-password" />
+                                <x-input-error :messages="$errors->get('password')" class="mt-2" />
                             </div>
                             <div>
-                                <x-input-label for="state" :value="__('State')" />
-                                <x-text-input id="state" name="state" type="text" class="mt-1 block w-full"
-                                    :value="old('state', $parent->details->state ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('state')" />
-                            </div>
-                            <div>
-                                <x-input-label for="postal_code" :value="__('Postal Code')" />
-                                <x-text-input id="postal_code" name="postal_code" type="text"
-                                    class="mt-1 block w-full" :value="old('postal_code', $parent->details->postal_code ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('postal_code')" />
+                                <x-input-label for="password_confirmation" :value="__('Confirm Password')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="password_confirmation" name="password_confirmation" type="password"
+                                    class="mt-1 block w-full" required />
                             </div>
                         </div>
                     </div>
 
-                    <div class="flex items-center justify-end pt-6 border-t border-gray-100">
+                    <!-- SECTION 4: ASSIGNMENTS [Preserved from v102] -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <x-input-label for="catalog_id" :value="__('Assign Catalog')"
+                                class="text-[10px] uppercase font-black" />
+                            <select id="catalog_id" name="catalog_id"
+                                class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                <option value="">
+                                    {{ $parent ? __('-- Inherit from Parent --') : __('-- No Catalog --') }}</option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}"
+                                        {{ old('catalog_id') == $catalog->id ? 'selected' : '' }}>{{ $catalog->name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div>
+                            <x-input-label for="assigned_cs_id" :value="__('Customer Service Representative')"
+                                class="text-[10px] uppercase font-black" />
+                            <select id="assigned_cs_id" name="assigned_cs_id"
+                                class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                <option value="">
+                                    {{ $parent ? __('-- Inherit from Parent --') : __('-- Unassigned --') }}</option>
+                                @foreach ($csStaffMembers as $cs)
+                                    <option value="{{ $cs->id }}"
+                                        {{ old('assigned_cs_id') == $cs->id || (!old('assigned_cs_id') && auth()->id() == $cs->id) ? 'selected' : '' }}>
+                                        {{ $cs->name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-end mt-10 gap-4">
                         <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
-                            class="text-sm text-gray-600 hover:text-gray-900 underline">
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                             {{ __('Cancel') }}
                         </a>
-                        <x-primary-button class="ml-4">
+                        <x-primary-button
+                            class="bg-blue-600 hover:bg-blue-700 py-4 px-8 rounded-2xl shadow-lg shadow-blue-200 transition-all">
                             {{ __('Create User Account') }}
                         </x-primary-button>
                     </div>
@@ -7852,210 +8784,204 @@ $classes = ($active ?? false)
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\users\edit.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
-            {{ __('âš™ï¸ Edit User: ') }} {{ $user->name }}
-        </h2>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+                <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                    {{ __('Edit User Credentials') }}
+                </h2>
+                <p class="text-xs font-bold text-blue-600 uppercase tracking-widest mt-1">
+                    {{ $user->name }} <span class="text-gray-400">({{ $user->login_id }})</span>
+                </p>
+            </div>
+        </div>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100" x-data="{ role: '{{ old('role', $user->roles->first()->name ?? '') }}' }">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
-                {{-- PRIMARY UPDATE FORM [Section 3.a.1] --}}
-                <form action="{{ route('users.update', $user) }}" method="POST" class="space-y-6">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
+                <form method="POST" action="{{ route('users.update', $user) }}" class="space-y-10">
                     @csrf
                     @method('PUT')
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <x-input-label for="name" :value="__('Full Name')" />
-                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
-                                :value="old('name', $user->name)" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('name')" />
-                        </div>
+                    <!-- SECTION 1: IDENTITY & SEARCHABLE BUSINESS LINK [Addendum 2.a & 3.b] -->
+                    <div class="p-6 bg-gray-50 rounded-2xl border border-gray-100">
+                        <h3
+                            class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="2.5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                            </svg>
+                            {{ __('System Identity & Business Assignment') }}
+                        </h3>
 
-                        <div>
-                            <x-input-label for="login_id" :value="__('Login ID (Locked)')" />
-                            <x-text-input id="login_id" type="text"
-                                class="mt-1 block w-full bg-gray-50 cursor-not-allowed" :value="$user->login_id" disabled />
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <x-input-label for="email" :value="__('Email Address')" />
-                            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
-                                :value="old('email', $user->email)" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('email')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="status" :value="__('Account Status')" />
-                            <select id="status" name="status"
-                                class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm @if ($user->hasRole('admin')) bg-gray-100 cursor-not-allowed @endif"
-                                @if ($user->hasRole('admin')) disabled @endif>
-                                <option value="active"
-                                    {{ old('status', $user->status) === 'active' ? 'selected' : '' }}>Active</option>
-                                <option value="deactive"
-                                    {{ old('status', $user->status) === 'deactive' ? 'selected' : '' }}>Deactive
-                                </option>
-                            </select>
-                            <x-input-error class="mt-2" :messages="$errors->get('status')" />
-                        </div>
-                    </div>
-
-                    {{-- Role Assignment (Read-Only per Section 2.a audit integrity [3]) --}}
-                    <div>
-                        <x-input-label for="role_display" :value="__('Assigned Role')" />
-                        <select id="role_display"
-                            class="block mt-1 w-full border-gray-300 bg-gray-100 cursor-not-allowed rounded-md shadow-sm"
-                            disabled>
-                            @foreach ($roles as $roleOption)
-                                <option value="{{ $roleOption->name }}"
-                                    @if ($user->hasRole($roleOption->name)) selected @endif>
-                                    {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
-                                </option>
-                            @endforeach
-                        </select>
-                        <input type="hidden" name="role" value="{{ $user->roles->first()->name ?? '' }}">
-                    </div>
-
-                    {{-- Company & Logistics: Only visible if Customer --}}
-                    <div x-show="role === 'customer'" class="pt-6 border-t border-gray-100">
-                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
-                            {{ __('Company & Logistics') }}</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                            {{-- Locked Login ID --}}
                             <div>
-                                <x-input-label for="company_name" :value="__('Company Name')" />
-                                <x-text-input id="company_name" name="company_name" type="text"
-                                    class="mt-1 block w-full" :value="old('company_name', $user->details->company_name ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('company_name')" />
+                                <x-input-label :value="__('Login ID (Locked)')"
+                                    class="text-[10px] font-black uppercase text-gray-400" />
+                                <div class="mt-2 flex items-center gap-2">
+                                    <span
+                                        class="text-sm font-mono font-bold text-gray-400 uppercase tracking-tighter">{{ $user->login_id }}</span>
+                                    <svg class="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                    </svg>
+                                </div>
                             </div>
+
+                            {{-- Locked System Role --}}
                             <div>
-                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
-                                <x-text-input id="company_reg_no" name="company_reg_no" type="text"
-                                    class="mt-1 block w-full" :value="old('company_reg_no', $user->details->company_reg_no ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('company_reg_no')" />
+                                <x-input-label :value="__('Account Role (Locked)')"
+                                    class="text-[10px] font-black uppercase text-gray-400" />
+                                <div class="mt-2">
+                                    <span
+                                        class="px-3 py-1.5 bg-white border border-gray-200 rounded-xl text-xs font-black uppercase text-gray-400 shadow-sm inline-flex items-center gap-2">
+                                        {{ str_replace('_', ' ', $user->roles->first()->name ?? 'N/A') }}
+                                    </span>
+                                </div>
+                                {{-- Keep value for backend validation --}}
+                                <input type="hidden" name="role" value="{{ $user->roles->first()->name ?? '' }}">
                             </div>
-                            <div>
-                                <x-input-label for="pic_name" :value="__('PIC Name')" />
-                                <x-text-input id="pic_name" name="pic_name" type="text" class="mt-1 block w-full"
-                                    :value="old('pic_name', $user->details->pic_name ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('pic_name')" />
-                            </div>
-                            <div>
-                                <x-input-label for="pic_phone" :value="__('PIC Phone')" />
-                                <x-text-input id="pic_phone" name="pic_phone" type="text" class="mt-1 block w-full"
-                                    :value="old('pic_phone', $user->details->pic_phone ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('pic_phone')" />
+
+                            {{-- Searchable Company Assignment [Addendum 2.a & 3.d] --}}
+                            <div x-data="{
+                                selectedId: '{{ old('company_id', $user->company_id) }}',
+                                companys: @js($companys)
+                            }">
+                                <x-input-label for="company_id" :value="__('Assigned Business (Searchable)')"
+                                    class="text-[10px] font-black uppercase text-blue-600" />
+                                <div class="mt-1 relative">
+                                    <select name="company_id" id="company_id" x-model="selectedId"
+                                        class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm">
+                                        <option value="">{{ __('-- Select Business Entity --') }}</option>
+                                        @foreach ($companys as $company)
+                                            <option value="{{ $company->id }}">
+                                                {{ $company->company_name }}
+                                                ({{ $company->company_code ?? $company->branch_code }})
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <x-input-error :messages="$errors->get('company_id')" class="mt-2" />
                             </div>
                         </div>
-
-                        <div class="pt-6">
-                            <x-input-label for="delivery_address" :value="__('Delivery Address')" />
-                            <textarea id="delivery_address" name="delivery_address" rows="3"
-                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm text-sm">{{ old('delivery_address', $user->details->delivery_address ?? '') }}</textarea>
-                            <x-input-error class="mt-2" :messages="$errors->get('delivery_address')" />
-                        </div>
+                        <p class="mt-6 text-[10px] text-red-400 italic font-bold uppercase tracking-tight">
+                            {{ __('Strategic Alert: Changing the company assignment immediately updates this user\'s product visibility based on the new Company\'s Catalog.') }}
+                        </p>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-gray-100">
-                        {{-- CS Staff Assignment --}}
-                        @can('reassign_customers')
+                    <!-- SECTION 2: EDITABLE CREDENTIALS [Addendum 3.b] -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-10">
+                        <div class="space-y-6">
+                            <h3 class="text-[10px] font-black uppercase text-blue-600 tracking-widest">
+                                {{ __('Personal Information') }}</h3>
+
                             <div>
-                                <x-input-label for="assigned_cs_id" :value="__('Assigned CS Staff')" />
-                                <select id="assigned_cs_id" name="assigned_cs_id"
-                                    class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
-                                    <option value="">-- No CS Assigned --</option>
-                                    @foreach ($csStaffMembers as $staff)
-                                        <option value="{{ $staff->id }}"
-                                            {{ old('assigned_cs_id', $user->assigned_cs_id) == $staff->id ? 'selected' : '' }}>
-                                            {{ $staff->name }}</option>
-                                    @endforeach
+                                <x-input-label for="name" :value="__('Full Name')" />
+                                <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                    :value="old('name', $user->name)" required />
+                                <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="email" :value="__('Email Address')" />
+                                <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
+                                    :value="old('email', $user->email)" required />
+                                <x-input-error :messages="$errors->get('email')" class="mt-2" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="status" :value="__('Account Access Status')" />
+                                <select id="status" name="status"
+                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-bold uppercase">
+                                    <option value="active"
+                                        {{ old('status', $user->status) === 'active' ? 'selected' : '' }}>
+                                        {{ __('Active') }}</option>
+                                    <option value="deactive"
+                                        {{ old('status', $user->status) === 'deactive' ? 'selected' : '' }}>
+                                        {{ __('Deactive') }}</option>
                                 </select>
-                                <x-input-error class="mt-2" :messages="$errors->get('assigned_cs_id')" />
                             </div>
-                        @endcan
+                        </div>
 
-                        {{-- Catalog Selection [Section 3.a.1] --}}
-                        <div x-show="role === 'customer'">
-                            <x-input-label for="catalog_id" :value="__('Assigned Catalog')" />
-                            <select id="catalog_id" name="catalog_id"
-                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm">
-                                <option value="">{{ __('-- Inherit from Parent --') }}</option>
-                                @foreach ($catalogs as $catalog)
-                                    <option value="{{ $catalog->id }}"
-                                        {{ old('catalog_id', $user->catalog_id) == $catalog->id ? 'selected' : '' }}>
-                                        {{ $catalog->name }}</option>
-                                @endforeach
-                            </select>
-                            <x-input-error class="mt-2" :messages="$errors->get('catalog_id')" />
+                        <div class="space-y-6">
+                            <h3 class="text-[10px] font-black uppercase text-blue-600 tracking-widest">
+                                {{ __('Security & Office Assignment') }}</h3>
+
+                            <div>
+                                <x-input-label for="password" :value="__('Reset Password (Leave blank to keep current)')" />
+                                <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
+                                    autocomplete="new-password" />
+                                <x-input-error :messages="$errors->get('password')" class="mt-2" />
+                            </div>
+
+                            @can('reassign_customers')
+                                <div>
+                                    <x-input-label for="assigned_cs_id" :value="__('Responsible CS Representative')" />
+                                    <select id="assigned_cs_id" name="assigned_cs_id"
+                                        class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                        <option value="">{{ __('-- Unassigned --') }}</option>
+                                        @foreach ($csStaffMembers as $cs)
+                                            <option value="{{ $cs->id }}"
+                                                {{ old('assigned_cs_id', $user->assigned_cs_id) == $cs->id ? 'selected' : '' }}>
+                                                {{ $cs->name }} ({{ $cs->login_id }})
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                            @endcan
                         </div>
                     </div>
 
-                    <div class="pt-6 border-t border-gray-100">
-                        <x-input-label for="password" :value="__('New Password (Optional)')" />
-                        <x-text-input id="password" name="password" type="password" class="mt-1 block w-full" />
-                        <x-input-error class="mt-2" :messages="$errors->get('password')" />
-                    </div>
-
-                    <div class="flex items-center justify-end pt-6 border-t border-gray-100">
-                        <x-primary-button>{{ __('Update User Account') }}</x-primary-button>
+                    <div class="flex items-center justify-end pt-6 border-t border-gray-100 gap-4">
+                        <a href="{{ route('users.index') }}"
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">{{ __('Cancel') }}</a>
+                        <x-primary-button
+                            class="bg-blue-600 hover:bg-blue-700 py-3 px-10 rounded-2xl shadow-lg shadow-blue-100 transition-all uppercase text-[10px] font-black">
+                            {{ __('Save Profile Changes') }}
+                        </x-primary-button>
                     </div>
                 </form>
-
-                {{-- Branch Management and Dangerous Actions sections follow separately... --}}
-                {{-- BRANCH MANAGEMENT SECTION [Section 3.a.2] --}}
-                @if ($user->hasRole('customer') && is_null($user->parent_id))
-                    <div
-                        class="mt-12 p-6 bg-gray-50 rounded-xl border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-4">
-                        <div>
-                            <h3 class="text-gray-800 font-black uppercase text-sm">{{ __('Branch Management') }}</h3>
-                            <p class="text-gray-600 text-[10px] mt-1 italic">
-                                {{ __('Create a sub-account that inherits this HQ\'s settings.') }}</p>
-                        </div>
-                        <a href="{{ route('users.create', ['parent_id' => $user->id]) }}"
-                            class="inline-block bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-sm">
-                            + {{ __('Add New Branch') }}
-                        </a>
-                    </div>
-                @endif
-
-                {{-- DANGEROUS ACTIONS SECTION [Section 3.c] --}}
-                @can('edit_users')
-                    <div class="mt-12 pt-8 border-t-2 border-dashed border-gray-100">
-                        @if ($user->canBeDeleted())
-                            <div
-                                class="bg-red-50 p-6 rounded-2xl border border-red-100 flex flex-col md:flex-row justify-between items-center gap-6">
-                                <div>
-                                    <h3 class="text-red-800 font-black uppercase text-sm leading-none">
-                                        {{ __('Dangerous: Remove Account') }}</h3>
-                                    <p class="text-red-600 text-[10px] mt-2 italic">
-                                        {{ is_null($user->parent_id)
-                                            ? __('Deleting this HQ will also permanently remove all associated branches.')
-                                            : __('This will permanently remove this specific account.') }}
-                                    </p>
-                                </div>
-                                <form action="{{ route('users.destroy', $user) }}" method="POST"
-                                    onsubmit="return confirm('Are you absolutely sure? This cannot be undone.');">
-                                    @csrf
-                                    @method('DELETE')
-                                    <button type="submit"
-                                        class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-lg">
-                                        {{ __('Confirm Hard Delete') }}
-                                    </button>
-                                </form>
-                            </div>
-                        @else
-                            <div class="p-6 bg-gray-50 rounded-2xl border border-gray-100 text-center">
-                                <p class="text-gray-400 text-[10px] font-black uppercase tracking-widest italic">
-                                    {{ __('ðŸ”’ This account is locked from deletion because it is linked to historical order records.') }}
-                                </p>
-                            </div>
-                        @endif
-                    </div>
-                @endcan
             </div>
+
+            <!-- DANGER ZONE: Fulfills Section 3.c Deletion Protection [9.c, 189] -->
+            @can('edit_users')
+                <div
+                    class="bg-red-50 p-8 rounded-3xl border border-red-100 flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div class="text-center md:text-left">
+                        <h3 class="text-xs font-black uppercase text-red-600 tracking-widest mb-1">
+                            {{ __('Dangerous: Permanent Removal') }}</h3>
+                        <p class="text-xs text-red-400 font-medium">
+                            {{ __('Deleting an account is only possible if the user has never placed an order.') }}</p>
+                    </div>
+
+                    @if ($user->canBeDeleted())
+                        <form method="POST" action="{{ route('users.destroy', $user) }}"
+                            onsubmit="return confirm('{{ __('Are you absolutely sure? This will permanently wipe this login credential.') }}');">
+                            @csrf
+                            @method('DELETE')
+                            <button type="submit"
+                                class="bg-red-600 hover:bg-red-700 text-white px-8 py-2.5 rounded-xl text-[10px] font-black uppercase transition shadow-lg shadow-red-100">
+                                {{ __('Confirm Hard Delete') }}
+                            </button>
+                        </form>
+                    @else
+                        <div class="flex items-center gap-3 px-6 py-2.5 bg-white border border-red-200 rounded-xl cursor-not-allowed opacity-60 shadow-sm"
+                            title="{{ __('Data integrity lock active') }}">
+                            <svg class="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="2.5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                            </svg>
+                            <span
+                                class="text-[10px] font-black uppercase text-red-600">{{ __('Deletion Locked (Order History Found)') }}</span>
+                        </div>
+                    @endif
+                </div>
+            @endcan
         </div>
     </div>
 </x-app-layout>
@@ -8065,150 +8991,151 @@ $classes = ($active ?? false)
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\users\index.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('User Management') }}
-        </h2>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                {{ __('Login Credentials') }}
+            </h2>
+        </div>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+        @can('create_users')
+            <a href="{{ route('users.create') }}"
+                class="inline-flex items-center bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-blue-200">
+                <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor font-black">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4" />
+                </svg>
+                {{ __('Create New Login') }}
+            </a>
+        @endcan
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
-            {{-- Success Message --}}
-            @if (session('success'))
-                <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4">
-                    {{ session('success') }}
-                </div>
-            @endif
+            {{-- Search & Filter Toolbar: Fulfills standard UI consistency --}}
+            <div class="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                <form method="GET" action="{{ route('users.index') }}">
+                    <x-filter-toolbar :placeholder="__('Search Name, Login ID or Email...')" :showDates="true">
+                        {{-- Role Filter Slot --}}
+                        <select name="role"
+                            class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600 focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Roles') }}</option>
+                            @foreach ($roles as $roleName)
+                                <option value="{{ $roleName }}"
+                                    {{ request('role') == $roleName ? 'selected' : '' }}>
+                                    {{ ucfirst(str_replace('_', ' ', $roleName)) }}
+                                </option>
+                            @endforeach
+                        </select>
 
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                <div class="p-6 text-gray-900">
+                        {{-- Status Filter Slot --}}
+                        <select name="status"
+                            class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600 focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">{{ __('All Status') }}</option>
+                            @foreach ($status as $statusName)
+                                <option value="{{ $statusName }}"
+                                    {{ request('status') == $statusName ? 'selected' : '' }}>
+                                    {{ ucfirst($statusName) }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </x-filter-toolbar>
+                </form>
+            </div>
 
-                    {{-- Header with Add Button --}}
-                    <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
-
-                        {{-- THE TOOLBAR --}}
-                        <x-filter-toolbar placeholder="Search name, ID...">
-
-                            {{-- INJECTING THE EXTRA FILTER (The Slot) --}}
-                            <select name="role"
-                                class="text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-                                <option value="">All Roles</option>
-                                @foreach ($roles as $roleName)
-                                    <option value="{{ $roleName }}"
-                                        {{ request('role') == $roleName ? 'selected' : '' }}>
-                                        {{ ucfirst(str_replace('_', ' ', $roleName)) }}
-                                    </option>
-                                @endforeach
-                            </select>
-
-                        </x-filter-toolbar>
-
-                        @can('create_users')
-                            <a href="{{ route('users.create') }}"
-                                class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-center whitespace-nowrap h-[38px] flex items-center">
-                                + Create User
-                            </a>
-                        @endcan
-                    </div>
-
-                    {{-- THE TABLE --}}
-                    <table class="min-w-full divide-y divide-gray-200">
+            {{-- Users Master Table --}}
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-100">
                         <thead class="bg-gray-50">
                             <tr>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Name / Login ID</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('User / Login ID') }}</th>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Role</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Assigned Company') }}</th>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Status</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Role') }}</th>
                                 <th
-                                    class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Actions</th>
+                                    class="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Status') }}</th>
+                                <th
+                                    class="px-6 py-4 text-right text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    {{ __('Actions') }}</th>
                             </tr>
                         </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            @foreach ($users as $user)
-                                {{-- Main HQ/Top-Level Row --}}
-                                <tr class="border-b hover:bg-gray-50 transition-colors group">
-                                    <td class="px-6 py-4">
+                        <tbody class="bg-white divide-y divide-gray-50">
+                            @forelse ($users as $user)
+                                <tr class="hover:bg-gray-50/50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap">
                                         <div class="flex flex-col">
-                                            <div class="text-sm font-bold text-gray-900">
-                                                {{ $user->name }}
-                                                {{-- Fulfills Request: "MAIN HQ" tag only for Customers with no parent_id --}}
-                                                @if ($user->hasRole('customer') && is_null($user->parent_id))
-                                                    <span
-                                                        class="ml-2 px-1.5 py-0.5 bg-blue-600 text-white rounded text-[10px] uppercase font-black tracking-tighter">
-                                                        {{ __('MAIN HQ') }}
-                                                    </span>
-                                                @endif
-                                            </div>
-                                            <div class="text-xs text-gray-500 font-mono">{{ $user->login_id }}</div>
+                                            <span class="text-sm font-bold text-gray-900">{{ $user->name }}</span>
+                                            <span
+                                                class="text-[10px] font-black text-blue-500 uppercase tracking-tighter">{{ $user->login_id }}</span>
+                                            <span class="text-[10px] text-gray-400">{{ $user->email }}</span>
                                         </div>
                                     </td>
-                                    <td class="px-6 py-4 text-xs font-bold uppercase text-gray-600">
-                                        {{ $user->roles->pluck('name')->map(fn($n) => str_replace('_', ' ', $n))->implode(', ') }}
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        @if ($user->company)
+                                            <div class="flex flex-col">
+                                                <span
+                                                    class="text-xs font-bold text-gray-700">{{ $user->company->company_name }}</span>
+                                                <span class="text-[10px] font-mono text-gray-400 uppercase">
+                                                    {{ $user->company->company_code ?? $user->company->branch_code }}
+                                                </span>
+                                            </div>
+                                        @else
+                                            <span
+                                                class="px-2 py-1 rounded-md bg-gray-100 text-gray-400 text-[9px] font-black uppercase italic">
+                                                {{ __('Internal / Unassigned') }}
+                                            </span>
+                                        @endif
                                     </td>
-                                    <td class="px-6 py-4">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        @foreach ($user->roles as $role)
+                                            <span
+                                                class="px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[9px] font-black uppercase border border-indigo-100">
+                                                {{ str_replace('_', ' ', $role->name) }}
+                                            </span>
+                                        @endforeach
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
                                         <span
-                                            class="px-2 py-1 rounded-full text-[10px] font-black uppercase {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-tight {{ $user->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
+                                            <span
+                                                class="w-1.5 h-1.5 mr-1.5 rounded-full {{ $user->status === 'active' ? 'bg-green-500' : 'bg-red-500' }}"></span>
                                             {{ $user->status }}
                                         </span>
                                     </td>
-                                    <td class="px-6 py-4 text-right">
-                                        <a href="{{ route('users.edit', $user) }}"
-                                            class="inline-block bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-gray-100 transition">
-                                            {{ __('Edit') }}
-                                        </a>
-                                        {{-- Delete form removed from here to clean up UI --}}
+                                    <td class="px-6 py-4 whitespace-nowrap text-right">
+                                        <div class="flex justify-end gap-2">
+                                            <a href="{{ route('users.edit', $user) }}"
+                                                class="inline-flex items-center bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase hover:bg-gray-50 transition shadow-sm">
+                                                {{ __('Edit Profile') }}
+                                            </a>
+                                        </div>
                                     </td>
                                 </tr>
-
-                                {{-- Branch Sub-Rows: Fulfills "Sub line below HQ" requirement --}}
-                                @if ($user->branches->isNotEmpty())
-                                    @foreach ($user->branches as $branch)
-                                        <tr class="border-b bg-gray-50/50 hover:bg-gray-100 transition-colors">
-                                            <td class="px-6 py-3 pl-12"> {{-- Indented for visual sub-line --}}
-                                                <div class="flex items-center">
-                                                    <span class="text-gray-400 mr-2 text-lg">â†³</span>
-                                                    <div class="flex flex-col">
-                                                        <div class="text-sm font-semibold text-gray-700">
-                                                            {{ $branch->name }}</div>
-                                                        <div class="text-[10px] text-gray-400 font-mono">
-                                                            {{ $branch->login_id }}</div>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td class="px-6 py-3 text-[10px] font-bold uppercase text-gray-400 italic">
-                                                {{ __('Branch Account') }}
-                                            </td>
-                                            <td class="px-6 py-3">
-                                                <span
-                                                    class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase {{ $branch->status === 'active' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600' }}">
-                                                    {{ $branch->status }}
-                                                </span>
-                                            </td>
-                                            <td class="px-6 py-3 text-right">
-                                                <a href="{{ route('users.edit', $branch) }}"
-                                                    class="inline-block bg-gray-200 text-gray-600 px-3 py-1 rounded-md text-[10px] font-bold uppercase hover:bg-gray-300 transition">
-                                                    {{ __('Edit') }}
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    @endforeach
-                                @endif
-                            @endforeach
+                            @empty
+                                <tr>
+                                    <td colspan="5" class="px-6 py-12 text-center">
+                                        <div class="flex flex-col items-center">
+                                            <p class="text-gray-400 text-xs font-bold uppercase tracking-widest">
+                                                {{ __('No user credentials found matching your filters.') }}</p>
+                                        </div>
+                                    </td>
+                                </tr>
+                            @endforelse
                         </tbody>
                     </table>
+                </div>
 
-                    {{-- Pagination Links --}}
-                    <div class="mt-4">
+                {{-- Pagination: Preserves search/filter state --}}
+                @if ($users->hasPages())
+                    <div class="p-6 bg-gray-50 border-t border-gray-100">
                         {{ $users->links() }}
                     </div>
-
-                </div>
+                @endif
             </div>
         </div>
     </div>
@@ -10383,6 +11310,11 @@ Route::middleware(['auth'])->group(function () {
 
     // CATALOG MANAGEMENT
     Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
+        ->middleware(['auth', 'verified']);
+
+    // Fulfills Addendum Section 3.a & 3.c: Company Management Module
+    // This resolves the Route [companys.index] not defined error.
+    Route::resource('companys', \App\Http\Controllers\CompanyController::class)
         ->middleware(['auth', 'verified']);
 
     // Fulfills Requirement: Item Categories Management
@@ -13809,9 +14741,16 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v14)
+## Update details(v16)
 
-* Added a controllable dummy data at "\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php" by running "php artisan migrate:fresh --seed"
+* Database Refactoring & Schema Updates(User(Login credential) > Customer(role) relationship from 1:1 to Many-to-One)
+- Still missing the function to add multiple customer(login credential) into HQ/Branch.
+
+* Added "Order Overview" page at staff side.
+
+* Update the "users" & "companys"(old "customer_details") table.
+
+* Re-design the "User Management"(Login Credentials) page, only showing user not HQ/branch.
 
 --- END_FILE ---
 

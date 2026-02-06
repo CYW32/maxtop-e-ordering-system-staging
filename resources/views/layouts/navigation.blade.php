@@ -51,8 +51,14 @@
             @endcan
 
             @can('view_users')
+                <div class="mt-4 mb-2 px-4 border-t border-gray-100 pt-4">
+                    <p class="text-[9px] font-black uppercase text-gray-400 tracking-widest">{{ __('Accounts') }}</p>
+                </div>
+                <x-nav-link :href="route('companys.index')" :active="request()->routeIs('companys.*')">
+                    {{ __('Business Entities') }}
+                </x-nav-link>
                 <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                    {{ __('User Management') }}
+                    {{ __('Login Credentials') }}
                 </x-nav-link>
             @endcan
 
@@ -62,17 +68,8 @@
                 </x-nav-link>
             @endcan
 
-            {{-- Fulfills Section 5: Assignment Logic Separation --}}
-            <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
-                {{ __('On-going Orders') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
-                {{ __('Claiming Queue') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
-                {{ __('My Claimed Orders') }}
+            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
+                {{ __('Order Overview') }}
             </x-nav-link>
         @endhasanyrole
 

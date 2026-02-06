@@ -76,12 +76,28 @@
 
                 {{-- Right: Fulfillment Controls --}}
                 <div class="space-y-6">
-                    {{-- Customer Details Card --}}
-                    <div class="bg-white shadow rounded-lg p-6">
-                        <h3 class="font-black text-gray-700 uppercase mb-2">{{ __('Customer Info') }}</h3>
-                        <p class="text-sm font-bold">{{ $order->user->details->company_name ?? $order->user->name }}
-                        </p>
-                        <p class="text-xs text-gray-500">{{ $order->user->details->delivery_address }}</p>
+                    {{-- Customer Details Card: Line 84 Refactoring [4] --}}
+                    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                        <h4 class="text-[10px] font-black uppercase text-gray-400 mb-4 tracking-widest">
+                            {{ __('Customer Info') }}</h4>
+
+                        <div class="space-y-1">
+                            {{-- Use null-safe operator to prevent Attempt to read property on null --}}
+                            <p class="text-sm font-black text-gray-800 uppercase">
+                                {{ $order->user->details?->company_name ?? $order->user->name }}
+                            </p>
+
+                            <p class="text-xs text-gray-500 leading-relaxed">
+                                {{-- ARCHITECTURE FIX: Defensive check for delivery address --}}
+                                @if ($order->user->details?->delivery_address)
+                                    {{ $order->user->details->delivery_address }}
+                                @else
+                                    <span class="text-red-400 italic text-[10px] uppercase font-bold">
+                                        {{ __('No business address on file') }}
+                                    </span>
+                                @endif
+                            </p>
+                        </div>
                     </div>
 
                     {{-- Status Controls: Fulfills Section 4 lifecycle --}}
@@ -123,18 +139,60 @@
                             </form>
                         @endif
 
+                        {{-- Danger Zone: Addendum Section 2 --}}
                         @if ($order->status !== 'completed' && $order->status !== 'cancelled' && $order->handler_id === auth()->id())
-                            <hr class="my-4">
-                            <h4 class="text-xs font-black text-red-600 uppercase mb-2">{{ __('Danger Zone') }}</h4>
-                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
-                                @csrf
-                                <textarea name="cancellation_reason" required class="w-full text-xs rounded border-gray-300 mb-2"
-                                    placeholder="Mandatory cancellation reason..."></textarea>
-                                <button type="submit"
-                                    class="w-full border border-red-600 text-red-600 py-2 rounded text-xs font-black uppercase hover:bg-red-50">
-                                    {{ __('Cancel Order') }}
-                                </button>
-                            </form>
+                            <div class="mt-8 pt-8 border-t border-gray-100">
+                                <h3 class="text-[10px] font-black uppercase text-red-600 tracking-widest mb-4">
+                                    {{ __('Danger Zone') }}</h3>
+
+                                @if ($order->hasPendingCancellationRequest())
+                                    {{-- Display Request for Everyone --}}
+                                    <div class="bg-red-50 border border-red-100 p-6 rounded-2xl mb-4">
+                                        <p class="text-[10px] font-black uppercase text-red-700 mb-2">
+                                            {{ __('Cancellation Request Pending') }}</p>
+                                        <p class="text-xs text-red-600 italic">
+                                            "{{ $order->cancellation_request_reason }}"</p>
+                                        <p class="text-[9px] text-red-400 mt-2 uppercase font-bold">—
+                                            {{ __('Requested by') }} {{ $order->cancellationRequester->name }}</p>
+                                    </div>
+
+                                    {{-- Leader/Admin Approval Form [Addendum 2.b] --}}
+                                    @hasanyrole('admin|cs_leader')
+                                        <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
+                                            @csrf
+                                            <input type="hidden" name="cancellation_reason"
+                                                value="Approved Request: {{ $order->cancellation_request_reason }}">
+                                            <button type="submit"
+                                                class="w-full bg-red-600 text-white py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-700 shadow-lg transition">
+                                                {{ __('Approve Cancellation Request') }}
+                                            </button>
+                                        </form>
+                                    @else
+                                        <div class="p-4 border-2 border-dashed border-gray-200 rounded-xl text-center">
+                                            <p class="text-[10px] font-black uppercase text-gray-400">
+                                                {{ __('Waiting for Management Approval') }}</p>
+                                        </div>
+                                    @endhasanyrole
+                                @else
+                                    {{-- Standard Cancellation Form [Backbone 4.f] --}}
+                                    <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                        class="space-y-3">
+                                        @csrf
+                                        <textarea name="cancellation_reason"
+                                            class="w-full text-xs rounded-xl border-gray-200 focus:ring-red-500 focus:border-red-500"
+                                            placeholder="{{ __('Provide mandatory reason for cancellation...') }}" required></textarea>
+
+                                        <button type="submit"
+                                            class="w-full border-2 border-red-600 text-red-600 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-50 transition">
+                                            @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
+                                                {{ __('Submit Cancellation Request') }}
+                                            @else
+                                                {{ __('Cancel Order Permanently') }}
+                                            @endif
+                                        </button>
+                                    </form>
+                                @endif
+                            </div>
                         @endif
                     </div>
 

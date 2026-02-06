@@ -60,9 +60,14 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v15)
+## Update details(v16)
 
-* Added the search function in:
-- Admin > User Management.
-- Customer > Product Items.
-- Admin/CS > My Claimed Orders & On-going Orders & Product Categories & Catalog Folders & Claiming Queue.
+* Database Refactoring & Schema Updates(User(Login credential) > Customer(role) relationship from 1:1 to Many-to-One)
+
+* Added "Order Overview" page at staff side.
+
+* Update the "users" & "companys"(old "customer_details") table.
+
+* Re-design the "User Management"(Login Credentials) page, only showing user not HQ/branch.
+
+* Added the "Business Entities" to manage custmer HQ/Branch company.

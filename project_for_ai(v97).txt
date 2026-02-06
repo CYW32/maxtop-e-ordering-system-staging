@@ -224,7 +224,10 @@ class OrderManagementController extends Controller
     {
         $user = auth()->user();
 
-        $query = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade [3]
+        $status = ['pending', 'approved', 'in_transit'];
+
+        $query = Order::whereIn('status', $status)
             ->where(function ($query) use ($user) {
                 $query->where('handler_id', $user->id)
                     ->orWhere(function ($sub) use ($user) {
@@ -235,7 +238,7 @@ class OrderManagementController extends Controller
                     });
             });
 
-        // ARCHITECTURE FIX: Apply Dynamic Search across order fields and customer names
+        // Apply Dynamic Search [1, 5]
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
@@ -244,24 +247,42 @@ class OrderManagementController extends Controller
             });
         }
 
-        $myOrders = $query->latest()->paginate(15)->withQueryString();
+        // ARCHITECTURE FIX: Apply the Status Filter from the dynamic dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
 
-        return view('cs.orders.index', compact('myOrders'));
+        // Finalize with Pagination and Query String Persistence
+        $myOrders = $query->latest()
+            ->paginate(15)
+            ->withQueryString();
+
+        // Pass $status to resolve the ErrorException in the Blade view [3]
+        return view('cs.orders.index', compact('myOrders', 'status'));
     }
 
     /**
      * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
      * Displays orders from customers who have NO assigned CS Staff.
      */
-    public function queue()
+    public function queue(Request $request) // Inject Request
     {
-        $unassigned = Order::where('status', 'pending')
+        $query = Order::where('status', 'pending')
             ->whereNull('handler_id')
-            ->whereHas('user', function ($query) {
-                $query->whereNull('assigned_cs_id');
-            })
-            ->latest()
-            ->get();
+            ->whereHas('user', function ($q) {
+                $q->whereNull('assigned_cs_id');
+            });
+
+        // ARCHITECTURE FIX: Enable search by Order # or Customer Name
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Hits order_number [12]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        $unassigned = $query->latest()->paginate(15)->withQueryString();
 
         return view('cs.orders.queue', compact('unassigned'));
     }
@@ -387,24 +408,27 @@ class OrderManagementController extends Controller
      */
     public function cancel(CancelOrderRequest $request, Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403);
+        $user = auth()->user();
+
+        if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
+            // Fulfills Cancellation Protocol [Addendum 2.a]
+            $order->update([
+                'cancellation_requested_by' => $user->id,
+                'cancellation_request_reason' => $request->cancellation_reason,
+            ]);
+
+            activity('order')->performedOn($order)->log('Cancellation request submitted by CS Staff');
+
+            return redirect()->back()->with('success', 'Cancellation request submitted for Leader approval.');
         }
 
-        if ($order->status === 'completed') {
-            return redirect()->back()->with('error', 'Completed orders cannot be cancelled.');
-        }
-
+        // Leaders/Admins skip the request and cancel immediately [Addendum 2.b]
         $order->update([
             'status' => 'cancelled',
             'cancellation_reason' => $request->cancellation_reason,
         ]);
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->withProperties(['reason' => $request->cancellation_reason])
-            ->log('Order was cancelled');
+        activity('order')->performedOn($order)->log('Order permanently cancelled');
 
         return redirect()->route('office.orders.index')->with('success', 'Order has been cancelled.');
     }
@@ -441,16 +465,36 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.c: My Claimed Orders (Master List)
      * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
-    public function history()
+    public function history(Request $request) // Added Request injection
     {
         $user = auth()->user();
 
-        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
-        $history = Order::where('handler_id', $user->id)
-            ->latest()
-            ->paginate(15);
+        // Define the statuses available for filtering
+        $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'];
 
-        return view('cs.orders.history', compact('history'));
+        // 1. Initialize query scoped to the current handler [Section 5.c]
+        $query = \App\Models\Order::where('handler_id', $user->id);
+
+        // 2. Apply Dynamic Search (Order Number or Customer Name)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Uses Searchable trait [4]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // 3. ARCHITECTURE FIX: Apply the Status Filter from the dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        // 4. Finalize with Pagination and Query String Persistence
+        $history = $query->latest()
+            ->paginate(15)
+            ->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
+
+        return view('cs.orders.history', compact('history', 'status'));
     }
 }
 
@@ -878,13 +922,20 @@ class CategoryController extends Controller
     /**
      * Display a listing of categories with item counts.
      */
-    public function index()
+    public function index(Request $request) // Inject Request
     {
         Gate::authorize('view_items');
 
-        $categories = Category::withCount('items')
-            ->latest()
-            ->paginate(10);
+        $query = Category::withCount('items');
+
+        // ARCHITECTURE FIX: Apply Searchable scope
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+
+        $categories = $query->latest()
+            ->paginate(10)
+            ->withQueryString(); // Preserve search on pagination [6]
 
         return view('admin.categories.index', compact('categories'));
     }
@@ -984,6 +1035,7 @@ abstract class Controller
 
 namespace App\Http\Controllers;
 
+use App\Models\Order;
 use Illuminate\Support\Facades\Auth;
 
 class DashboardController extends Controller
@@ -992,10 +1044,22 @@ class DashboardController extends Controller
     {
         $user = Auth::user();
 
-        // Later, we can add logic here.
-        // Example: If user is Admin, fetch system stats.
-        // Example: If user is Customer, fetch their order history.
+        // Fulfills Addendum Section 4: Unified Order Dashboard for Staff
+        if ($user->hasAnyRole(['admin', 'cs_leader', 'cs_staff'])) {
+            $stats = [
+                'All Orders' => Order::count(),
+                'Pending' => Order::where('status', 'pending')->count(),
+                'Approved' => Order::where('status', 'approved')->count(),
+                'In Transit' => Order::where('status', 'in_transit')->count(),
+                'Delivered' => Order::where('status', 'completed')->count(),
+                'Cancelled' => Order::where('status', 'cancelled')->count(),
+            ];
 
+            // Directing to the specialized staff view [Addendum 4.a]
+            return view('cs.orders.dashboard', compact('stats'));
+        }
+
+        // Standard landing page for Customers [Backbone Section 1.b]
         return view('dashboard');
     }
 }
@@ -1264,21 +1328,28 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
-        $roles = \Spatie\Permission\Models\Role::pluck('name', 'name');
+        // 1. Prepare data for the Smart Search Bar dropdowns
+        $roles = Role::pluck('name', 'name');
 
-        // Fulfills Section 3.a & User Request: Fetch only top-level accounts (no parent)
+        // ARCHITECTURE FIX: Define the status array requested by the Blade view
+        $status = ['active', 'deactive'];
+
+        // 2. Build the query for top-level accounts [Section 3.a.1]
         $query = User::with(['roles', 'parent', 'branches.roles', 'details'])
             ->whereNull('parent_id');
 
+        // 3. Security: Role-based data scoping [Section 2.b]
         if (auth()->user()->hasRole('cs_leader')) {
             $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
         }
 
+        // 4. Security: Assignment-based scoping [Section 5.a]
         if (auth()->user()->hasPermissionTo('view_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             $query->where('assigned_cs_id', auth()->id());
         }
 
+        // 5. Apply Smart Filters from the Traits [Searchable, RoleFilterable, DateFilterable]
         $users = $query->search($request->search)
             ->filterByDate()
             ->filterByRole()
@@ -1286,7 +1357,8 @@ class UserController extends Controller
             ->paginate(15)
             ->withQueryString();
 
-        return view('users.index', compact('users', 'roles'));
+        // 6. Pass all variables to the view
+        return view('users.index', compact('users', 'roles', 'status'));
     }
 
     public function assignedIndex(Request $request)
@@ -1881,6 +1953,8 @@ class Order extends Model
         'status',
         'cancellation_reason',
         'internal_notes',
+        'cancellation_requested_by',
+        'cancellation_request_reason',
     ];
 
     protected $searchable = [
@@ -1919,6 +1993,16 @@ class Order extends Model
             ->logOnlyDirty()
             ->setDescriptionForEvent(fn (string $eventName) => "Order has been {$eventName}");
     }
+
+    public function canBeCancelledDirectly(): bool
+    {
+        // Approved orders require a request if the user is CS Staff [Addendum 2.a]
+        if ($this->status === 'approved' && auth()->user()->hasRole('cs_staff')) {
+            return false;
+        }
+
+        return true;
+    }
 }
 
 --- END_FILE ---
@@ -1955,6 +2039,43 @@ class OrderItem extends Model
     public function item(): BelongsTo
     {
         return $this->belongsTo(Item::class);
+    }
+}
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Uom.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Uom extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = ['item_id', 'uom_name', 'rate_qty', 'price'];
+
+    // ARCHITECTURE FIX: Hide price from Customer/Branch roles globally [Addendum 3.b]
+    protected function staffPrice(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return \Illuminate\Database\Eloquent\Casts\Attribute::make(
+            get: function ($value) {
+                if (auth()->check() && auth()->user()->hasRole('customer')) {
+                    return null;
+                }
+
+                return $value;
+            }
+        );
+    }
+
+    public function canBeDeleted(): bool
+    {
+        // Prevent hard delete if referenced in order history [Addendum 3.c]
+        return ! \DB::table('order_items')->where('snapshot_uom_id', $this->id)->exists();
     }
 }
 
@@ -2044,8 +2165,7 @@ class User extends Authenticatable
 
     public function details()
     {
-        // A user has one set of customer details
-        return $this->hasOne(CustomerDetail::class);
+        return $this->belongsTo(CustomerDetail::class, 'customer_detail_id');
     }
 
     // For CS Staff: Get all customers they handle
@@ -4693,6 +4813,76 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_01_000001_refactor_user_customer_relationship.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Update customer_details to include business codes [Addendum 1.c]
+        Schema::table('customer_details', function (Blueprint $table) {
+            $table->dropForeign(['user_id']); // Remove old 1:1 link
+            $table->dropColumn('user_id');
+            $table->string('company_code')->nullable()->unique()->after('id'); // For HQ
+            $table->string('branch_code')->nullable()->unique()->after('company_code'); // For Branches
+        });
+
+        // 2. Update users to link to a shared Customer Detail record [Addendum 1.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('customer_detail_id')->nullable()->constrained('customer_details')->onDelete('set null')->after('parent_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropForeign(['customer_detail_id']);
+            $table->dropColumn('customer_detail_id');
+        });
+        Schema::table('customer_details', function (Blueprint $table) {
+            $table->foreignId('user_id')->nullable()->constrained()->onDelete('cascade');
+            $table->dropColumn(['company_code', 'branch_code']);
+        });
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_01_000002_create_uoms_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('uoms', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+            $table->string('uom_name'); // e.g., "Carton", "Pack" [Addendum 3.a]
+            $table->integer('rate_qty'); // e.g., 24
+            $table->decimal('price', 10, 2); // Hidden from customers
+            $table->softDeletes(); // For "Hide" rule [Addendum 3.c]
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('uoms');
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
@@ -5174,6 +5364,12 @@ class RoleSeeder extends Seeder
                 </div>
             @endif
 
+            <div class="mb-6">
+                <form action="{{ route('catalogs.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search catalog folders...')" />
+                </form>
+            </div>
+
             @can('create_catalogs')
                 <div class="flex justify-end mb-4">
                     <a href="{{ route('catalogs.create') }}"
@@ -5353,6 +5549,11 @@ class RoleSeeder extends Seeder
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div class="mb-6">
+                <form action="{{ route('categories.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search groups by name...')" />
+                </form>
+            </div>
             {{-- Left Column: Create Form --}}
             @can('create_items')
                 <div class="md:col-span-1">
@@ -6363,6 +6564,64 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\dashboard.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('Unified Order Dashboard') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+
+            {{-- Stats Container: Addendum Section 4.b --}}
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+                @foreach ($stats as $label => $count)
+                    <div
+                        class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 text-center transition-transform hover:scale-105">
+                        <p class="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">
+                            {{ $label }}</p>
+                        <p class="text-3xl font-black text-gray-800">{{ number_format($count) }}</p>
+                    </div>
+                @endforeach
+            </div>
+
+            {{-- Operational Shortcuts --}}
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
+                    <h3 class="font-black text-gray-800 uppercase text-sm mb-4">{{ __('Quick Actions') }}</h3>
+                    <div class="flex flex-wrap gap-3">
+                        <a href="{{ route('office.orders.queue') }}"
+                            class="bg-orange-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 transition">
+                            {{ __('Claim New Orders') }}
+                        </a>
+                        <a href="{{ route('items.index') }}"
+                            class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-blue-700 transition">
+                            {{ __('Manage Products') }}
+                        </a>
+                    </div>
+                </div>
+
+                <div class="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm flex items-center">
+                    <div class="p-4 bg-blue-50 rounded-2xl mr-4">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-400 font-bold uppercase">{{ __('Active Staff') }}</p>
+                        <p class="text-lg font-black text-gray-800 capitalize">{{ auth()->user()->name }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\history.blade.php ---
 <x-app-layout>
     <x-slot name="header">
@@ -6372,6 +6631,18 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <x-filter-toolbar :placeholder="__('Search Order # or Customer Name...')" :showDates="true">
+                <select name="status" class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                    <option value="">{{ __('All Status') }}</option>
+                    @foreach ($status as $statusName)
+                        <option value="{{ $statusName }}" {{ request('status') == $statusName ? 'selected' : '' }}>
+                            {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                        </option>
+                    @endforeach
+                </select>
+            </x-filter-toolbar>
+        </div>
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
                 @if ($history->isEmpty())
@@ -6457,6 +6728,18 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-8">
+            <x-filter-toolbar :placeholder="__('Search Order # or Customer Name...')" :showDates="true">
+                <select name="status" class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
+                    <option value="">{{ __('All Status') }}</option>
+                    @foreach ($status as $statusName)
+                        <option value="{{ $statusName }}" {{ request('status') == $statusName ? 'selected' : '' }}>
+                            {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                        </option>
+                    @endforeach
+                </select>
+            </x-filter-toolbar>
+        </div>
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
                 @if ($myOrders->isEmpty())
@@ -6531,6 +6814,12 @@ $classes = ($active ?? false)
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
+                <div class="mb-6">
+                    <form action="{{ route('office.orders.queue') }}" method="GET">
+                        <x-filter-toolbar :placeholder="__('Search queue by Order # or Customer Name...')" />
+                    </form>
+                </div>
+
                 @if ($unassigned->isEmpty())
                     <p class="text-gray-500 italic">{{ __('No new orders from unassigned customers.') }}</p>
                 @else
@@ -6928,7 +7217,7 @@ $classes = ($active ?? false)
     <div class="py-12">
         <div class="mb-8">
             <form action="{{ route('customer.products.index') }}" method="GET">
-                <x-filter-toolbar :placeholder="__('Search by Item Name or SKU...')" />
+                <x-filter-toolbar :placeholder="__('Search items in my catalog...')"></x-filter-toolbar>
             </form>
         </div>
 
@@ -13837,9 +14126,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v15)
+## Update details(v16)
 
-* 
+* Database Refactoring & Schema Updates(User(Login credential) > Customer(role) relationship from 1:1 to Many-to-One)
 
 --- END_FILE ---
 

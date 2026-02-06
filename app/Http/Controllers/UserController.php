@@ -13,28 +13,22 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
-        // 1. Prepare data for the Smart Search Bar dropdowns
         $roles = Role::pluck('name', 'name');
-
-        // ARCHITECTURE FIX: Define the status array requested by the Blade view
         $status = ['active', 'deactive'];
 
-        // 2. Build the query for top-level accounts [Section 3.a.1]
-        $query = User::with(['roles', 'parent', 'branches.roles', 'details'])
-            ->whereNull('parent_id');
+        // ARCHITECTURE FIX: Remove ->whereNull('parent_id') [Addendum 2.a]
+        // We now list all Login Credentials, grouped by their linked company.
+        $query = User::with(['roles', 'company']);
 
-        // 3. Security: Role-based data scoping [Section 2.b]
         if (auth()->user()->hasRole('cs_leader')) {
             $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
         }
 
-        // 4. Security: Assignment-based scoping [Section 5.a]
         if (auth()->user()->hasPermissionTo('view_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             $query->where('assigned_cs_id', auth()->id());
         }
 
-        // 5. Apply Smart Filters from the Traits [Searchable, RoleFilterable, DateFilterable]
         $users = $query->search($request->search)
             ->filterByDate()
             ->filterByRole()
@@ -42,16 +36,15 @@ class UserController extends Controller
             ->paginate(15)
             ->withQueryString();
 
-        // 6. Pass all variables to the view
         return view('users.index', compact('users', 'roles', 'status'));
     }
 
     public function assignedIndex(Request $request)
     {
-        // Fulfills Section 5.a & User Request: Only top-level assigned customers
+        // ARCHITECTURE FIX: Remove ->whereNull('parent_id') [Addendum 2.a]
+        // This fulfills Section 5.a: Viewing assigned customer logins.
         $users = User::where('assigned_cs_id', auth()->id())
-            ->whereNull('parent_id')
-            ->with(['roles', 'parent', 'branches.roles', 'details'])
+            ->with(['roles', 'company'])
             ->search($request->search)
             ->filterByDate()
             ->latest()
@@ -67,90 +60,61 @@ class UserController extends Controller
     {
         $roles = \Spatie\Permission\Models\Role::all();
         $parent = null;
-
-        // Fulfills Section 3.a.2: Branch inheritance context
         if ($request->has('parent_id')) {
-            $parent = User::with('details')->findOrFail($request->parent_id);
+            $parent = User::findOrFail($request->parent_id);
         }
 
+        // ARCHITECTURE FIX: Fetch from Company model (v1.4 Rename) [1.a]
+        $companys = \App\Models\Company::orderBy('company_name')->get();
         $catalogs = \App\Models\Catalog::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
 
-        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers'));
+        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers', 'companys'));
     }
 
     // Save new user
     public function store(Request $request)
     {
-        // 1. Updated Validation to include all Detail fields
+        // Fulfills Addendum 3.b: User Management ONLY for Name, Email, Password, and Company Link
         $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'login_id' => ['required', 'string', 'max:255', 'unique:users'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'confirmed', \Illuminate\Validation\Rules\Password::defaults()],
-            'role' => ['required', 'exists:roles,name'],
-            'parent_id' => ['nullable', 'exists:users,id'],
-            'catalog_id' => ['nullable', 'exists:catalogs,id'],
-            'assigned_cs_id' => ['nullable', 'exists:users,id'],
-            'company_name' => ['nullable', 'string', 'max:255'],
-            'company_reg_no' => ['nullable', 'string', 'max:255'],
-            'pic_name' => ['nullable', 'string', 'max:255'],
-            'pic_phone' => ['nullable', 'string', 'max:255'],
-            'delivery_address' => ['nullable', 'string'],
-            'city' => ['nullable', 'string', 'max:100'],
-            'state' => ['nullable', 'string', 'max:100'],
-            'postal_code' => ['nullable', 'string', 'max:20'],
+            'name' => 'required|string|max:255',
+            'login_id' => 'required|string|unique:users',
+            'email' => 'required|email|unique:users',
+            'password' => 'required|confirmed|min:8',
+            'company_id' => 'required|exists:companys,id', // Mandatory link to a pre-existing business
+            'role' => 'required|exists:roles,name',
         ]);
 
-        // 2. Create the User with Hierarchy data
         $user = User::create([
             'name' => $request->name,
             'login_id' => $request->login_id,
             'email' => $request->email,
             'password' => Hash::make($request->password),
+            'company_id' => $request->company_id,
             'status' => 'active',
-            'parent_id' => $request->parent_id, // Fulfills Branch Architecture [3]
-            'catalog_id' => $request->catalog_id,
-            'assigned_cs_id' => $request->assigned_cs_id ?? (auth()->user()->hasRole('cs_staff') ? auth()->id() : null),
         ]);
 
         $user->assignRole($request->role);
 
-        // 3. Fulfills Request: Persist ALL detail fields, not just company_name
-        if ($request->role === 'customer') {
-            $user->details()->create($request->only([
-                'company_name',
-                'company_reg_no',
-                'pic_name',
-                'pic_phone',
-                'delivery_address',
-                'city',
-                'state',
-                'postal_code',
-            ]));
-        }
-
-        return redirect()->route($request->has('parent_id') || auth()->user()->hasRole('cs_staff') ? 'users.assigned' : 'users.index')
-            ->with('success', 'User created successfully.');
+        return redirect()->route('users.index')->with('success', 'User login created.');
     }
 
     public function edit(User $user)
     {
-        // SECURITY CHECK: If user is CS Staff and has the restricted edit permission
         if (auth()->user()->hasPermissionTo('edit_assigned_customers') &&
             ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-
-            // Block if the customer isn't assigned to them
             if ($user->assigned_cs_id !== auth()->id()) {
-                abort(403, 'You are not authorized to edit this customer.');
+                abort(403, 'Unauthorized.');
             }
         }
 
-        $roles = Role::all();
+        $roles = \Spatie\Permission\Models\Role::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
-        $catalogs = \App\Models\Catalog::all();
 
-        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'catalogs'));
+        // NEW: Pass Companies to Edit view for reassignment [Addendum 3.b]
+        $companys = \App\Models\Company::orderBy('company_name')->get();
+
+        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys'));
     }
 
     public function update(Request $request, User $user)

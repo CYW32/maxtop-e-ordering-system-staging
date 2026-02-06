@@ -111,6 +111,11 @@ Route::middleware(['auth'])->group(function () {
     Route::resource('catalogs', \App\Http\Controllers\CatalogController::class)
         ->middleware(['auth', 'verified']);
 
+    // Fulfills Addendum Section 3.a & 3.c: Company Management Module
+    // This resolves the Route [companys.index] not defined error.
+    Route::resource('companys', \App\Http\Controllers\CompanyController::class)
+        ->middleware(['auth', 'verified']);
+
     // Fulfills Requirement: Item Categories Management
     Route::resource('categories', \App\Http\Controllers\CategoryController::class)
         ->middleware(['auth', 'verified']);

@@ -224,7 +224,10 @@ class OrderManagementController extends Controller
     {
         $user = auth()->user();
 
-        $query = Order::whereIn('status', ['pending', 'approved', 'in_transit'])
+        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade [3]
+        $status = ['pending', 'approved', 'in_transit'];
+
+        $query = Order::whereIn('status', $status)
             ->where(function ($query) use ($user) {
                 $query->where('handler_id', $user->id)
                     ->orWhere(function ($sub) use ($user) {
@@ -235,7 +238,7 @@ class OrderManagementController extends Controller
                     });
             });
 
-        // ARCHITECTURE FIX: Apply Dynamic Search across order fields and customer names
+        // Apply Dynamic Search [1, 5]
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
@@ -244,24 +247,42 @@ class OrderManagementController extends Controller
             });
         }
 
-        $myOrders = $query->latest()->paginate(15)->withQueryString();
+        // ARCHITECTURE FIX: Apply the Status Filter from the dynamic dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
 
-        return view('cs.orders.index', compact('myOrders'));
+        // Finalize with Pagination and Query String Persistence
+        $myOrders = $query->latest()
+            ->paginate(15)
+            ->withQueryString();
+
+        // Pass $status to resolve the ErrorException in the Blade view [3]
+        return view('cs.orders.index', compact('myOrders', 'status'));
     }
 
     /**
      * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
      * Displays orders from customers who have NO assigned CS Staff.
      */
-    public function queue()
+    public function queue(Request $request) // Inject Request
     {
-        $unassigned = Order::where('status', 'pending')
+        $query = Order::where('status', 'pending')
             ->whereNull('handler_id')
-            ->whereHas('user', function ($query) {
-                $query->whereNull('assigned_cs_id');
-            })
-            ->latest()
-            ->get();
+            ->whereHas('user', function ($q) {
+                $q->whereNull('assigned_cs_id');
+            });
+
+        // ARCHITECTURE FIX: Enable search by Order # or Customer Name
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Hits order_number [12]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        $unassigned = $query->latest()->paginate(15)->withQueryString();
 
         return view('cs.orders.queue', compact('unassigned'));
     }
@@ -271,9 +292,9 @@ class OrderManagementController extends Controller
      */
     public function show(Order $order)
     {
+        // ARCHITECTURE FIX: Load user and then their shared business details [3]
         $order->load(['items.item', 'user.details', 'handler']);
 
-        // Corrected: Uses the imported App\Models\User class [2]
         $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
             ->where('id', '!=', auth()->id())
             ->where('status', 'active')
@@ -352,61 +373,54 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger [7, 8]
+     * Fulfills Addendum 5.a: UOM Snapshot during Approval
      */
     public function approve(Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403, 'You are not the handler for this order.');
-        }
-
-        if ($order->status !== 'pending') {
-            return redirect()->back()->with('error', 'Only pending orders can be approved.');
-        }
+        $this->authorizeAction($order);
 
         DB::transaction(function () use ($order) {
             foreach ($order->items as $orderItem) {
+                $uom = $orderItem->uom; // Assumes UOM selected during draft
                 $orderItem->update([
                     'snapshot_name' => $orderItem->item->name,
-                    'price_at_order' => $orderItem->item->price,
+                    'snapshot_uom_name' => $uom?->uom_name ?? 'Unit',
+                    'snapshot_uom_rate' => $uom?->rate_qty ?? 1,
+                    'price_at_order' => $uom?->price ?? $orderItem->item->price,
                 ]);
             }
             $order->update(['status' => 'approved']);
         });
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->log('Order approved and item names snapshotted');
+        activity('order')->performedOn($order)->log('Order approved; Item & UOM names snapshotted');
 
-        return redirect()->route('office.orders.index')->with('success', 'Order approved. Item names are now locked.');
+        return redirect()->back()->with('success', 'Order approved.');
     }
 
     /**
-     * Fulfills Section 4.6: Order Cancellation with Mandatory Reason [9]
+     * Fulfills Addendum 4.b: Cancellation Requested Workflow
      */
     public function cancel(CancelOrderRequest $request, Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403);
+        $user = auth()->user();
+
+        if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
+            $order->update([
+                'status' => 'cancellation_requested', // New Enum Status [4.b]
+                'cancellation_requested_by' => $user->id,
+                'cancellation_request_reason' => $request->cancellation_reason,
+            ]);
+
+            return redirect()->back()->with('success', 'Cancellation request submitted to Leader.');
         }
 
-        if ($order->status === 'completed') {
-            return redirect()->back()->with('error', 'Completed orders cannot be cancelled.');
-        }
-
+        // Leaders/Admins finalize the cancellation
         $order->update([
             'status' => 'cancelled',
-            'cancellation_reason' => $request->cancellation_reason,
+            'cancellation_reason' => $request->cancellation_reason ?? $order->cancellation_request_reason,
         ]);
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->withProperties(['reason' => $request->cancellation_reason])
-            ->log('Order was cancelled');
-
-        return redirect()->route('office.orders.index')->with('success', 'Order has been cancelled.');
+        return redirect()->route('office.orders.index')->with('success', 'Order permanently cancelled.');
     }
 
     /**
@@ -441,16 +455,34 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.c: My Claimed Orders (Master List)
      * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
-    public function history()
+    public function history(Request $request) // Added Request injection
     {
         $user = auth()->user();
 
+        // Define the statuses available for filtering
         $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'];
 
-        // Fulfills Section 5.c: Visibility for all orders where the user is the 'Current Handler'
-        $history = Order::where('handler_id', $user->id)
-            ->latest()
-            ->paginate(15);
+        // 1. Initialize query scoped to the current handler [Section 5.c]
+        $query = \App\Models\Order::where('handler_id', $user->id);
+
+        // 2. Apply Dynamic Search (Order Number or Customer Name)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Uses Searchable trait [4]
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // 3. ARCHITECTURE FIX: Apply the Status Filter from the dropdown
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        // 4. Finalize with Pagination and Query String Persistence
+        $history = $query->latest()
+            ->paginate(15)
+            ->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
 
         return view('cs.orders.history', compact('history', 'status'));
     }
@@ -880,13 +912,20 @@ class CategoryController extends Controller
     /**
      * Display a listing of categories with item counts.
      */
-    public function index()
+    public function index(Request $request) // Inject Request
     {
         Gate::authorize('view_items');
 
-        $categories = Category::withCount('items')
-            ->latest()
-            ->paginate(10);
+        $query = Category::withCount('items');
+
+        // ARCHITECTURE FIX: Apply Searchable scope
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+
+        $categories = $query->latest()
+            ->paginate(10)
+            ->withQueryString(); // Preserve search on pagination [6]
 
         return view('admin.categories.index', compact('categories'));
     }
@@ -969,6 +1008,59 @@ class CategoryController extends Controller
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\CompanyController.php ---
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Catalog;
+use App\Models\Company;
+use Illuminate\Http\Request;
+
+class CompanyController extends Controller
+{
+    public function index(Request $request)
+    {
+        // Fulfills Addendum 3.c: Manage HQ/Branch relationships
+        $companys = Company::with(['catalog', 'parent'])
+            ->when($request->search, function ($q) use ($request) {
+                $q->where('company_name', 'like', "%{$request->search}%")
+                    ->orWhere('company_code', 'like', "%{$request->search}%")
+                    ->orWhere('branch_code', 'like', "%{$request->search}%");
+            })
+            ->latest()
+            ->paginate(15);
+
+        return view('admin.companys.index', compact('companys'));
+    }
+
+    public function create()
+    {
+        $hqs = Company::whereNull('parent_id')->get();
+        $catalogs = Catalog::where('status', 'active')->get();
+
+        return view('admin.companys.create', compact('hqs', 'catalogs'));
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'company_name' => 'required|string|max:255',
+            'company_code' => 'nullable|required_without:parent_id|unique:companys,company_code',
+            'branch_code' => 'nullable|required_with:parent_id|unique:companys,branch_code',
+            'parent_id' => 'nullable|exists:companys,id',
+            'catalog_id' => 'nullable|exists:catalogs,id',
+            'delivery_address' => 'required|string',
+        ]);
+
+        Company::create($validated);
+
+        return redirect()->route('companys.index')->with('success', 'Business entity registered.');
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Http\Controllers\Controller.php ---
 <?php
 
@@ -986,18 +1078,38 @@ abstract class Controller
 
 namespace App\Http\Controllers;
 
+use App\Models\Order;
 use Illuminate\Support\Facades\Auth;
 
 class DashboardController extends Controller
 {
+    /**
+     * Fulfills Addendum Section 4: Unified Order Dashboard
+     * Updated to support Staff-Specific Scoping per user request.
+     */
     public function index()
     {
         $user = Auth::user();
 
-        // Later, we can add logic here.
-        // Example: If user is Admin, fetch system stats.
-        // Example: If user is Customer, fetch their order history.
+        if ($user->hasAnyRole(['admin', 'cs_leader', 'cs_staff'])) {
 
+            // ARCHITECTURE FIX: Initialize scoped query based on current staff [Section 5.a]
+            $baseQuery = Order::assignedTo($user);
+
+            // Clone the scoped query for each status to ensure accurate real-time counts
+            $stats = [
+                'All Orders' => (clone $baseQuery)->count(),
+                'Pending' => (clone $baseQuery)->where('status', 'pending')->count(),
+                'Approved' => (clone $baseQuery)->where('status', 'approved')->count(),
+                'In Transit' => (clone $baseQuery)->where('status', 'in_transit')->count(),
+                'Delivered' => (clone $baseQuery)->where('status', 'completed')->count(),
+                'Cancelled' => (clone $baseQuery)->where('status', 'cancelled')->count(),
+            ];
+
+            return view('cs.orders.dashboard', compact('stats'));
+        }
+
+        // Standard landing page for Customers [Backbone Section 1.b]
         return view('dashboard');
     }
 }
@@ -1318,73 +1430,47 @@ class UserController extends Controller
     // SHOW CREATE FORM
     public function create(Request $request)
     {
+        // Permission Gate: Handled by 'create_users' in web.php
         $roles = \Spatie\Permission\Models\Role::all();
         $parent = null;
 
-        // Fulfills Section 3.a.2: Branch inheritance context
         if ($request->has('parent_id')) {
             $parent = User::with('details')->findOrFail($request->parent_id);
         }
 
+        // Fetch existing business entities for Many-to-One assignment [Addendum 1.a]
+        $businesses = \App\Models\CustomerDetail::orderBy('company_name')->get();
         $catalogs = \App\Models\Catalog::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
 
-        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers'));
+        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers', 'businesses'));
     }
 
     // Save new user
     public function store(Request $request)
     {
-        // 1. Updated Validation to include all Detail fields
+        // Fulfills Addendum 3.b: User Management ONLY for Name, Email, Password, and Company Link
         $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'login_id' => ['required', 'string', 'max:255', 'unique:users'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'confirmed', \Illuminate\Validation\Rules\Password::defaults()],
-            'role' => ['required', 'exists:roles,name'],
-            'parent_id' => ['nullable', 'exists:users,id'],
-            'catalog_id' => ['nullable', 'exists:catalogs,id'],
-            'assigned_cs_id' => ['nullable', 'exists:users,id'],
-            'company_name' => ['nullable', 'string', 'max:255'],
-            'company_reg_no' => ['nullable', 'string', 'max:255'],
-            'pic_name' => ['nullable', 'string', 'max:255'],
-            'pic_phone' => ['nullable', 'string', 'max:255'],
-            'delivery_address' => ['nullable', 'string'],
-            'city' => ['nullable', 'string', 'max:100'],
-            'state' => ['nullable', 'string', 'max:100'],
-            'postal_code' => ['nullable', 'string', 'max:20'],
+            'name' => 'required|string|max:255',
+            'login_id' => 'required|string|unique:users',
+            'email' => 'required|email|unique:users',
+            'password' => 'required|confirmed|min:8',
+            'company_id' => 'required|exists:companys,id', // Mandatory link to a pre-existing business
+            'role' => 'required|exists:roles,name',
         ]);
 
-        // 2. Create the User with Hierarchy data
         $user = User::create([
             'name' => $request->name,
             'login_id' => $request->login_id,
             'email' => $request->email,
             'password' => Hash::make($request->password),
+            'company_id' => $request->company_id,
             'status' => 'active',
-            'parent_id' => $request->parent_id, // Fulfills Branch Architecture [3]
-            'catalog_id' => $request->catalog_id,
-            'assigned_cs_id' => $request->assigned_cs_id ?? (auth()->user()->hasRole('cs_staff') ? auth()->id() : null),
         ]);
 
         $user->assignRole($request->role);
 
-        // 3. Fulfills Request: Persist ALL detail fields, not just company_name
-        if ($request->role === 'customer') {
-            $user->details()->create($request->only([
-                'company_name',
-                'company_reg_no',
-                'pic_name',
-                'pic_phone',
-                'delivery_address',
-                'city',
-                'state',
-                'postal_code',
-            ]));
-        }
-
-        return redirect()->route($request->has('parent_id') || auth()->user()->hasRole('cs_staff') ? 'users.assigned' : 'users.index')
-            ->with('success', 'User created successfully.');
+        return redirect()->route('users.index')->with('success', 'User login created.');
     }
 
     public function edit(User $user)
@@ -1767,7 +1853,7 @@ class Category extends Model
 
 --- END_FILE ---
 
---- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\CustomerDetail.php ---
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Company.php ---
 <?php
 
 namespace App\Models;
@@ -1776,12 +1862,17 @@ use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-class CustomerDetail extends Model
+class Company extends Model
 {
     use LogsActivity;
 
+    protected $table = 'companys'; // Aligning with requested naming
+
     protected $fillable = [
-        'user_id',
+        'company_code', // HQ Code [1.d]
+        'branch_code',  // Branch Code [1.d]
+        'parent_id',    // Links Branch to HQ [3.c]
+        'catalog_id',   // Whitelist control [1.b]
         'company_name',
         'company_reg_no',
         'pic_name',
@@ -1792,17 +1883,29 @@ class CustomerDetail extends Model
         'state',
     ];
 
-    public function user()
+    public function catalog()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Catalog::class);
+    }
+
+    public function users()
+    {
+        return $this->hasMany(User::class, 'company_id');
+    }
+
+    public function parent()
+    {
+        return $this->belongsTo(Company::class, 'parent_id');
+    }
+
+    public function branches()
+    {
+        return $this->hasMany(Company::class, 'parent_id');
     }
 
     public function getActivitylogOptions(): LogOptions
     {
-        return LogOptions::defaults()
-            ->logFillable() // Logs company name, reg no, PIC info, etc. [4]
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+        return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 }
 
@@ -1891,6 +1994,8 @@ class Order extends Model
         'status',
         'cancellation_reason',
         'internal_notes',
+        'cancellation_requested_by',
+        'cancellation_request_reason',
     ];
 
     protected $searchable = [
@@ -1928,6 +2033,49 @@ class Order extends Model
             ->logFillable()
             ->logOnlyDirty()
             ->setDescriptionForEvent(fn (string $eventName) => "Order has been {$eventName}");
+    }
+
+    public function canBeCancelledDirectly(): bool
+    {
+        // Approved orders require a request if the user is CS Staff [Addendum 2.a]
+        if ($this->status === 'approved' && auth()->user()->hasRole('cs_staff')) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if there is an active cancellation request pending review.
+     */
+    public function hasPendingCancellationRequest(): bool
+    {
+        return ! is_null($this->cancellation_requested_by) && $this->status === 'approved';
+    }
+
+    /**
+     * Get the user who requested the cancellation.
+     */
+    public function cancellationRequester(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cancellation_requested_by');
+    }
+
+    /**
+     * Fulfills Section 5: Assignment & Handover Logic
+     * Scopes the query to orders relevant to a specific staff member.
+     */
+    public function scopeAssignedTo($query, $user)
+    {
+        return $query->where(function ($q) use ($user) {
+            $q->where('handler_id', $user->id)
+                ->orWhere(function ($sub) use ($user) {
+                    $sub->whereNull('handler_id')
+                        ->whereHas('user', function ($u) use ($user) {
+                            $u->where('assigned_cs_id', $user->id);
+                        });
+                });
+        });
     }
 }
 
@@ -1970,220 +2118,93 @@ class OrderItem extends Model
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\Uom.php ---
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Uom extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = ['item_id', 'uom_name', 'rate_qty', 'price'];
+
+    // ARCHITECTURE FIX: Hide price from Customer/Branch roles globally [Addendum 3.b]
+    protected function staffPrice(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return \Illuminate\Database\Eloquent\Casts\Attribute::make(
+            get: function ($value) {
+                if (auth()->check() && auth()->user()->hasRole('customer')) {
+                    return null;
+                }
+
+                return $value;
+            }
+        );
+    }
+
+    public function canBeDeleted(): bool
+    {
+        // Prevent hard delete if referenced in order history [Addendum 3.c]
+        return ! \DB::table('order_items')->where('snapshot_uom_id', $this->id)->exists();
+    }
+}
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\app\Models\User.php ---
 <?php
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use App\Traits\DateFilterable;
 use App\Traits\RoleFilterable;
 use App\Traits\Searchable;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
-    use DateFilterable, HasFactory, HasRoles, LogsActivity, Notifiable, RoleFilterable, Searchable;
+    use DateFilterable, HasRoles, LogsActivity, Notifiable, RoleFilterable, Searchable;
+
+    protected $fillable = ['name', 'login_id', 'email', 'password', 'status', 'company_id', 'assigned_cs_id'];
+
+    // ARCHITECTURE CLEANUP: parent_id and catalog_id removed [Addendum 2.a]
+    protected $searchable = ['name', 'login_id', 'email', 'status'];
 
     /**
-     * The attributes that are mass assignable.
-     *
-     * @var list<string>
+     * Many Users -> One Company [Addendum 2.a]
      */
-    protected $fillable = [
-        'name',
-        'login_id',
-        'email',
-        'password',
-        'status',
-        'parent_id',
-        'assigned_cs_id',
-        'catalog_id',
-    ];
-
-    protected $searchable = [
-        'name',
-        'login_id',
-        'email',
-        'status',
-        'parent_id',
-        'assigned_cs_id',
-        'catalog_id',
-    ];
-
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var list<string>
-     */
-    protected $hidden = [
-        'password',
-        'remember_token',
-    ];
-
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
+    public function company()
     {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
-
-    // æ–°å¢žï¼šèŽ·å–æ‰€å±žæ€»åº—
-    public function parent()
-    {
-        return $this->belongsTo(User::class, 'parent_id');
-    }
-
-    // æ–°å¢žï¼šèŽ·å–ä¸‹å±žåˆ†åº—
-    public function branches()
-    {
-        return $this->hasMany(User::class, 'parent_id');
-    }
-
-    public function details()
-    {
-        // A user has one set of customer details
-        return $this->hasOne(CustomerDetail::class);
-    }
-
-    // For CS Staff: Get all customers they handle
-    public function assignedCustomers()
-    {
-        return $this->hasMany(User::class, 'assigned_cs_id');
-    }
-
-    // For Customers: Get their assigned CS Staff
-    public function assignedStaff()
-    {
-        return $this->belongsTo(User::class, 'assigned_cs_id');
-    }
-
-    public function getActivitylogOptions(): LogOptions
-    {
-        return LogOptions::defaults()
-            ->logFillable() // Automatically logs all fields in $fillable [3]
-            ->logOnlyDirty() // Only log fields that actually changed
-            ->dontSubmitEmptyLogs();
+        return $this->belongsTo(Company::class, 'company_id');
     }
 
     /**
-     * Fulfills Single Catalog Policy
-     * Standard Eloquent relationship for the assigned catalog.
-     */
-    public function catalog()
-    {
-        return $this->belongsTo(Catalog::class, 'catalog_id');
-    }
-
-    /**
-     * Inheritance Logic: Get the effective catalog ID
-     * If the branch has no catalog, it looks up the parent (Main) catalog.
+     * Whitelist Logic: Traverses Company -> Parent Company [Addendum 1.c]
      */
     public function getEffectiveCatalogId()
     {
-        // 1. Direct Assignment
-        if ($this->catalog_id) {
-            return $this->catalog_id;
+        if (! $this->company) {
+            return null;
         }
 
-        // 2. Inheritance: If Branch, check Main Store
-        if ($this->parent_id) {
-            return $this->parent?->catalog_id;
-        }
-
-        return null;
+        // Return direct company catalog or inherit from parent HQ [Backbone 3.a.2]
+        return $this->company->catalog_id ?? $this->company->parent?->catalog_id;
     }
 
-    /**
-     * Whitelist Logic: Restricted Item Visibility
-     * Ensures customers only see items in their specific assigned (or inherited) catalog.
-     */
     public function getVisibleItems()
     {
         $catalogId = $this->getEffectiveCatalogId();
 
-        if (! $catalogId) {
-            return collect(); // Return empty if no catalog is assigned to the chain
-        }
-
-        return Item::whereHas('catalogs', function ($q) use ($catalogId) {
-            $q->where('catalogs.id', $catalogId);
-        })->get();
-    }
-
-    /**
-     * Fulfills Request: Check if the user has an order currently awaiting review.
-     */
-    public function hasPendingOrder(): bool
-    {
-        return $this->orders()->where('status', 'pending')->exists();
-    }
-
-    public function orders()
-    {
-        return $this->hasMany(\App\Models\Order::class);
-    }
-
-    /**
-     * Fulfills Section 4.1: Single Draft Policy
-     * Retrieves the current active draft or returns null.
-     */
-    public function currentDraft()
-    {
-        return $this->orders()->where('status', 'draft')->first();
-    }
-
-    /**
-     * Refined Section 4.a.1: Logic to prevent draft creation if a pending order exists.
-     */
-    public function getOrCreateDraft()
-    {
-        $draft = $this->currentDraft();
-
-        if (! $draft) {
-            // Architecture Check: Block creation if a pending order is already in the queue
-            if ($this->hasPendingOrder()) {
-                return null;
-            }
-            $draft = $this->orders()->create(['status' => 'draft']);
-        }
-
-        return $draft;
-    }
-
-    /**
-     * Refined Section 3.c.1: Deletion Restriction Logic
-     * A user can be deleted if they have no orders.
-     * If they are an HQ, all their branches must also have no orders.
-     */
-    public function canBeDeleted(): bool
-    {
-        // 1. Check if the specific user has orders [4]
-        if ($this->orders()->exists()) {
-            return false;
-        }
-
-        // 2. Fulfills Request: If Main HQ, check if any branch has orders
-        if (is_null($this->parent_id)) {
-            $hasBranchWithOrders = $this->branches()->whereHas('orders')->exists();
-            if ($hasBranchWithOrders) {
-                return false;
-            }
-        }
-
-        return true;
+        return $catalogId
+            ? Item::whereHas('catalogs', fn ($q) => $q->where('catalogs.id', $catalogId))->get()
+            : collect();
     }
 }
 
@@ -4703,52 +4724,239 @@ return new class extends Migration
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_01_000001_refactor_user_customer_relationship.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Update customer_details to include business codes [Addendum 1.c]
+        Schema::table('customer_details', function (Blueprint $table) {
+            $table->dropForeign(['user_id']); // Remove old 1:1 link
+            $table->dropColumn('user_id');
+            $table->string('company_code')->nullable()->unique()->after('id'); // For HQ
+            $table->string('branch_code')->nullable()->unique()->after('company_code'); // For Branches
+        });
+
+        // 2. Update users to link to a shared Customer Detail record [Addendum 1.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('customer_detail_id')->nullable()->constrained('customer_details')->onDelete('set null')->after('parent_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropForeign(['customer_detail_id']);
+            $table->dropColumn('customer_detail_id');
+        });
+        Schema::table('customer_details', function (Blueprint $table) {
+            $table->foreignId('user_id')->nullable()->constrained()->onDelete('cascade');
+            $table->dropColumn(['company_code', 'branch_code']);
+        });
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_01_000002_create_uoms_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('uoms', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('item_id')->constrained()->onDelete('cascade');
+            $table->string('uom_name'); // e.g., "Carton", "Pack" [Addendum 3.a]
+            $table->integer('rate_qty'); // e.g., 24
+            $table->decimal('price', 10, 2); // Hidden from customers
+            $table->softDeletes(); // For "Hide" rule [Addendum 3.c]
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('uoms');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_05_000001_add_cancellation_request_fields_to_orders_table.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Fulfills Addendum Section 2: Enhanced Order Security
+     * Adds tracking for the "Request-Response" cancellation protocol.
+     */
+    public function up(): void
+    {
+        Schema::table('orders', function (Blueprint $table) {
+            // Stores the ID of the CS Staff who initiated the request
+            $table->foreignId('cancellation_requested_by')
+                ->nullable()
+                ->after('internal_notes')
+                ->constrained('users')
+                ->onDelete('set null');
+
+            // Stores the mandatory reason provided by the staff member
+            $table->text('cancellation_request_reason')
+                ->nullable()
+                ->after('cancellation_requested_by');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('orders', function (Blueprint $table) {
+            $table->dropForeign(['cancellation_requested_by']);
+            $table->dropColumn(['cancellation_requested_by', 'cancellation_request_reason']);
+        });
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_10_000001_rename_details_to_companys_and_refactor_relationships.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Rename the table [Addendum 1.a]
+        Schema::rename('customer_details', 'companys');
+
+        Schema::table('companys', function (Blueprint $table) {
+            // 2. Move catalog_id from users to companys [Addendum 1.b]
+            $table->foreignId('catalog_id')->nullable()->after('id')->constrained('catalogs')->onDelete('set null');
+
+            // 3. Add parent_id to companys to manage business hierarchy directly [Addendum 3.c]
+            $table->foreignId('parent_id')->nullable()->after('catalog_id')->constrained('companys')->onDelete('set null');
+        });
+
+        // 4. Data Migration: Move existing catalog_id assignments from users to their respective companies
+        $usersWithCatalogs = DB::table('users')->whereNotNull('catalog_id')->whereNotNull('customer_detail_id')->get();
+        foreach ($usersWithCatalogs as $user) {
+            DB::table('companys')->where('id', $user->customer_detail_id)->update(['catalog_id' => $user->catalog_id]);
+        }
+
+        // 5. Refactor Users table [Addendum 2.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropForeign(['catalog_id']);
+            $table->dropColumn('catalog_id');
+            $table->renameColumn('customer_detail_id', 'company_id');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->renameColumn('company_id', 'customer_detail_id');
+            $table->unsignedBigInteger('catalog_id')->nullable();
+            $table->foreign('catalog_id')->references('id')->on('catalogs')->onDelete('set null');
+        });
+
+        Schema::table('companys', function (Blueprint $table) {
+            $table->dropForeign(['parent_id']);
+            $table->dropColumn(['parent_id', 'catalog_id']);
+        });
+
+        Schema::rename('companys', 'customer_details');
+    }
+};
+
+--- END_FILE ---
+
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\migrations\2026_03_15_000001_update_order_and_items_table_for_v1_4.php ---
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        // 1. Update Order Status Enum [Addendum 4.b]
+        // Note: Adding 'cancellation_requested' to the lifecycle
+        Schema::table('orders', function (Blueprint $table) {
+            $table->string('status')->default('draft')->change();
+        });
+
+        // 2. Update Order Items for UOM Snapshots [Addendum 5.a]
+        Schema::table('order_items', function (Blueprint $table) {
+            $table->foreignId('uom_id')->nullable()->after('item_id')->constrained('uoms')->onDelete('set null');
+            $table->string('snapshot_uom_name')->nullable()->after('snapshot_name');
+            $table->integer('snapshot_uom_rate')->nullable()->after('snapshot_uom_name');
+        });
+
+        // 3. Final Users Table Cleanup [Addendum 2.a]
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropColumn('parent_id'); // Hierarchy is now in 'companys' table [1]
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('parent_id')->nullable()->constrained('users');
+        });
+        Schema::table('order_items', function (Blueprint $table) {
+            $table->dropForeign(['uom_id']);
+            $table->dropColumn(['uom_id', 'snapshot_uom_name', 'snapshot_uom_rate']);
+        });
+    }
+};
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\database\seeders\DatabaseSeeder.php ---
 <?php
 
 namespace Database\Seeders;
 
 use App\Models\Catalog;
-use App\Models\Category;
+use App\Models\Company;
 use App\Models\Item;
-use App\Models\User;
+use App\Models\User; // NEW
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // --- CONTROL KNOBS START ---
-        $totalItems = 60;  // Total items in the global master list
-        $totalCategories = 6;   // Sidebar categories for filtering
-        $totalCatalogs = 3;   // Whitelist folders for different customers
-        $branchesPerHQ = 4;   // Sub-accounts per Main HQ
-        // --- CONTROL KNOBS END ---
-
-        // 1. Initialize Roles and Permissions [4]
-        // CRITICAL: Must be first so users can be assigned roles
         $this->call(RoleSeeder::class);
 
-        // 2. Generate Product Items [5]
-        $items = Item::factory()->count($totalItems)->create();
-
-        // 3. Generate Categories & Link Items [6]
-        // Fulfills Item Grouping Management
-        $categories = Category::factory()->count($totalCategories)->create()->each(function ($category) use ($items) {
-            $category->items()->attach(
-                $items->random(rand(5, 12))->pluck('id')->toArray()
-            );
+        $items = Item::factory()->count(60)->create();
+        $catalogs = Catalog::factory()->count(3)->create()->each(function ($catalog) use ($items) {
+            $catalog->items()->attach($items->random(rand(15, 30))->pluck('id')->toArray());
         });
 
-        // 4. Generate Catalogs & Whitelist Items [7]
-        // Fulfills Section 3.a.3: Customers only see whitelisted items
-        $catalogs = Catalog::factory()->count($totalCatalogs)->create()->each(function ($catalog) use ($items) {
-            $catalog->items()->attach(
-                $items->random(rand(15, 30))->pluck('id')->toArray()
-            );
-        });
-
-        // 5. Create Internal Staff [8, 9]
         $admin = User::factory()->create([
             'name' => 'System Admin',
             'login_id' => 'admin001',
@@ -4766,44 +4974,53 @@ class DatabaseSeeder extends Seeder
         ]);
         $leader->assignRole('cs_leader');
 
-        // Create a CS Staff (Handles Items/Catalogs/Orders) [1]
+        // 1. Create Internal Staff [Backbone 2.c]
         $staff = User::factory()->create([
             'name' => 'CS Staff User',
-            'email' => 'staff@test.com',
             'login_id' => 'csstaff001',
+            'email' => 'staff@test.com',
             'status' => 'active',
         ]);
         $staff->assignRole('cs_staff');
 
-        // 6. Create Customer Hierarchy [1, 2]
-        // Create Main HQ and assign to the first available Catalog
-        $hq = User::factory()->create([
-            'name' => 'Main HQ Corp',
-            'login_id' => 'customer001',
-            'email' => 'hq@customer.com',
-            'catalog_id' => $catalogs->first()->id, // Assigned to Folder 1
-            'assigned_cs_id' => $staff->id,
-            'status' => 'active',
-        ]);
-        $hq->assignRole('customer');
-        $hq->details()->create([
+        // 2. Create Main HQ Company [Addendum 1.a & 1.b]
+        // Note: Catalog is now assigned to the COMPANY, not the User.
+        $hqCompany = Company::create([
+            'company_code' => 'MAX-HQ-001',
             'company_name' => 'Maxtop HQ Group',
+            'catalog_id' => $catalogs->first()->id,
             'delivery_address' => '123 Industrial Park, KL',
         ]);
 
-        // Create Branches using the control knob [Section 3.a.2 Inheritance]
-        User::factory()->count($branchesPerHQ)->create([
-            'parent_id' => $hq->id,
-            'catalog_id' => null, // NULL forces inheritance from HQ [10]
+        // 3. Create Multiple HQ Users (Many-to-One) [Addendum 2.a]
+        $hqUser = User::factory()->create([
+            'name' => 'Main HQ Admin',
+            'login_id' => 'customer001',
+            'company_id' => $hqCompany->id, // Linked to Company entity
             'assigned_cs_id' => $staff->id,
             'status' => 'active',
-        ])->each(function ($branch) {
-            $branch->assignRole('customer');
-            $branch->details()->create([
-                'company_name' => $branch->name.' Branch',
-                'delivery_address' => 'Branch Location Address',
+        ]);
+        $hqUser->assignRole('customer');
+
+        // 4. Create Branch Companies and Users [Addendum 3.c]
+        for ($i = 1; $i <= 4; $i++) {
+            $branchCompany = Company::create([
+                'parent_id' => $hqCompany->id, // Business hierarchy
+                'branch_code' => "BR-00{$i}",
+                'company_name' => "Maxtop Branch {$i}",
+                'catalog_id' => null, // Forces inheritance from HQ Catalog [Backbone 3.a.2]
+                'delivery_address' => "Branch {$i} Location Address",
             ]);
-        });
+
+            $branchUser = User::factory()->create([
+                'name' => "Branch User {$i}",
+                'login_id' => "branch00{$i}",
+                'company_id' => $branchCompany->id,
+                'assigned_cs_id' => $staff->id,
+                'status' => 'active',
+            ]);
+            $branchUser->assignRole('customer');
+        }
     }
 }
 
@@ -5184,6 +5401,12 @@ class RoleSeeder extends Seeder
                 </div>
             @endif
 
+            <div class="mb-6">
+                <form action="{{ route('catalogs.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search catalog folders...')" />
+                </form>
+            </div>
+
             @can('create_catalogs')
                 <div class="flex justify-end mb-4">
                     <a href="{{ route('catalogs.create') }}"
@@ -5363,6 +5586,11 @@ class RoleSeeder extends Seeder
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div class="mb-6">
+                <form action="{{ route('categories.index') }}" method="GET">
+                    <x-filter-toolbar :placeholder="__('Search groups by name...')" />
+                </form>
+            </div>
             {{-- Left Column: Create Form --}}
             @can('create_items')
                 <div class="md:col-span-1">
@@ -6373,6 +6601,98 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\dashboard.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('Unified Order Dashboard') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+
+            {{-- Stats Container: Addendum Section 4.b --}}
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+                @foreach ($stats as $label => $count)
+                    <div
+                        class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 text-center transition-transform hover:scale-105">
+                        <p class="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">
+                            {{ $label }}</p>
+                        <p class="text-3xl font-black text-gray-800">{{ number_format($count) }}</p>
+                    </div>
+                @endforeach
+            </div>
+
+            {{-- Operational Shortcuts Container --}}
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
+                    <h3 class="font-black text-gray-800 uppercase text-sm mb-6 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        {{ __('Quick Actions') }}
+                    </h3>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {{-- On-going Orders: Fulfills Section 5.a --}}
+                        <a href="{{ route('office.orders.index') }}"
+                            class="flex items-center justify-center bg-blue-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-blue-700 transition shadow-sm">
+                            {{ __('On-going Orders') }}
+                        </a>
+
+                        {{-- Claiming Queue: Fulfills Section 5.b --}}
+                        <a href="{{ route('office.orders.queue') }}"
+                            class="flex items-center justify-center bg-orange-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 transition shadow-sm">
+                            {{ __('Claiming Queue') }}
+                        </a>
+
+                        {{-- My Claimed Orders: Fulfills Section 5.c --}}
+                        <a href="{{ route('office.orders.history') }}"
+                            class="flex items-center justify-center bg-gray-800 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-gray-900 transition shadow-sm">
+                            {{ __('My Claimed Orders') }}
+                        </a>
+
+                        {{-- Product Management: Fulfills Section 2.c.1 --}}
+                        <a href="{{ route('items.index') }}"
+                            class="flex items-center justify-center border-2 border-blue-600 text-blue-600 px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-blue-50 transition">
+                            {{ __('Manage Products') }}
+                        </a>
+                    </div>
+                </div>
+
+                {{-- Active Session Context --}}
+                <div
+                    class="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between">
+                    <div class="flex items-center">
+                        <div class="p-4 bg-blue-50 rounded-2xl mr-4 text-blue-600">
+                            <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 font-bold uppercase tracking-widest">
+                                {{ __('Active Staff') }}</p>
+                            <p class="text-xl font-black text-gray-800 capitalize">{{ auth()->user()->name }}</p>
+                            <p class="text-[10px] text-blue-500 font-mono font-bold">
+                                {{ auth()->user()->roles->first()->name }}</p>
+                        </div>
+                    </div>
+
+                    <div class="text-right">
+                        <p class="text-[10px] text-gray-400 font-black uppercase mb-1">{{ __('Today') }}</p>
+                        <p class="text-sm font-black text-gray-800">{{ now()->format('d M Y') }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\history.blade.php ---
 <x-app-layout>
     <x-slot name="header">
@@ -6482,11 +6802,12 @@ $classes = ($active ?? false)
         <div class="mb-8">
             <x-filter-toolbar :placeholder="__('Search Order # or Customer Name...')" :showDates="true">
                 <select name="status" class="text-xs border-gray-200 rounded-xl font-bold uppercase text-gray-600">
-                    <option value="">{{ __('Active Status') }}</option>
-                    <option value="pending" {{ request('status') == 'pending' ? 'selected' : '' }}>Pending</option>
-                    <option value="approved" {{ request('status') == 'approved' ? 'selected' : '' }}>Approved</option>
-                    <option value="in_transit" {{ request('status') == 'in_transit' ? 'selected' : '' }}>In Transit
-                    </option>
+                    <option value="">{{ __('All Status') }}</option>
+                    @foreach ($status as $statusName)
+                        <option value="{{ $statusName }}" {{ request('status') == $statusName ? 'selected' : '' }}>
+                            {{ ucfirst(str_replace('_', ' ', $statusName)) }}
+                        </option>
+                    @endforeach
                 </select>
             </x-filter-toolbar>
         </div>
@@ -6564,6 +6885,12 @@ $classes = ($active ?? false)
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-orange-500">
+                <div class="mb-6">
+                    <form action="{{ route('office.orders.queue') }}" method="GET">
+                        <x-filter-toolbar :placeholder="__('Search queue by Order # or Customer Name...')" />
+                    </form>
+                </div>
+
                 @if ($unassigned->isEmpty())
                     <p class="text-gray-500 italic">{{ __('No new orders from unassigned customers.') }}</p>
                 @else
@@ -6694,12 +7021,28 @@ $classes = ($active ?? false)
 
                 {{-- Right: Fulfillment Controls --}}
                 <div class="space-y-6">
-                    {{-- Customer Details Card --}}
-                    <div class="bg-white shadow rounded-lg p-6">
-                        <h3 class="font-black text-gray-700 uppercase mb-2">{{ __('Customer Info') }}</h3>
-                        <p class="text-sm font-bold">{{ $order->user->details->company_name ?? $order->user->name }}
-                        </p>
-                        <p class="text-xs text-gray-500">{{ $order->user->details->delivery_address }}</p>
+                    {{-- Customer Details Card: Line 84 Refactoring [4] --}}
+                    <div class="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
+                        <h4 class="text-[10px] font-black uppercase text-gray-400 mb-4 tracking-widest">
+                            {{ __('Customer Info') }}</h4>
+
+                        <div class="space-y-1">
+                            {{-- Use null-safe operator to prevent Attempt to read property on null --}}
+                            <p class="text-sm font-black text-gray-800 uppercase">
+                                {{ $order->user->details?->company_name ?? $order->user->name }}
+                            </p>
+
+                            <p class="text-xs text-gray-500 leading-relaxed">
+                                {{-- ARCHITECTURE FIX: Defensive check for delivery address --}}
+                                @if ($order->user->details?->delivery_address)
+                                    {{ $order->user->details->delivery_address }}
+                                @else
+                                    <span class="text-red-400 italic text-[10px] uppercase font-bold">
+                                        {{ __('No business address on file') }}
+                                    </span>
+                                @endif
+                            </p>
+                        </div>
                     </div>
 
                     {{-- Status Controls: Fulfills Section 4 lifecycle --}}
@@ -6741,18 +7084,60 @@ $classes = ($active ?? false)
                             </form>
                         @endif
 
+                        {{-- Danger Zone: Addendum Section 2 --}}
                         @if ($order->status !== 'completed' && $order->status !== 'cancelled' && $order->handler_id === auth()->id())
-                            <hr class="my-4">
-                            <h4 class="text-xs font-black text-red-600 uppercase mb-2">{{ __('Danger Zone') }}</h4>
-                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
-                                @csrf
-                                <textarea name="cancellation_reason" required class="w-full text-xs rounded border-gray-300 mb-2"
-                                    placeholder="Mandatory cancellation reason..."></textarea>
-                                <button type="submit"
-                                    class="w-full border border-red-600 text-red-600 py-2 rounded text-xs font-black uppercase hover:bg-red-50">
-                                    {{ __('Cancel Order') }}
-                                </button>
-                            </form>
+                            <div class="mt-8 pt-8 border-t border-gray-100">
+                                <h3 class="text-[10px] font-black uppercase text-red-600 tracking-widest mb-4">
+                                    {{ __('Danger Zone') }}</h3>
+
+                                @if ($order->hasPendingCancellationRequest())
+                                    {{-- Display Request for Everyone --}}
+                                    <div class="bg-red-50 border border-red-100 p-6 rounded-2xl mb-4">
+                                        <p class="text-[10px] font-black uppercase text-red-700 mb-2">
+                                            {{ __('Cancellation Request Pending') }}</p>
+                                        <p class="text-xs text-red-600 italic">
+                                            "{{ $order->cancellation_request_reason }}"</p>
+                                        <p class="text-[9px] text-red-400 mt-2 uppercase font-bold">â€”
+                                            {{ __('Requested by') }} {{ $order->cancellationRequester->name }}</p>
+                                    </div>
+
+                                    {{-- Leader/Admin Approval Form [Addendum 2.b] --}}
+                                    @hasanyrole('admin|cs_leader')
+                                        <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
+                                            @csrf
+                                            <input type="hidden" name="cancellation_reason"
+                                                value="Approved Request: {{ $order->cancellation_request_reason }}">
+                                            <button type="submit"
+                                                class="w-full bg-red-600 text-white py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-700 shadow-lg transition">
+                                                {{ __('Approve Cancellation Request') }}
+                                            </button>
+                                        </form>
+                                    @else
+                                        <div class="p-4 border-2 border-dashed border-gray-200 rounded-xl text-center">
+                                            <p class="text-[10px] font-black uppercase text-gray-400">
+                                                {{ __('Waiting for Management Approval') }}</p>
+                                        </div>
+                                    @endhasanyrole
+                                @else
+                                    {{-- Standard Cancellation Form [Backbone 4.f] --}}
+                                    <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                        class="space-y-3">
+                                        @csrf
+                                        <textarea name="cancellation_reason"
+                                            class="w-full text-xs rounded-xl border-gray-200 focus:ring-red-500 focus:border-red-500"
+                                            placeholder="{{ __('Provide mandatory reason for cancellation...') }}" required></textarea>
+
+                                        <button type="submit"
+                                            class="w-full border-2 border-red-600 text-red-600 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-50 transition">
+                                            @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
+                                                {{ __('Submit Cancellation Request') }}
+                                            @else
+                                                {{ __('Cancel Order Permanently') }}
+                                            @endif
+                                        </button>
+                                    </form>
+                                @endif
+                            </div>
                         @endif
                     </div>
 
@@ -7298,8 +7683,14 @@ $classes = ($active ?? false)
             @endcan
 
             @can('view_users')
-                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                    {{ __('User Management') }}
+                <div class="mt-4 mb-2 px-4 border-t border-gray-100 pt-4">
+                    <p class="text-[9px] font-black uppercase text-gray-400 tracking-widest">{{ __('Accounts') }}</p>
+                </div>
+                <x-nav-link :href="route('companys.index')" :active="request()->routeIs('companys.*')">
+                    {{ __('Business Entities') }}
+                </x-nav-link>
+                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.*')">
+                    {{ __('Login Credentials') }}
                 </x-nav-link>
             @endcan
 
@@ -7309,17 +7700,8 @@ $classes = ($active ?? false)
                 </x-nav-link>
             @endcan
 
-            {{-- Fulfills Section 5: Assignment Logic Separation --}}
-            <x-nav-link :href="route('office.orders.index')" :active="request()->routeIs('office.orders.index')">
-                {{ __('On-going Orders') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('office.orders.queue')" :active="request()->routeIs('office.orders.queue')">
-                {{ __('Claiming Queue') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('office.orders.history')" :active="request()->routeIs('office.orders.history')">
-                {{ __('My Claimed Orders') }}
+            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
+                {{ __('Order Overview') }}
             </x-nav-link>
         @endhasanyrole
 
@@ -7734,164 +8116,145 @@ $classes = ($active ?? false)
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100" x-data="{ role: '{{ old('role', $parent ? 'customer' : '') }}' }">
-                {{-- Fulfills dynamic visibility request --}}
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            {{-- ARCHITECTURE FIX: Server-Aware Alpine State [Addendum 1.b] --}}
+            <div x-data="{
+                isBranch: {{ $parent ? 'true' : 'false' }},
+                {{-- Logic: Use 'Existing' if we have an old ID, otherwise default to 'New' --}}
+                useExisting: {{ old('customer_detail_id') ? 'true' : 'false' }},
+                role: '{{ old('role', $parent ? 'customer' : '') }}'
+            }"
+                class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
 
-                <form action="{{ route('users.store') }}" method="POST" class="space-y-6">
+                <form method="POST" action="{{ route('users.store') }}" class="space-y-8">
                     @csrf
 
-                    @php
-                        $isRestricted = auth()->user()->hasRole('cs_staff') || $parent;
-                    @endphp
-
-                    @if ($parent)
-                        <input type="hidden" name="parent_id" value="{{ $parent->id }}">
-                    @endif
-
-                    @if ($isRestricted)
-                        <input type="hidden" name="role" value="customer">
-                    @endif
-
-                    <div class="border-b border-gray-100 pb-4">
-                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest">
-                            {{ __('Account Credentials') }}</h3>
+                    <!-- SECTION 1: COMPANY LINK [Addendum 3.d] -->
+                    <div class="mb-8 p-6 bg-blue-50 rounded-2xl border border-blue-100">
+                        <x-input-label for="company_id" :value="__('Assign to Company (Business Entity)')"
+                            class="text-blue-600 font-black uppercase text-[10px]" />
+                        <select name="company_id"
+                            class="mt-2 block w-full border-gray-200 rounded-xl focus:ring-blue-500">
+                            <option value="">{{ __('-- Select Existing Company --') }}</option>
+                            @foreach ($companys as $company)
+                                <option value="{{ $company->id }}">
+                                    {{ $company->company_name }} ({{ $company->company_code ?? $company->branch_code }})
+                                </option>
+                            @endforeach
+                        </select>
+                        <p class="mt-2 text-[10px] text-gray-400 italic">
+                            {{ __('Note: Create businesses first in Company Management.') }}</p>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {{-- Role Selection --}}
-                        <div class="md:col-span-2">
-                            <x-input-label for="role" :value="__('Select User Role')" />
-                            <select id="role" name="role" x-model="role" {{-- Alpine Binding --}}
-                                class="block mt-1 w-full border-gray-300 rounded-md shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
-                                @if ($isRestricted) disabled @endif>
-                                <option value="">{{ __('Select a Role') }}</option>
-                                @foreach ($roles as $roleOption)
-                                    <option value="{{ $roleOption->name }}">
-                                        {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            <x-input-error class="mt-2" :messages="$errors->get('role')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="name" :value="__('Full Name')" />
-                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
-                                :value="old('name')" required autofocus />
-                            <x-input-error class="mt-2" :messages="$errors->get('name')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="login_id" :value="__('Login ID (Unique)')" />
-                            <x-text-input id="login_id" name="login_id" type="text"
-                                class="mt-1 block w-full uppercase" :value="old('login_id')" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('login_id')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="email" :value="__('Email Address')" />
-                            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
-                                :value="old('email')" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('email')" />
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <x-input-label for="password" :value="__('Password')" />
-                            <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
-                                required />
-                            <x-input-error class="mt-2" :messages="$errors->get('password')" />
-                        </div>
-
-                        <div>
-                            <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-                            <x-text-input id="password_confirmation" name="password_confirmation" type="password"
-                                class="mt-1 block w-full" required />
-                            <x-input-error class="mt-2" :messages="$errors->get('password_confirmation')" />
-                        </div>
-                    </div>
-
-                    {{-- Customer Specific Information: Section 3.a Hierarchy --}}
-                    <div x-show="role === 'customer'" x-transition:enter="transition ease-out duration-300"
-                        x-transition:enter-start="opacity-0 transform -translate-y-2"
-                        x-transition:enter-end="opacity-100 transform translate-y-0"
-                        class="pt-6 border-t border-gray-100">
-
-                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
-                            {{ __('Company & Logistics') }}</h3>
-
-                        @if ($parent)
-                            <div class="bg-blue-50 p-3 rounded border border-blue-100 text-[10px] text-blue-700 mb-4">
-                                *{{ __('INHERITANCE:') }}*
-                                {{ __('This branch will automatically inherit settings from ') }} {{ $parent->name }}
-                                [6].
-                            </div>
-                        @endif
+                    <!-- SECTION 2: ACCOUNT CREDENTIALS [Preserved from v102] -->
+                    <div class="pt-8 border-t border-gray-100">
+                        <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
+                            {{ __('Account Access Credentials') }}</h3>
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <x-input-label for="company_name" :value="__('Company Name')" />
-                                <x-text-input id="company_name" name="company_name" type="text"
-                                    class="mt-1 block w-full" :value="old('company_name', $parent->details->company_name ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('company_name')" />
+                                <x-input-label for="role" :value="__('System Role')"
+                                    class="text-[10px] uppercase font-black" />
+                                @php $isRestricted = auth()->user()->hasRole('cs_staff') || $parent; @endphp
+                                <select id="role" name="role" x-model="role"
+                                    class="block mt-1 w-full border-gray-300 rounded-xl shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
+                                    @if ($isRestricted) readonly @endif>
+                                    <option value="">{{ __('Select a Role') }}</option>
+                                    @foreach ($roles as $roleOption)
+                                        <option value="{{ $roleOption->name }}"
+                                            {{ old('role') == $roleOption->name || ($parent && $roleOption->name == 'customer') ? 'selected' : '' }}>
+                                            {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                @if ($isRestricted)
+                                    <input type="hidden" name="role"
+                                        value="{{ $parent ? 'customer' : old('role') }}">
+                                @endif
                             </div>
+
                             <div>
-                                <x-input-label for="company_reg_no" :value="__('Company Reg No (SSM)')" />
-                                <x-text-input id="company_reg_no" name="company_reg_no" type="text"
-                                    class="mt-1 block w-full" :value="old('company_reg_no', $parent->details->company_reg_no ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('company_reg_no')" />
-                            </div>
-                            <div>
-                                <x-input-label for="pic_name" :value="__('PIC Name')" />
-                                <x-text-input id="pic_name" name="pic_name" type="text" class="mt-1 block w-full"
-                                    :value="old('pic_name', $parent->details->pic_name ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('pic_name')" />
-                            </div>
-                            <div>
-                                <x-input-label for="pic_phone" :value="__('PIC Phone')" />
-                                <x-text-input id="pic_phone" name="pic_phone" type="text" class="mt-1 block w-full"
-                                    :value="old('pic_phone', $parent->details->pic_phone ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('pic_phone')" />
+                                <x-input-label for="name" :value="__('Full Name (User)')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                    :value="old('name')" required />
+                                <x-input-error :messages="$errors->get('name')" class="mt-2" />
                             </div>
                         </div>
 
-                        <div class="mt-6">
-                            <x-input-label for="delivery_address" :value="__('Delivery Address')" />
-                            <textarea id="delivery_address" name="delivery_address" rows="3"
-                                class="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm text-sm">{{ old('delivery_address', $parent->details->delivery_address ?? '') }}</textarea>
-                            <x-input-error class="mt-2" :messages="$errors->get('delivery_address')" />
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                            <div>
+                                <x-input-label for="login_id" :value="__('Login ID (Unique)')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="login_id" name="login_id" type="text"
+                                    class="mt-1 block w-full uppercase font-bold" :value="old('login_id')" required />
+                                <x-input-error :messages="$errors->get('login_id')" class="mt-2" />
+                            </div>
+                            <div>
+                                <x-input-label for="email" :value="__('Email Address')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
+                                    :value="old('email')" required />
+                                <x-input-error :messages="$errors->get('email')" class="mt-2" />
+                            </div>
                         </div>
 
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
                             <div>
-                                <x-input-label for="city" :value="__('City')" />
-                                <x-text-input id="city" name="city" type="text" class="mt-1 block w-full"
-                                    :value="old('city', $parent->details->city ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('city')" />
+                                <x-input-label for="password" :value="__('Password')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
+                                    required autocomplete="new-password" />
+                                <x-input-error :messages="$errors->get('password')" class="mt-2" />
                             </div>
                             <div>
-                                <x-input-label for="state" :value="__('State')" />
-                                <x-text-input id="state" name="state" type="text" class="mt-1 block w-full"
-                                    :value="old('state', $parent->details->state ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('state')" />
-                            </div>
-                            <div>
-                                <x-input-label for="postal_code" :value="__('Postal Code')" />
-                                <x-text-input id="postal_code" name="postal_code" type="text"
-                                    class="mt-1 block w-full" :value="old('postal_code', $parent->details->postal_code ?? '')" />
-                                <x-input-error class="mt-2" :messages="$errors->get('postal_code')" />
+                                <x-input-label for="password_confirmation" :value="__('Confirm Password')"
+                                    class="text-[10px] uppercase font-black" />
+                                <x-text-input id="password_confirmation" name="password_confirmation" type="password"
+                                    class="mt-1 block w-full" required />
                             </div>
                         </div>
                     </div>
 
-                    <div class="flex items-center justify-end pt-6 border-t border-gray-100">
+                    <!-- SECTION 4: ASSIGNMENTS [Preserved from v102] -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <x-input-label for="catalog_id" :value="__('Assign Catalog')"
+                                class="text-[10px] uppercase font-black" />
+                            <select id="catalog_id" name="catalog_id"
+                                class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                <option value="">
+                                    {{ $parent ? __('-- Inherit from Parent --') : __('-- No Catalog --') }}</option>
+                                @foreach ($catalogs as $catalog)
+                                    <option value="{{ $catalog->id }}"
+                                        {{ old('catalog_id') == $catalog->id ? 'selected' : '' }}>{{ $catalog->name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div>
+                            <x-input-label for="assigned_cs_id" :value="__('Customer Service Representative')"
+                                class="text-[10px] uppercase font-black" />
+                            <select id="assigned_cs_id" name="assigned_cs_id"
+                                class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                <option value="">
+                                    {{ $parent ? __('-- Inherit from Parent --') : __('-- Unassigned --') }}</option>
+                                @foreach ($csStaffMembers as $cs)
+                                    <option value="{{ $cs->id }}"
+                                        {{ old('assigned_cs_id') == $cs->id || (!old('assigned_cs_id') && auth()->id() == $cs->id) ? 'selected' : '' }}>
+                                        {{ $cs->name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-end mt-10 gap-4">
                         <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
-                            class="text-sm text-gray-600 hover:text-gray-900 underline">
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                             {{ __('Cancel') }}
                         </a>
-                        <x-primary-button class="ml-4">
+                        <x-primary-button
+                            class="bg-blue-600 hover:bg-blue-700 py-4 px-8 rounded-2xl shadow-lg shadow-blue-200 transition-all">
                             {{ __('Create User Account') }}
                         </x-primary-button>
                     </div>
@@ -13870,9 +14233,14 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v15)
+## Update details(v16)
 
-* 
+* Database Refactoring & Schema Updates(User(Login credential) > Customer(role) relationship from 1:1 to Many-to-One)
+- Still missing the function to add multiple customer(login credential) into HQ/Branch.
+
+* Added "Order Overview" page at staff side.
+
+* Update the "users" & "companys"(old "customer_details") table.
 
 --- END_FILE ---
 

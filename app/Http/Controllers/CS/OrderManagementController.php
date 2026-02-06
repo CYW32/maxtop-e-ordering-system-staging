@@ -87,9 +87,9 @@ class OrderManagementController extends Controller
      */
     public function show(Order $order)
     {
+        // ARCHITECTURE FIX: Load user and then their shared business details [3]
         $order->load(['items.item', 'user.details', 'handler']);
 
-        // Corrected: Uses the imported App\Models\User class [2]
         $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
             ->where('id', '!=', auth()->id())
             ->where('status', 'active')
@@ -168,61 +168,54 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 4.3 and 3C: Approval & Snapshot Trigger [7, 8]
+     * Fulfills Addendum 5.a: UOM Snapshot during Approval
      */
     public function approve(Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403, 'You are not the handler for this order.');
-        }
-
-        if ($order->status !== 'pending') {
-            return redirect()->back()->with('error', 'Only pending orders can be approved.');
-        }
+        $this->authorizeAction($order);
 
         DB::transaction(function () use ($order) {
             foreach ($order->items as $orderItem) {
+                $uom = $orderItem->uom; // Assumes UOM selected during draft
                 $orderItem->update([
                     'snapshot_name' => $orderItem->item->name,
-                    'price_at_order' => $orderItem->item->price,
+                    'snapshot_uom_name' => $uom?->uom_name ?? 'Unit',
+                    'snapshot_uom_rate' => $uom?->rate_qty ?? 1,
+                    'price_at_order' => $uom?->price ?? $orderItem->item->price,
                 ]);
             }
             $order->update(['status' => 'approved']);
         });
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->log('Order approved and item names snapshotted');
+        activity('order')->performedOn($order)->log('Order approved; Item & UOM names snapshotted');
 
-        return redirect()->route('office.orders.index')->with('success', 'Order approved. Item names are now locked.');
+        return redirect()->back()->with('success', 'Order approved.');
     }
 
     /**
-     * Fulfills Section 4.6: Order Cancellation with Mandatory Reason [9]
+     * Fulfills Addendum 4.b: Cancellation Requested Workflow
      */
     public function cancel(CancelOrderRequest $request, Order $order)
     {
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            abort(403);
+        $user = auth()->user();
+
+        if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
+            $order->update([
+                'status' => 'cancellation_requested', // New Enum Status [4.b]
+                'cancellation_requested_by' => $user->id,
+                'cancellation_request_reason' => $request->cancellation_reason,
+            ]);
+
+            return redirect()->back()->with('success', 'Cancellation request submitted to Leader.');
         }
 
-        if ($order->status === 'completed') {
-            return redirect()->back()->with('error', 'Completed orders cannot be cancelled.');
-        }
-
+        // Leaders/Admins finalize the cancellation
         $order->update([
             'status' => 'cancelled',
-            'cancellation_reason' => $request->cancellation_reason,
+            'cancellation_reason' => $request->cancellation_reason ?? $order->cancellation_request_reason,
         ]);
 
-        activity('order')
-            ->performedOn($order)
-            ->causedBy(auth()->user())
-            ->withProperties(['reason' => $request->cancellation_reason])
-            ->log('Order was cancelled');
-
-        return redirect()->route('office.orders.index')->with('success', 'Order has been cancelled.');
+        return redirect()->route('office.orders.index')->with('success', 'Order permanently cancelled.');
     }
 
     /**
