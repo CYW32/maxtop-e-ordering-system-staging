@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\CS;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\CS\CancelOrderRequest;
 use App\Models\Order; // Added: Fulfills Section 5 Handover Context
 use App\Models\User; // Added: Required for form handling
 use Illuminate\Http\Request;
@@ -194,29 +193,58 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Addendum 4.b: Cancellation Requested Workflow
+     * Fulfills Addendum 4.b: Filtered list for Leaders to approve cancellations.
      */
-    public function cancel(CancelOrderRequest $request, Order $order)
+    public function cancellationRequests(Request $request)
+    {
+        $query = Order::where('status', 'cancellation_requested')
+            ->with(['user.company', 'handler', 'cancellationRequester']);
+
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term)
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        $requests = $query->latest()->paginate(15)->withQueryString();
+
+        return view('cs.orders.cancellations', compact('requests'));
+    }
+
+    /**
+     * Fulfills Addendum 4.a & 4.b: Strict Role-Based Cancellation.
+     */
+    public function cancel(\App\Http\Requests\CS\CancelOrderRequest $request, Order $order)
     {
         $user = auth()->user();
+        $this->authorizeAction($order);
 
+        // LOGIC FIX: Handle Approved Order -> Request Transition
         if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
             $order->update([
-                'status' => 'cancellation_requested', // New Enum Status [4.b]
+                'status' => 'cancellation_requested',
                 'cancellation_requested_by' => $user->id,
                 'cancellation_request_reason' => $request->cancellation_reason,
             ]);
 
-            return redirect()->back()->with('success', 'Cancellation request submitted to Leader.');
+            return redirect()->route('office.orders.show', $order)->with('success', 'Cancellation request submitted for manager approval.');
         }
 
-        // Leaders/Admins finalize the cancellation
+        // SECURITY FIX: Explicitly block CS Staff from finalizing cancellations [Addendum 4.b]
+        if ($order->status === 'cancellation_requested' && $user->hasRole('cs_staff')) {
+            abort(403, 'Unauthorized: CS Staff cannot finalize cancellation requests.');
+        }
+
+        // Only Admin/Leader reaches here to finalize
         $order->update([
             'status' => 'cancelled',
             'cancellation_reason' => $request->cancellation_reason ?? $order->cancellation_request_reason,
+            'cancellation_requested_by' => $order->cancellation_requested_by ?? $user->id,
         ]);
 
-        return redirect()->route('office.orders.index')->with('success', 'Order permanently cancelled.');
+        return redirect()->route('office.orders.index')->with('success', 'Order has been permanently cancelled.');
     }
 
     /**
@@ -281,5 +309,24 @@ class OrderManagementController extends Controller
             ->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
 
         return view('cs.orders.history', compact('history', 'status'));
+    }
+
+    /**
+     * Fulfills Section 5.d Handover Protocol & Ownership Logic.
+     * Ensures only the current handler or an elevated role can execute state changes.
+     */
+    private function authorizeAction(Order $order): void
+    {
+        $user = auth()->user();
+
+        // Allow Admin and CS Leaders full authority over all orders [Backbone 2.a, 2.b]
+        if ($user->hasAnyRole(['admin', 'cs_leader'])) {
+            return;
+        }
+
+        // CS Staff can only process orders where they are the explicit handler [Section 5.c]
+        if ($order->handler_id !== $user->id) {
+            abort(403, 'Read-Only Mode: You are not the assigned handler for this order.');
+        }
     }
 }

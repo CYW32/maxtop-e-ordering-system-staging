@@ -10,7 +10,7 @@ use Spatie\Activitylog\Traits\LogsActivity;
 
 class Catalog extends Model
 {
-    use HasFactory, LogsActivity,Searchable;
+    use HasFactory, LogsActivity, Searchable;
 
     protected $fillable = ['name', 'status'];
 
@@ -26,10 +26,13 @@ class Catalog extends Model
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
     }
 
+    /**
+     * Fulfills Backbone 3.a.1 & Addendum 1.b:
+     * Prevents deletion if any Company (HQ or Branch) is assigned to this catalog.
+     */
     public function canBeDeleted(): bool
     {
-        // Fulfills Single Catalog Policy: Lock if users are assigned
-        // or if the system needs to maintain the record for history.
-        return ! (\App\Models\User::where('catalog_id', $this->id)->exists());
+        // ARCHITECTURE FIX: Check assignments in 'companys' table, not 'users' [Addendum 1.b]
+        return ! (\App\Models\Company::where('catalog_id', $this->id)->exists());
     }
 }

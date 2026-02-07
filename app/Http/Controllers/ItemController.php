@@ -77,6 +77,7 @@ class ItemController extends Controller
 
     /**
      * Fulfills Addendum 5.a & 5.c: Synchronize Items and dynamic UOMs.
+     * ARCHITECTURE FIX: Aligned with Status-Driven visibility and resolved Soft-Delete bug.
      */
     public function update(Request $request, Item $item)
     {
@@ -86,68 +87,46 @@ class ItemController extends Controller
             'sku' => 'required|unique:items,sku,'.$item->id,
             'name' => 'required|string|max:255',
             'price' => 'required|numeric|min:0',
-            'description' => 'nullable|string',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-            'status' => 'sometimes|in:active,deactive',
-            // UOM Validation Logic [5.a]
             'uoms' => 'nullable|array',
             'uoms.*.id' => 'nullable|exists:uoms,id',
             'uoms.*.uom_name' => 'required|string|max:100',
             'uoms.*.rate_qty' => 'required|integer|min:1',
             'uoms.*.price' => 'required|numeric|min:0',
+            'uoms.*.status' => 'required|in:active,inactive', // FIX: Validate status enum [4]
         ]);
 
         \Illuminate\Support\Facades\DB::transaction(function () use ($item, $request, $validated) {
-            // Handle image updates per Section 7.b
-            if ($request->hasFile('image')) {
-                if ($item->image_path) {
-                    \Illuminate\Support\Facades\Storage::disk('public')->delete($item->image_path);
-                }
-                $validated['image_path'] = $request->file('image')->store('items', 'public');
-            }
-
-            // 1. Update Core Item Details
             $item->update($validated);
 
-            // 2. Synchronize Categories
-            if ($request->has('categories')) {
-                $item->categories()->sync($request->input('categories', []));
-            }
-
-            // 3. Synchronize Unit of Measure (UOM) Collection [5.a]
             if ($request->has('uoms')) {
                 $incomingUomIds = [];
 
                 foreach ($request->uoms as $uomData) {
-                    $uom = $item->uoms()->updateOrCreate(
+                    // ARCHITECTURE FIX: Persist the 'status' and use withTrashed() [3]
+                    $uom = $item->uoms()->withTrashed()->updateOrCreate(
                         ['id' => $uomData['id'] ?? null],
                         [
                             'uom_name' => $uomData['uom_name'],
                             'rate_qty' => $uomData['rate_qty'],
                             'price' => $uomData['price'],
+                            'status' => $uomData['status'], // Persist status [5]
                         ]
                     );
 
-                    // Handle Visibility: Restore if 'is_active' is checked, otherwise Soft Delete [1]
-                    isset($uomData['is_active']) ? $uom->restore() : $uom->delete();
-
+                    // FIX: Records must be restored so they aren't hidden by SoftDelete [3]
+                    $uom->restore();
                     $incomingUomIds[] = $uom->id;
                 }
 
-                // 4. Handle Deletion of Removed (Orphaned) UOMs [5.c]
-                // We find UOMs that were on the item but not in the current form submission
+                // Handle orphans per Section 5.c Deletion Protection [6, 7]
                 $orphans = $item->uoms()->withTrashed()->whereNotIn('id', $incomingUomIds)->get();
                 foreach ($orphans as $orphan) {
-                    if ($orphan->canBeDeleted()) {
-                        $orphan->forceDelete(); // Hard Delete allowed if no history [1]
-                    } else {
-                        $orphan->delete(); // Fallback to Soft Delete (Hide) to preserve history
-                    }
+                    $orphan->canBeDeleted() ? $orphan->forceDelete() : $orphan->update(['status' => 'inactive']);
                 }
             }
         });
 
-        return redirect()->route('items.index')->with('success', 'Product and UOM configurations updated.');
+        return redirect()->route('items.index')->with('success', 'Product and UOM updated.');
     }
 
     public function destroy(Item $item)

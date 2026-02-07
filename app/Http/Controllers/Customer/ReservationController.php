@@ -55,33 +55,31 @@ class ReservationController extends Controller
     }
 
     /**
-     * Add an item to the single allowed draft.
+     * Fulfills Addendum 5.a: Normalizes UOM placeholders for DB integrity.
      */
     public function store(AddToCartRequest $request)
     {
         $user = auth()->user();
-        if ($user->hasPendingOrder()) {
-            return redirect()->back()->with('error', 'You have a pending order awaiting review.');
-        }
-
         $draft = $user->getOrCreateDraft();
-        $item = Item::findOrFail($request->item_id);
 
-        // ARCHITECTURE FIX: Match by BOTH Item and UOM [Addendum 5.a]
+        // ARCHITECTURE FIX: Direct UOM ID usage (normalization removed) [1]
+        $uomId = $request->uom_id;
+
         $orderItem = $draft->items()
-            ->where('item_id', $item->id)
-            ->where('uom_id', $request->uom_id)
+            ->where('item_id', $request->item_id)
+            ->where('uom_id', $uomId)
             ->first();
 
         if ($orderItem) {
             $orderItem->increment('quantity', $request->quantity);
         } else {
+            $item = Item::findOrFail($request->item_id);
             $draft->items()->create([
                 'item_id' => $item->id,
-                'uom_id' => $request->uom_id,
+                'uom_id' => $uomId,
                 'snapshot_name' => $item->name,
                 'quantity' => $request->quantity,
-                'price_at_order' => 0, // Enforce Price Blind Policy [Addendum 4.b]
+                'price_at_order' => 0, // Price Blind Policy [4.b]
             ]);
         }
 

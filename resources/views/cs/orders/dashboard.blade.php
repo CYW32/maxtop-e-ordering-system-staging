@@ -55,6 +55,20 @@
                             class="flex items-center justify-center border-2 border-blue-600 text-blue-600 px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-blue-50 transition">
                             {{ __('Manage Products') }}
                         </a>
+
+                        @hasanyrole('admin|cs_leader')
+                            <a href="{{ route('office.orders.cancellations') }}"
+                                class="relative flex items-center justify-center bg-red-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-700 transition shadow-lg shadow-red-900/20">
+                                {{ __('Cancellation Requests') }}
+                                @php $requestCount = \App\Models\Order::where('status', 'cancellation_requested')->count(); @endphp
+                                @if ($requestCount > 0)
+                                    <span
+                                        class="absolute -top-2 -right-2 bg-white text-red-600 w-5 h-5 rounded-full flex items-center justify-center text-[9px] border-2 border-red-600 shadow-sm animate-bounce">
+                                        {{ $requestCount }}
+                                    </span>
+                                @endif
+                            </a>
+                        @endhasanyrole
                     </div>
                 </div>
 

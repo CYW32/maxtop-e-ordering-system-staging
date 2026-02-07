@@ -93,6 +93,10 @@ Route::middleware(['auth'])->group(function () {
         // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
 
+        Route::get('/orders/cancellation-requests', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancellationRequests'])
+            ->name('orders.cancellations')
+            ->middleware('role:admin|cs_leader');
+
         // 3. Wildcard Routes (Must come last)
         // Fulfills Section 5: Handler Visibility & Handover [8]
         Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');

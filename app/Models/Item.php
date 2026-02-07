@@ -61,9 +61,13 @@ class Item extends Model
         return $this->hasMany(Uom::class);
     }
 
+    /**
+     * Fulfills Customer Visibility Requirement:
+     * Only show choices if the UOM status is 'active'. [2, 3]
+     */
     public function activeUoms(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
-        // Filtered for customer visibility
-        return $this->hasMany(Uom::class)->whereNull('deleted_at');
+        // ARCHITECTURE FIX: Switched from SoftDelete-based to Status-based visibility
+        return $this->hasMany(Uom::class)->where('status', 'active');
     }
 }

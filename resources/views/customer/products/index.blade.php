@@ -5,7 +5,7 @@
                 {{ __('Available Products') }}
             </h2>
 
-            {{-- Category Filter Toolbar: Fulfills Whitelist Logic [8.a.3] --}}
+            {{-- Category Filter Toolbar: Fulfills Whitelist Logic [Backbone 3.a.3] --}}
             <div class="flex flex-wrap gap-2">
                 <a href="{{ route('customer.products.index') }}"
                     class="px-4 py-2 rounded-full text-[10px] font-black uppercase transition-all border {{ !request('category') ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-100' : 'bg-white text-gray-500 border-gray-100 hover:bg-gray-50' }}">
@@ -51,8 +51,8 @@
                     @foreach ($items as $item)
                         <div
                             class="bg-white p-6 rounded-[2.5rem] border border-gray-100 shadow-sm flex flex-col hover:shadow-xl hover:shadow-blue-50 transition-all duration-300">
-                            {{-- Product Image --}}
-                            <div class="relative mb-4 group">
+                            {{-- Product Identity --}}
+                            <div class="relative mb-4">
                                 @if ($item->image_path)
                                     <img src="{{ asset('storage/' . $item->image_path) }}"
                                         class="w-full h-48 object-cover rounded-[1.5rem] shadow-sm">
@@ -71,7 +71,6 @@
                                 </div>
                             </div>
 
-                            {{-- Item Info --}}
                             <div class="flex-1">
                                 <h3 class="text-sm font-black text-gray-900 leading-tight mb-1">{{ $item->name }}
                                 </h3>
@@ -80,7 +79,7 @@
                                 </p>
                             </div>
 
-                            {{-- Ordering Logic: Blocked if Pending Review [11.b] --}}
+                            {{-- Ordering Block: Strict UOM Only [Addendum 5.a] --}}
                             <div class="mt-4 pt-4 border-t border-gray-50">
                                 @if (auth()->user()->hasPendingOrder())
                                     <div class="bg-amber-50 border border-amber-100 p-3 rounded-2xl text-center">
@@ -92,55 +91,37 @@
                                 @else
                                     <form method="POST" action="{{ route('reservation.store') }}"
                                         x-data="{
-                                            selectedUom: 'individual',
-                                            hasUoms: {{ $item->activeUoms->count() > 0 ? 'true' : 'false' }},
-                                            {{-- ARCHITECTURE FIX: Map both UOM IDs and 'individual' to an object containing QTY and LABEL [3, 4] --}}
-                                            draftMap: @js(
-    $draftItems->where('item_id', $item->id)->mapWithKeys(
-        fn($i) => [
-            $i->uom_id ?? 'individual' => [
-                'qty' => $i->quantity,
-                // FIX: Concatenate rate_qty to label so it shows 'Box (x12)' instead of just 'Box'
-                'label' => $i->uom ? $i->uom->uom_name . ' (x' . $i->uom->rate_qty . ')' : __('Individual'),
-            ],
-        ],
-    ),
-)
+                                            {{-- ARCHITECTURE: Auto-select first active UOM ID --}}
+                                            selectedUom: '{{ $item->activeUoms->first()?->id }}',
+                                                {{-- FIX: Real-time Markdown map for existing draft items --}}
+                                            draftMap: @js($draftItems->where('item_id', $item->id)->mapWithKeys(fn($i) => [$i->uom_id => ['qty' => $i->quantity, 'label' => $i->uom?->uom_name]]))
                                         }" class="space-y-4">
                                         @csrf
                                         <input type="hidden" name="item_id" value="{{ $item->id }}">
 
                                         <div>
-                                            {{-- FIX: Iterate through ALL drafts in the map, regardless of dropdown selection --}}
-                                            <div class="my-4 space-y-2">
-                                                <template x-for="(data, uomKey) in draftMap" :key="uomKey">
-                                                    <div
-                                                        class="mt-2 px-3 py-2 bg-indigo-50 rounded-xl flex items-center justify-between border border-indigo-100 animate-pulse">
-                                                        <span
-                                                            class="text-[9px] font-black text-indigo-600 uppercase">{{ __('In Draft') }}</span>
-                                                        <span class="text-xs font-black text-indigo-700"
-                                                            x-text="data.qty + ' ' + data.label + ' ' + '{{ __('Units') }}'">
-                                                        </span>
-                                                    </div>
-                                                </template>
-                                            </div>
-
                                             <x-input-label :value="__('Select Packaging Unit')"
                                                 class="text-[9px] font-black text-gray-400 uppercase mb-1" />
 
-                                            <select name="uom_id" x-model="selectedUom" :disabled="!hasUoms"
-                                                :class="hasUoms
-                                                    ?
-                                                    'bg-blue-50 border-blue-200 text-blue-700 focus:ring-blue-500' :
-                                                    'bg-gray-50 border-gray-100 text-gray-400 cursor-not-allowed'"
-                                                class="w-full rounded-xl text-xs font-bold transition-all">
-                                                <option value="individual">{{ __('Individual Unit') }}</option>
+                                            <select name="uom_id" x-model="selectedUom" required
+                                                class="w-full rounded-xl text-xs font-bold transition-all bg-blue-50 border-blue-200 text-blue-700 focus:ring-blue-500">
                                                 @foreach ($item->activeUoms as $uom)
                                                     <option value="{{ $uom->id }}">{{ $uom->uom_name }}
-                                                        (x{{ $uom->rate_qty }})
-                                                    </option>
+                                                        (x{{ $uom->rate_qty }})</option>
                                                 @endforeach
                                             </select>
+
+                                            {{-- Dynamic Markdown Indicator [v1.4] --}}
+                                            <template x-if="draftMap[selectedUom]">
+                                                <div
+                                                    class="mt-2 px-3 py-2 bg-indigo-50 rounded-xl flex items-center justify-between border border-indigo-100 animate-pulse">
+                                                    <span
+                                                        class="text-[9px] font-black text-indigo-600 uppercase">{{ __('In My Draft') }}</span>
+                                                    <span class="text-xs font-black text-indigo-700"
+                                                        x-text="draftMap[selectedUom].qty + ' ' + draftMap[selectedUom].label + ' ' + '{{ __('Units') }}'">
+                                                    </span>
+                                                </div>
+                                            </template>
                                         </div>
 
                                         <div class="flex gap-2">

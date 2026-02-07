@@ -4,14 +4,17 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 
 class Uom extends Model
 {
     use SoftDeletes;
 
-    protected $fillable = ['item_id', 'uom_name', 'rate_qty', 'price'];
+    protected $fillable = ['item_id', 'uom_name', 'rate_qty', 'price', 'status'];
 
-    // ARCHITECTURE FIX: Hide price from Customer/Branch roles globally [Addendum 3.b]
+    /**
+     * ARCHITECTURE FIX: Align visibility guard with Addendum 3.b [4]
+     */
     protected function staffPrice(): \Illuminate\Database\Eloquent\Casts\Attribute
     {
         return \Illuminate\Database\Eloquent\Casts\Attribute::make(
@@ -25,9 +28,25 @@ class Uom extends Model
         );
     }
 
+    /**
+     * Fulfills Addendum 5.c: Deletion Rule [5].
+     * Prevents hard delete if the UOM is referenced in order history.
+     *
+     * BUG FIX: Column name corrected from 'snapshot_uom_id' to 'uom_id'
+     * to match migration 2026_03_15_000001 [2].
+     */
     public function canBeDeleted(): bool
     {
-        // Prevent hard delete if referenced in order history [Addendum 3.c]
-        return ! \DB::table('order_items')->where('snapshot_uom_id', $this->id)->exists();
+        return ! DB::table('order_items')
+            ->where('uom_id', $this->id)
+            ->exists();
+    }
+
+    /**
+     * Scope for customer-facing visibility.
+     */
+    public function scopeActive($query)
+    {
+        return $query->where('status', 'active');
     }
 }

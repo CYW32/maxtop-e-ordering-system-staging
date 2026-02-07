@@ -237,8 +237,14 @@
                                             "{{ $order->cancellation_request_reason }}"</p>
 
                                         @hasanyrole('admin|cs_leader')
-                                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
+                                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                                class="space-y-3">
                                                 @csrf
+                                                {{-- ARCHITECTURE FIX: Allow manager to add a final note or use the requester's reason --}}
+                                                <x-text-input name="cancellation_reason"
+                                                    class="w-full bg-gray-800 border-gray-700 text-xs text-white"
+                                                    placeholder="{{ __('Optional: Add manager approval note...') }}" />
+
                                                 <button type="submit"
                                                     class="w-full bg-red-600 hover:bg-red-700 py-2.5 rounded-xl text-[10px] font-black uppercase transition shadow-md">
                                                     {{ __('Approve Cancellation') }}
@@ -251,19 +257,27 @@
                                             </div>
                                         @endhasanyrole
                                     </div>
-                                @elseif ($order->handler_id === auth()->id())
+                                @elseif (
+                                    $order->handler_id === auth()->id() ||
+                                        auth()->user()->hasAnyRole(['admin', 'cs_leader']))
                                     <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
                                         class="space-y-3">
                                         @csrf
                                         <x-text-input name="cancellation_reason" required
                                             class="w-full bg-gray-800 border-gray-700 text-sm placeholder-gray-600"
                                             placeholder="{{ __('Mandatory cancellation reason...') }}" />
+
                                         <button type="submit"
                                             class="w-full border-2 border-red-900/50 text-red-500/80 hover:bg-red-900/20 py-3 rounded-2xl text-[10px] font-black uppercase transition-all">
                                             @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
+                                                {{-- Fulfills Addendum 4.a: CS Staff only requests --}}
                                                 {{ __('Request Order Cancellation') }}
-                                            @else
+                                            @elseif (auth()->user()->hasAnyRole(['admin', 'cs_leader']))
+                                                {{-- Managers see confirmation --}}
                                                 {{ __('Confirm Order Cancellation') }}
+                                            @else
+                                                {{-- Fulfills Request: csstaff001 on non-approved orders --}}
+                                                {{ __('Cancel Order') }}
                                             @endif
                                         </button>
                                     </form>
@@ -285,7 +299,8 @@
                                     <option value="">{{ __('-- Transfer to Staff --') }}</option>
                                     @foreach ($eligibleStaff as $staff)
                                         <option value="{{ $staff->id }}">{{ $staff->name }}
-                                            ({{ str_replace('_', ' ', $staff->roles->first()->name) }})</option>
+                                            ({{ str_replace('_', ' ', $staff->roles->first()->name) }})
+                                        </option>
                                     @endforeach
                                 </select>
                                 <button type="submit"
