@@ -60,9 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v18)
+## Update details(v19)
 
-* Solve catalog cant edit bug.
-* Solve customer add item to draft will hit error.
-* Solve & improve when CS Staff want to request cancellation of approved order that need Admin or CS Leader view/approve at "Order Overview" > "CANCELLATION REQUESTS".
-* Remove item default "Individual Unit", all item only have one or more custom UOM unit.
+* Solve the bug will hit error when updating the user login credentials.
+* Added user can preview own profile details.
+* Added when create/edit item also can set status & catagory & catalog.

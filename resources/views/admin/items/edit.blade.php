@@ -14,7 +14,6 @@
     </x-slot>
 
     <div class="py-12" x-data="{
-        {{-- ARCHITECTURE: Map status correctly for Alpine synchronization --}}
         uoms: @js(
     $item->uoms()->withTrashed()->get()->map(
         fn($u) => [
@@ -26,14 +25,14 @@
         ],
     ),
 ),
-            addUom() {
-                this.uoms.push({ id: null, uom_name: '', rate_qty: 1, price: 0, status: 'active' });
-            },
-            removeUom(index) {
-                if (confirm('{{ __('Remove this unit configuration? Permanent removal only occurs if no order history exists.') }}')) {
-                    this.uoms.splice(index, 1);
-                }
+        addUom() {
+            this.uoms.push({ id: null, uom_name: '', rate_qty: 1, price: 0, status: 'active' });
+        },
+        removeUom(index) {
+            if (confirm('{{ __('Remove this unit? Note: Permanent removal only occurs if no order history exists.') }}')) {
+                this.uoms.splice(index, 1);
             }
+        }
     }">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
@@ -55,19 +54,39 @@
                                 <x-input-error :messages="$errors->get('sku')" class="mt-2" />
                             </div>
                             <div>
+                                <x-input-label for="status" :value="__('Listing Status')"
+                                    class="text-[10px] font-black uppercase text-gray-400" />
+                                <select name="status"
+                                    class="mt-1 block w-full rounded-xl border-gray-300 text-sm font-bold uppercase focus:ring-blue-500">
+                                    <option value="active" {{ $item->status === 'active' ? 'selected' : '' }}>
+                                        {{ __('Active') }}</option>
+                                    <option value="deactive" {{ $item->status === 'deactive' ? 'selected' : '' }}>
+                                        {{ __('Inactive') }}</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
                                 <x-input-label for="name" :value="__('Display Name')"
                                     class="text-[10px] font-black uppercase text-gray-400" />
                                 <x-text-input id="name" name="name" type="text"
                                     class="mt-1 block w-full font-bold" :value="old('name', $item->name)" required />
-                                <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                            </div>
+                            <div>
+                                <x-input-label for="price" :value="__('Default Unit Price (RM)')"
+                                    class="text-[10px] font-black uppercase text-gray-400" />
+                                <x-text-input id="price" name="price" type="number" step="0.01"
+                                    class="mt-1 block w-full" :value="old('price', $item->price)" required />
                             </div>
                         </div>
 
-                        <div>
-                            <x-input-label for="price" :value="__('Default Unit Price (RM)')"
-                                class="text-[10px] font-black uppercase text-gray-400" />
-                            <x-text-input id="price" name="price" type="number" step="0.01"
-                                class="mt-1 block w-full" :value="old('price', $item->price)" required />
+                        {{-- Pre-populated Description --}}
+                        <div class="mt-6">
+                            <x-input-label for="description" :value="__('Product Description (Public)')"
+                                class="text-[10px] font-black uppercase text-gray-400 mb-1" />
+                            <textarea id="description" name="description" rows="3"
+                                class="w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-xl shadow-sm text-sm">{{ old('description', $item->description) }}</textarea>
                         </div>
                     </div>
 
@@ -135,7 +154,6 @@
                                 </div>
 
                                 <div class="md:col-span-3 flex gap-2">
-                                    {{-- FIX: Synchronize with 'status' enum instead of 'is_active' --}}
                                     <select :name="'uoms[' + index + '][status]'" x-model="uom.status"
                                         class="flex-1 rounded-xl text-[10px] font-black uppercase border-gray-700 bg-gray-900 focus:ring-blue-500"
                                         :class="uom.status === 'active' ? 'text-green-400' : 'text-red-400'">
@@ -157,21 +175,47 @@
                     </div>
                 </div>
 
-                {{-- SECTION 3: CATEGORIES --}}
-                <div class="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm">
-                    <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                        {{ __('Categorization') }}</h3>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        @foreach (\App\Models\Category::all() as $category)
-                            <label
-                                class="flex items-center p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition cursor-pointer">
-                                <input type="checkbox" name="categories[]" value="{{ $category->id }}"
-                                    class="rounded border-gray-300 text-blue-600"
-                                    {{ $item->categories->contains($category->id) ? 'checked' : '' }}>
-                                <span
-                                    class="ml-2 text-[10px] font-black uppercase text-gray-600">{{ $category->name }}</span>
-                            </label>
-                        @endforeach
+                {{-- SECTION 3: ASSIGNMENTS (Categorization and Catalogs) --}}
+                <div
+                    class="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {{-- Categories [Existing] --}}
+                    <div>
+                        <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
+                            {{ __('Categorization') }}</h3>
+                        <div class="grid grid-cols-2 gap-3">
+                            @foreach ($categories as $category)
+                                <label
+                                    class="flex items-center p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition cursor-pointer">
+                                    <input type="checkbox" name="categories[]" value="{{ $category->id }}"
+                                        class="rounded border-gray-300 text-blue-600"
+                                        {{ $item->categories->contains($category->id) ? 'checked' : '' }}>
+                                    <span
+                                        class="ml-2 text-[10px] font-black uppercase text-gray-600">{{ $category->name }}</span>
+                                </label>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    {{-- Catalog Whitelist Manager --}}
+                    <div>
+                        <h3 class="text-[10px] font-black uppercase text-blue-600 mb-6 tracking-widest">
+                            {{ __('Catalog Visibility (Whitelisting)') }}</h3>
+                        <div class="grid grid-cols-1 gap-3">
+                            @foreach ($catalogs as $catalog)
+                                <label
+                                    class="flex items-center p-3 border border-blue-50 rounded-xl hover:bg-blue-50 transition cursor-pointer">
+                                    <input type="checkbox" name="catalogs[]" value="{{ $catalog->id }}"
+                                        class="rounded border-blue-300 text-blue-600"
+                                        {{ $item->catalogs->contains($catalog->id) ? 'checked' : '' }}>
+                                    <div class="ml-3 flex flex-col">
+                                        <span
+                                            class="text-[10px] font-black uppercase text-blue-900">{{ $catalog->name }}</span>
+                                        <span
+                                            class="text-[8px] text-blue-400 font-bold uppercase tracking-tighter">{{ __('Active in this catalog') }}</span>
+                                    </div>
+                                </label>
+                            @endforeach
+                        </div>
                     </div>
                 </div>
 

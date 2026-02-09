@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\RoleManagerController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;

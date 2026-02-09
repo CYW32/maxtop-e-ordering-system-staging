@@ -26,7 +26,16 @@ class User extends Authenticatable
     }
 
     /**
-     * Many Users -> One Company
+     * ARCHITECTURE FIX: Relationship to retrieve the assigned CS Staff member.
+     * Fulfills Backbone Section 5.a (Specific Handling) [4].
+     */
+    public function csRepresentative(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(User::class, 'assigned_cs_id');
+    }
+
+    /**
+     * Many Users -> One Company [5, 6]
      */
     public function company(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {

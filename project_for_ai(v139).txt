@@ -208,7 +208,6 @@ class PasswordResetLinkController extends Controller
 namespace App\Http\Controllers\CS;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\CS\CancelOrderRequest;
 use App\Models\Order; // Added: Fulfills Section 5 Handover Context
 use App\Models\User; // Added: Required for form handling
 use Illuminate\Http\Request;
@@ -399,29 +398,58 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Addendum 4.b: Cancellation Requested Workflow
+     * Fulfills Addendum 4.b: Filtered list for Leaders to approve cancellations.
      */
-    public function cancel(CancelOrderRequest $request, Order $order)
+    public function cancellationRequests(Request $request)
+    {
+        $query = Order::where('status', 'cancellation_requested')
+            ->with(['user.company', 'handler', 'cancellationRequester']);
+
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term)
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        $requests = $query->latest()->paginate(15)->withQueryString();
+
+        return view('cs.orders.cancellations', compact('requests'));
+    }
+
+    /**
+     * Fulfills Addendum 4.a & 4.b: Strict Role-Based Cancellation.
+     */
+    public function cancel(\App\Http\Requests\CS\CancelOrderRequest $request, Order $order)
     {
         $user = auth()->user();
+        $this->authorizeAction($order);
 
+        // LOGIC FIX: Handle Approved Order -> Request Transition
         if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
             $order->update([
-                'status' => 'cancellation_requested', // New Enum Status [4.b]
+                'status' => 'cancellation_requested',
                 'cancellation_requested_by' => $user->id,
                 'cancellation_request_reason' => $request->cancellation_reason,
             ]);
 
-            return redirect()->back()->with('success', 'Cancellation request submitted to Leader.');
+            return redirect()->route('office.orders.show', $order)->with('success', 'Cancellation request submitted for manager approval.');
         }
 
-        // Leaders/Admins finalize the cancellation
+        // SECURITY FIX: Explicitly block CS Staff from finalizing cancellations [Addendum 4.b]
+        if ($order->status === 'cancellation_requested' && $user->hasRole('cs_staff')) {
+            abort(403, 'Unauthorized: CS Staff cannot finalize cancellation requests.');
+        }
+
+        // Only Admin/Leader reaches here to finalize
         $order->update([
             'status' => 'cancelled',
             'cancellation_reason' => $request->cancellation_reason ?? $order->cancellation_request_reason,
+            'cancellation_requested_by' => $order->cancellation_requested_by ?? $user->id,
         ]);
 
-        return redirect()->route('office.orders.index')->with('success', 'Order permanently cancelled.');
+        return redirect()->route('office.orders.index')->with('success', 'Order has been permanently cancelled.');
     }
 
     /**
@@ -659,32 +687,26 @@ class ReservationController extends Controller
     public function store(AddToCartRequest $request)
     {
         $user = auth()->user();
-
-        if ($user->hasPendingOrder()) {
-            return redirect()->back()->with('error', 'You have a pending order awaiting review.');
-        }
-
         $draft = $user->getOrCreateDraft();
-        $item = \App\Models\Item::findOrFail($request->item_id);
 
-        // ARCHITECTURE FIX: Normalize the 'individual' placeholder to NULL [3, 4]
-        $uomId = $request->uom_id === 'individual' ? null : $request->uom_id;
+        // ARCHITECTURE FIX: Direct UOM ID usage (normalization removed) [1]
+        $uomId = $request->uom_id;
 
-        // Match by BOTH Item and normalized UOM ID
         $orderItem = $draft->items()
-            ->where('item_id', $item->id)
+            ->where('item_id', $request->item_id)
             ->where('uom_id', $uomId)
             ->first();
 
         if ($orderItem) {
             $orderItem->increment('quantity', $request->quantity);
         } else {
+            $item = Item::findOrFail($request->item_id);
             $draft->items()->create([
                 'item_id' => $item->id,
-                'uom_id' => $uomId, // Persists as NULL for individual units
+                'uom_id' => $uomId,
                 'snapshot_name' => $item->name,
                 'quantity' => $request->quantity,
-                'price_at_order' => 0, // Enforce Price Blind Policy [Addendum 4.b]
+                'price_at_order' => 0, // Price Blind Policy [4.b]
             ]);
         }
 
@@ -1358,8 +1380,11 @@ class ProfileController extends Controller
      */
     public function edit(Request $request): View
     {
+        // ARCHITECTURE FIX: Eager load Company and CS Rep to prevent N+1 in profile view.
+        $user = $request->user()->load(['company', 'csRepresentative', 'roles']);
+
         return view('profile.edit', [
-            'user' => $request->user(),
+            'user' => $user,
         ]);
     }
 
@@ -1573,36 +1598,31 @@ class UserController extends Controller
         return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys'));
     }
 
+    /**
+     * Fulfills Addendum 3.b: User Management ONLY for Credentials and Company Link.
+     * ARCHITECTURE FIX: Purged legacy 'details()' relationship call.
+     */
     public function update(Request $request, User $user)
     {
+        // 1. Validation scoped strictly to User Credential attributes [Addendum 3.b]
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email,'.$user->id,
             'role' => 'required|exists:roles,name',
             'status' => 'required|in:active,deactive',
+            'company_id' => 'required|exists:companys,id', // Fulfills Many-to-One link [2.a]
             'assigned_cs_id' => 'nullable|exists:users,id',
-            'password' => 'nullable|min:8',
-            'parent_id' => 'nullable|exists:users,id',
-            'catalog_id' => 'nullable|exists:catalogs,id',
-            'company_name' => 'nullable|string|max:255',
-            'company_reg_no' => 'nullable|string|max:255',
-            'pic_name' => 'nullable|string|max:255',
-            'pic_phone' => 'nullable|string|max:255',
-            'delivery_address' => 'nullable|string',
-            'postal_code' => 'nullable|string|max:10',
-            'city' => 'nullable|string|max:100',
-            'state' => 'nullable|string|max:100',
+            'password' => 'nullable|min:8|confirmed',
         ]);
 
-        // Start with basic info that is ALWAYS editable
+        // 2. Prepare Core User Data
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
-            'catalog_id' => $request->catalog_id, // Fulfills Single Catalog Policy
+            'company_id' => $request->company_id, // Direct link to business entity
         ];
 
-        // BACKEND SECURITY LOCK:
-        // Only allow changing Status, Role, and Assignment if the target is NOT an admin.
+        // 3. Security Guard: Only allow status/role changes if target is NOT an admin
         if (! $user->hasRole('admin')) {
             $userData['status'] = $request->status;
 
@@ -1610,32 +1630,25 @@ class UserController extends Controller
                 $userData['assigned_cs_id'] = $request->assigned_cs_id;
             }
 
-            // Only sync roles for non-admins
             $user->syncRoles([$request->role]);
         }
 
+        // 4. Handle Optional Password Update
         if ($request->filled('password')) {
-            $userData['password'] = Hash::make($request->password);
+            $userData['password'] = \Illuminate\Support\Facades\Hash::make($request->password);
         }
 
+        // 5. Atomic Update to Users Table
         $user->update($userData);
-        $user->syncRoles([$request->role]);
 
-        // Update or Create Customer Details
-        $user->details()->updateOrCreate(
-            ['user_id' => $user->id], // Match by user ID
-            $request->only([
-                'company_name', 'company_reg_no', 'pic_name', 'pic_phone',
-                'delivery_address', 'postal_code', 'city', 'state',
-            ])
-        );
+        // ARCHITECTURE FIX: The legacy $user->details() block has been REMOVED.
+        // Business data (PIC, Address, etc.) must be updated via CompanyController [3.c].
 
-        // FIX: Redirect based on role/permission
         if (auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            return redirect()->route('users.index')->with('success', 'User updated successfully.');
+            return redirect()->route('users.index')->with('success', 'User credentials updated successfully.');
         }
 
-        return redirect()->route('users.assigned')->with('success', 'Customer info updated.');
+        return redirect()->route('users.assigned')->with('success', 'Customer login updated.');
     }
 
     /**
@@ -1769,14 +1782,23 @@ class CancelOrderRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        // Only handlers, leaders, or admins can cancel
         return true;
     }
 
+    /**
+     * ARCHITECTURE FIX: Contextual validation for Cancellation.
+     * If the order is already in 'cancellation_requested' status, the reason
+     * is optional as we fall back to the requester's note.
+     */
     public function rules(): array
     {
+        $order = $this->route('order');
+        $isFinalizing = $order && $order->status === 'cancellation_requested';
+
         return [
-            'cancellation_reason' => 'required|string|min:5|max:1000',
+            'cancellation_reason' => $isFinalizing
+                ? 'nullable|string|max:1000'
+                : 'required|string|min:5|max:1000',
         ];
     }
 }
@@ -1800,23 +1822,9 @@ class AddToCartRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'item_id' => [
-                'required',
-                'exists:items,id',
-                function ($attribute, $value, $fail) {
-                    $user = auth()->user();
-                    $visibleItemIds = $user->getVisibleItems()->pluck('id')->toArray();
-                    if (! in_array($value, $visibleItemIds)) {
-                        $fail('This item is not available in your assigned catalog.');
-                    }
-                },
-            ],
-            // ARCHITECTURE FIX: Allow 'individual' string or a valid UOM ID [Addendum 5.a]
-            'uom_id' => ['required', function ($attribute, $value, $fail) {
-                if ($value !== 'individual' && ! \App\Models\Uom::where('id', $value)->exists()) {
-                    $fail('The selected packaging unit is invalid.');
-                }
-            }],
+            'item_id' => ['required', 'exists:items,id'],
+            // ARCHITECTURE FIX: Mandatory UOM ID requirement [Addendum 5.a]
+            'uom_id' => ['required', 'exists:uoms,id'],
             'quantity' => 'required|integer|min:1|max:999',
         ];
     }
@@ -5163,6 +5171,7 @@ namespace Database\Seeders;
 use App\Models\Catalog;
 use App\Models\Company;
 use App\Models\Item;
+use App\Models\Uom; // Added for strict UOM generation
 use App\Models\User; // NEW
 use Illuminate\Database\Seeder;
 
@@ -5172,20 +5181,31 @@ class DatabaseSeeder extends Seeder
     {
         $this->call(RoleSeeder::class);
 
-        $items = Item::factory()->count(60)->create();
+        // 1. Create Items with Mandatory UOMs [Addendum 5.a]
+        $items = Item::factory()->count(60)->create()->each(function ($item) {
+            $uomCount = rand(1, 5);
+            $units = ['Box', 'Carton', 'Pack', 'Bundle', 'Pallet'];
+
+            for ($i = 0; $i < $uomCount; $i++) {
+                Uom::create([
+                    'item_id' => $item->id,
+                    'uom_name' => $units[$i].' '.rand(10, 50).'s',
+                    'rate_qty' => rand(5, 100),
+                    'price' => rand(50, 500),
+                    'status' => 'active',
+                ]);
+            }
+        });
+
+        // 2. Create Catalogs and attach items
         $catalogs = Catalog::factory()->count(3)->create()->each(function ($catalog) use ($items) {
             $catalog->items()->attach($items->random(rand(15, 30))->pluck('id')->toArray());
         });
 
-        $admin = User::factory()->create([
-            'name' => 'System Admin',
-            'login_id' => 'admin001',
-            'email' => 'admin@maxtop.com',
-            'status' => 'active',
-        ]);
+        // 3. Create Internal Staff [Backbone 2.c]
+        $admin = User::factory()->create(['name' => 'System Admin', 'login_id' => 'admin001', 'email' => 'admin@maxtop.com', 'status' => 'active']);
         $admin->assignRole('admin');
 
-        // Create a CS Leader (Manages CS Staff and Customers) [1]
         $leader = User::factory()->create([
             'name' => 'CS Leader User',
             'email' => 'leader@test.com',
@@ -5194,17 +5214,10 @@ class DatabaseSeeder extends Seeder
         ]);
         $leader->assignRole('cs_leader');
 
-        // 1. Create Internal Staff [Backbone 2.c]
-        $staff = User::factory()->create([
-            'name' => 'CS Staff User',
-            'login_id' => 'csstaff001',
-            'email' => 'staff@test.com',
-            'status' => 'active',
-        ]);
+        $staff = User::factory()->create(['name' => 'CS Staff User', 'login_id' => 'csstaff001', 'email' => 'staff@test.com', 'status' => 'active']);
         $staff->assignRole('cs_staff');
 
-        // 2. Create Main HQ Company [Addendum 1.a & 1.b]
-        // Note: Catalog is now assigned to the COMPANY, not the User.
+        // 4. Create Business Hierarchy [Addendum 1.a, 2.a]
         $hqCompany = Company::create([
             'company_code' => 'MAX-HQ-001',
             'company_name' => 'Maxtop HQ Group',
@@ -5212,7 +5225,6 @@ class DatabaseSeeder extends Seeder
             'delivery_address' => '123 Industrial Park, KL',
         ]);
 
-        // 3. Create Multiple HQ Users (Many-to-One) [Addendum 2.a]
         $hqUser = User::factory()->create([
             'name' => 'Main HQ Admin',
             'login_id' => 'customer001',
@@ -7342,6 +7354,101 @@ $classes = ($active ?? false)
 
 --- END_FILE ---
 
+--- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\cancellations.blade.php ---
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('Cancellation Approval Queue') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
+
+            <div class="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                <form method="GET" action="{{ route('office.orders.cancellations') }}">
+                    <x-filter-toolbar :placeholder="__('Search order # or customer...')" />
+                </form>
+            </div>
+
+            <div class="bg-white shadow-sm sm:rounded-[2.5rem] border border-gray-100 overflow-hidden">
+                <table class="min-w-full divide-y divide-gray-100">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th
+                                class="px-8 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Order Details') }}</th>
+                            <th
+                                class="px-6 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Requested By') }}</th>
+                            <th
+                                class="px-6 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Reason for Cancellation') }}</th>
+                            <th
+                                class="px-8 py-5 text-right text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Action') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-50 bg-white">
+                        @forelse ($requests as $order)
+                            <tr class="hover:bg-red-50/30 transition-colors">
+                                <td class="px-8 py-5">
+                                    <div class="flex flex-col">
+                                        <span class="text-xs font-black text-gray-900">{{ $order->order_number }}</span>
+                                        <span
+                                            class="text-[10px] font-bold text-blue-600 uppercase">{{ $order->user->company->company_name ?? $order->user->name }}</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-5">
+                                    <div class="flex items-center gap-2">
+                                        <div class="w-2 h-2 bg-purple-500 rounded-full"></div>
+                                        <span
+                                            class="text-[10px] font-black text-gray-600 uppercase">{{ $order->cancellationRequester->name ?? __('Unknown Staff') }}</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-5">
+                                    <p class="text-xs italic text-gray-500 leading-relaxed">
+                                        "{{ $order->cancellation_request_reason }}"</p>
+                                </td>
+                                <td class="px-8 py-5 text-right">
+                                    <div class="flex justify-end gap-2">
+                                        <a href="{{ route('office.orders.show', $order) }}"
+                                            class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-xl text-[10px] font-black uppercase text-gray-600 transition">
+                                            {{ __('Review Details') }}
+                                        </a>
+                                        <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                            onsubmit="return confirm('Confirm permanent cancellation?');">
+                                            @csrf
+                                            {{-- ARCHITECTURE FIX: Pass the existing request reason to the controller --}}
+                                            <input type="hidden" name="cancellation_reason"
+                                                value="{{ $order->cancellation_request_reason }}">
+
+                                            <button type="submit"
+                                                class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl text-[10px] font-black uppercase text-white shadow-md transition-all">
+                                                {{ __('Approve Cancel') }}
+                                            </button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="4" class="px-8 py-20 text-center">
+                                    <p class="text-gray-400 font-black uppercase tracking-widest text-xs">
+                                        {{ __('No pending cancellation requests found.') }}</p>
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+            {{ $requests->links() }}
+        </div>
+    </div>
+</x-app-layout>
+
+--- END_FILE ---
+
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\cs\orders\dashboard.blade.php ---
 <x-app-layout>
     <x-slot name="header">
@@ -7400,6 +7507,20 @@ $classes = ($active ?? false)
                             class="flex items-center justify-center border-2 border-blue-600 text-blue-600 px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-blue-50 transition">
                             {{ __('Manage Products') }}
                         </a>
+
+                        @hasanyrole('admin|cs_leader')
+                            <a href="{{ route('office.orders.cancellations') }}"
+                                class="relative flex items-center justify-center bg-red-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-700 transition shadow-lg shadow-red-900/20">
+                                {{ __('Cancellation Requests') }}
+                                @php $requestCount = \App\Models\Order::where('status', 'cancellation_requested')->count(); @endphp
+                                @if ($requestCount > 0)
+                                    <span
+                                        class="absolute -top-2 -right-2 bg-white text-red-600 w-5 h-5 rounded-full flex items-center justify-center text-[9px] border-2 border-red-600 shadow-sm animate-bounce">
+                                        {{ $requestCount }}
+                                    </span>
+                                @endif
+                            </a>
+                        @endhasanyrole
                     </div>
                 </div>
 
@@ -7923,8 +8044,14 @@ $classes = ($active ?? false)
                                             "{{ $order->cancellation_request_reason }}"</p>
 
                                         @hasanyrole('admin|cs_leader')
-                                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST">
+                                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                                class="space-y-3">
                                                 @csrf
+                                                {{-- ARCHITECTURE FIX: Allow manager to add a final note or use the requester's reason --}}
+                                                <x-text-input name="cancellation_reason"
+                                                    class="w-full bg-gray-800 border-gray-700 text-xs text-white"
+                                                    placeholder="{{ __('Optional: Add manager approval note...') }}" />
+
                                                 <button type="submit"
                                                     class="w-full bg-red-600 hover:bg-red-700 py-2.5 rounded-xl text-[10px] font-black uppercase transition shadow-md">
                                                     {{ __('Approve Cancellation') }}
@@ -7937,19 +8064,27 @@ $classes = ($active ?? false)
                                             </div>
                                         @endhasanyrole
                                     </div>
-                                @elseif ($order->handler_id === auth()->id())
+                                @elseif (
+                                    $order->handler_id === auth()->id() ||
+                                        auth()->user()->hasAnyRole(['admin', 'cs_leader']))
                                     <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
                                         class="space-y-3">
                                         @csrf
                                         <x-text-input name="cancellation_reason" required
                                             class="w-full bg-gray-800 border-gray-700 text-sm placeholder-gray-600"
                                             placeholder="{{ __('Mandatory cancellation reason...') }}" />
+
                                         <button type="submit"
                                             class="w-full border-2 border-red-900/50 text-red-500/80 hover:bg-red-900/20 py-3 rounded-2xl text-[10px] font-black uppercase transition-all">
                                             @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
+                                                {{-- Fulfills Addendum 4.a: CS Staff only requests --}}
                                                 {{ __('Request Order Cancellation') }}
-                                            @else
+                                            @elseif (auth()->user()->hasAnyRole(['admin', 'cs_leader']))
+                                                {{-- Managers see confirmation --}}
                                                 {{ __('Confirm Order Cancellation') }}
+                                            @else
+                                                {{-- Fulfills Request: csstaff001 on non-approved orders --}}
+                                                {{ __('Cancel Order') }}
                                             @endif
                                         </button>
                                     </form>
@@ -7971,7 +8106,8 @@ $classes = ($active ?? false)
                                     <option value="">{{ __('-- Transfer to Staff --') }}</option>
                                     @foreach ($eligibleStaff as $staff)
                                         <option value="{{ $staff->id }}">{{ $staff->name }}
-                                            ({{ str_replace('_', ' ', $staff->roles->first()->name) }})</option>
+                                            ({{ str_replace('_', ' ', $staff->roles->first()->name) }})
+                                        </option>
                                     @endforeach
                                 </select>
                                 <button type="submit"
@@ -8164,7 +8300,7 @@ $classes = ($active ?? false)
                 {{ __('Available Products') }}
             </h2>
 
-            {{-- Category Filter Toolbar: Fulfills Whitelist Logic [8.a.3] --}}
+            {{-- Category Filter Toolbar: Fulfills Whitelist Logic [Backbone 3.a.3] --}}
             <div class="flex flex-wrap gap-2">
                 <a href="{{ route('customer.products.index') }}"
                     class="px-4 py-2 rounded-full text-[10px] font-black uppercase transition-all border {{ !request('category') ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-100' : 'bg-white text-gray-500 border-gray-100 hover:bg-gray-50' }}">
@@ -8210,8 +8346,8 @@ $classes = ($active ?? false)
                     @foreach ($items as $item)
                         <div
                             class="bg-white p-6 rounded-[2.5rem] border border-gray-100 shadow-sm flex flex-col hover:shadow-xl hover:shadow-blue-50 transition-all duration-300">
-                            {{-- Product Image --}}
-                            <div class="relative mb-4 group">
+                            {{-- Product Identity --}}
+                            <div class="relative mb-4">
                                 @if ($item->image_path)
                                     <img src="{{ asset('storage/' . $item->image_path) }}"
                                         class="w-full h-48 object-cover rounded-[1.5rem] shadow-sm">
@@ -8230,7 +8366,6 @@ $classes = ($active ?? false)
                                 </div>
                             </div>
 
-                            {{-- Item Info --}}
                             <div class="flex-1">
                                 <h3 class="text-sm font-black text-gray-900 leading-tight mb-1">{{ $item->name }}
                                 </h3>
@@ -8239,7 +8374,7 @@ $classes = ($active ?? false)
                                 </p>
                             </div>
 
-                            {{-- Ordering Logic: Blocked if Pending Review [11.b] --}}
+                            {{-- Ordering Block: Strict UOM Only [Addendum 5.a] --}}
                             <div class="mt-4 pt-4 border-t border-gray-50">
                                 @if (auth()->user()->hasPendingOrder())
                                     <div class="bg-amber-50 border border-amber-100 p-3 rounded-2xl text-center">
@@ -8251,53 +8386,37 @@ $classes = ($active ?? false)
                                 @else
                                     <form method="POST" action="{{ route('reservation.store') }}"
                                         x-data="{
-                                            selectedUom: 'individual',
-                                            hasUoms: {{ $item->activeUoms->count() > 0 ? 'true' : 'false' }},
-                                            {{-- ARCHITECTURE FIX: Map both UOM IDs and 'individual' to an object containing QTY and LABEL [3, 4] --}}
-                                            draftMap: @js(
-    $draftItems->where('item_id', $item->id)->mapWithKeys(
-        fn($i) => [
-            $i->uom_id ?? 'individual' => [
-                'qty' => $i->quantity,
-                // FIX: Concatenate rate_qty to label so it shows 'Box (x12)' instead of just 'Box'
-                'label' => $i->uom ? $i->uom->uom_name . ' (x' . $i->uom->rate_qty . ')' : __('Individual'),
-            ],
-        ],
-    ),
-)
+                                            {{-- ARCHITECTURE: Auto-select first active UOM ID --}}
+                                            selectedUom: '{{ $item->activeUoms->first()?->id }}',
+                                                {{-- FIX: Real-time Markdown map for existing draft items --}}
+                                            draftMap: @js($draftItems->where('item_id', $item->id)->mapWithKeys(fn($i) => [$i->uom_id => ['qty' => $i->quantity, 'label' => $i->uom?->uom_name]]))
                                         }" class="space-y-4">
                                         @csrf
                                         <input type="hidden" name="item_id" value="{{ $item->id }}">
 
                                         <div>
-                                            {{-- FIX: Iterate through ALL drafts in the map, regardless of dropdown selection --}}
-                                            <div class="my-4 space-y-2">
-                                                <template x-for="(data, uomKey) in draftMap" :key="uomKey">
-                                                    <div
-                                                        class="mt-2 px-3 py-2 bg-indigo-50 rounded-xl flex items-center justify-between border border-indigo-100 animate-pulse">
-                                                        <span
-                                                            class="text-[9px] font-black text-indigo-600 uppercase">{{ __('In Draft') }}</span>
-                                                        <span class="text-xs font-black text-indigo-700"
-                                                            x-text="data.qty + ' ' + data.label + ' ' + '{{ __('Units') }}'">
-                                                        </span>
-                                                    </div>
-                                                </template>
-                                            </div>
-
                                             <x-input-label :value="__('Select Packaging Unit')"
                                                 class="text-[9px] font-black text-gray-400 uppercase mb-1" />
 
-                                            <select name="uom_id" x-model="selectedUom" :disabled="!hasUoms"
-                                                :class="hasUoms ? 'bg-blue-50' : 'bg-gray-50'"
-                                                class="w-full rounded-xl text-xs font-bold transition-all">
-                                                <option value="individual">{{ __('Individual Unit') }}</option>
-
-                                                {{-- Fulfills requirement: only show active UOM choices --}}
+                                            <select name="uom_id" x-model="selectedUom" required
+                                                class="w-full rounded-xl text-xs font-bold transition-all bg-blue-50 border-blue-200 text-blue-700 focus:ring-blue-500">
                                                 @foreach ($item->activeUoms as $uom)
                                                     <option value="{{ $uom->id }}">{{ $uom->uom_name }}
                                                         (x{{ $uom->rate_qty }})</option>
                                                 @endforeach
                                             </select>
+
+                                            {{-- Dynamic Markdown Indicator [v1.4] --}}
+                                            <template x-if="draftMap[selectedUom]">
+                                                <div
+                                                    class="mt-2 px-3 py-2 bg-indigo-50 rounded-xl flex items-center justify-between border border-indigo-100 animate-pulse">
+                                                    <span
+                                                        class="text-[9px] font-black text-indigo-600 uppercase">{{ __('In My Draft') }}</span>
+                                                    <span class="text-xs font-black text-indigo-700"
+                                                        x-text="draftMap[selectedUom].qty + ' ' + draftMap[selectedUom].label + ' ' + '{{ __('Units') }}'">
+                                                    </span>
+                                                </div>
+                                            </template>
                                         </div>
 
                                         <div class="flex gap-2">
@@ -8339,7 +8458,6 @@ $classes = ($active ?? false)
         <div class="max-w-5xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
             @if (!$draft || $items->isEmpty())
-                {{-- Empty State: Fulfills Section 4.a.1 --}}
                 <div class="bg-white p-16 rounded-[2.5rem] border border-gray-100 shadow-sm text-center">
                     <div class="flex flex-col items-center">
                         <svg class="w-16 h-16 text-gray-200 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
@@ -8356,7 +8474,7 @@ $classes = ($active ?? false)
                 </div>
             @else
                 @php
-                    // ARCHITECTURE: Group by item_id to handle multiple UOMs per SKU [1, 2]
+                    // ARCHITECTURE: Group by item_id to cluster different packaging types under SKU [Backbone 4.a.2]
                     $groupedItems = $items->groupBy('item_id');
                     $totalQty = $items->sum('quantity');
                 @endphp
@@ -8401,10 +8519,10 @@ $classes = ($active ?? false)
                                     <tr class="hover:bg-gray-50/50 transition-colors">
                                         <td class="px-8 py-4"></td>
                                         <td class="px-6 py-4 text-center">
-                                            {{-- UNIT FIX: Distinguishes between UOM and Individual Unit [v1.4 Bugfix] --}}
+                                            {{-- STRICT UOM: Display packaging name and rate [Addendum 5.a] --}}
                                             <span
-                                                class="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tight {{ $orderItem->uom_id ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-gray-100 text-gray-500 border border-gray-200' }}">
-                                                {{ $orderItem->uom?->uom_name ?? __('Individual Unit') }}
+                                                class="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tight bg-blue-100 text-blue-700 border border-blue-200">
+                                                {{ $orderItem->uom->uom_name }} (x{{ $orderItem->uom->rate_qty }})
                                             </span>
                                         </td>
                                         <td class="px-6 py-4">
@@ -8414,7 +8532,7 @@ $classes = ($active ?? false)
                                                 @method('PUT')
                                                 <input type="number" name="quantity"
                                                     value="{{ $orderItem->quantity }}" min="1" max="999"
-                                                    class="w-20 text-center border-gray-200 rounded-xl text-sm font-black focus:ring-blue-500 focus:border-blue-500">
+                                                    class="w-20 text-center border-gray-200 rounded-xl text-sm font-black focus:ring-blue-500">
                                                 <button type="submit" title="{{ __('Update Quantity') }}"
                                                     class="text-blue-500 hover:text-blue-700 transition-transform active:scale-90">
                                                     <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
@@ -8442,7 +8560,7 @@ $classes = ($active ?? false)
                         </tbody>
                     </table>
 
-                    {{-- Footer: Price Blind Total QTY and Submission [4.b, 456] --}}
+                    {{-- Price Blind Footer: Volume-based reservation [Backbone 4.b, 120] --}}
                     <div class="p-10 bg-gray-900 flex flex-col md:flex-row justify-between items-center gap-8">
                         <div class="flex flex-col text-center md:text-left">
                             <span
@@ -8458,21 +8576,20 @@ $classes = ($active ?? false)
                             onsubmit="return confirm('{{ __('Ready to submit for CS review?') }}');">
                             @csrf
                             <button type="submit"
-                                class="bg-green-600 hover:bg-green-700 text-white py-5 px-14 rounded-2xl text-sm font-black uppercase shadow-xl shadow-green-900/40 transition-all hover:-translate-y-1 active:translate-y-0 active:scale-[0.98]">
+                                class="bg-green-600 hover:bg-green-700 text-white py-5 px-14 rounded-2xl text-sm font-black uppercase shadow-xl shadow-green-900/40 transition-all hover:-translate-y-1">
                                 {{ __('Submit for Review') }}
                             </button>
                         </form>
                     </div>
                 </div>
 
-                {{-- Policy Note: Enforces Price Blind Policy visual context --}}
                 <div class="flex items-center justify-center gap-2 text-gray-400">
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                         <path
                             d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                     </svg>
                     <span
-                        class="text-[9px] font-black uppercase tracking-widest">{{ __('Reservation only: Prices are validated during the CS approval process') }}</span>
+                        class="text-[9px] font-black uppercase tracking-widest">{{ __('Prices are hidden for B2B confidentiality and validated during CS approval') }}</span>
                 </div>
             @endif
         </div>
@@ -8868,28 +8985,103 @@ $classes = ($active ?? false)
 --- START_FILE: C:\Code\maxtop-e-ordering-system-staging\resources\views\profile\edit.blade.php ---
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Profile') }}
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ __('My Business Profile') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
-            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
-                <div class="max-w-xl">
-                    @include('profile.partials.update-profile-information-form')
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8 space-y-8">
+
+            {{-- 1. IDENTITY CARD: READ-ONLY [Backbone 3.b] --}}
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100">
+                <div class="p-10">
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
+                        <div class="flex items-center gap-5">
+                            <div
+                                class="w-16 h-16 bg-blue-600 rounded-[1.5rem] flex items-center justify-center text-white text-xl font-black shadow-lg shadow-blue-100">
+                                {{ strtoupper(substr($user->name, 0, 1)) }}
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-black text-gray-900">{{ $user->name }}</h3>
+                                <p class="text-xs font-bold text-blue-600 uppercase tracking-widest">
+                                    {{ $user->roles->first()->name ?? 'Customer' }}</p>
+                            </div>
+                        </div>
+
+                        {{-- COMMUNICATION PROTOCOL: Direct link to assigned CS Rep [12.a] --}}
+                        <a href="mailto:{{ $user->csRepresentative->email ?? 'cs@maxtop.com' }}?subject=Profile Update Request: {{ $user->login_id }}"
+                            class="bg-gray-900 hover:bg-black text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase transition-all shadow-xl shadow-gray-200 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="2.5">
+                                <path
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                            {{ __('Request Profile Modification') }}
+                        </a>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8">
+                        {{-- Security Data --}}
+                        <div class="space-y-6">
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Login Identity (Locked)') }}</label>
+                                <div
+                                    class="bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl font-mono text-sm font-bold text-gray-500 uppercase tracking-tighter">
+                                    {{ $user->login_id }}
+                                </div>
+                            </div>
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Registered Email') }}</label>
+                                <div class="text-sm font-bold text-gray-700">{{ $user->email }}</div>
+                            </div>
+                        </div>
+
+                        {{-- Business Data --}}
+                        <div class="space-y-6">
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Assigned Business Entity') }}</label>
+                                <div class="flex flex-col">
+                                    <span
+                                        class="text-sm font-black text-gray-900">{{ $user->company->company_name ?? __('N/A') }}</span>
+                                    <span
+                                        class="text-[10px] font-mono font-black text-blue-500 uppercase tracking-tighter">
+                                        {{ $user->company->company_code ?? ($user->company->branch_code ?? __('NO_CODE')) }}
+                                    </span>
+                                </div>
+                            </div>
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Responsible CS Representative') }}</label>
+                                <div class="flex items-center gap-2">
+                                    <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                    <span
+                                        class="text-sm font-bold text-gray-700">{{ $user->csRepresentative->name ?? __('Maxtop General Support') }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-50 px-10 py-6 border-t border-gray-100 flex items-center gap-3">
+                    <svg class="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                        stroke-width="2">
+                        <path
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                    <p class="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-relaxed">
+                        {{ __('To maintain B2B account integrity, profile modifications must be verified and performed by your assigned representative.') }}
+                    </p>
                 </div>
             </div>
 
-            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
+            {{-- 2. PASSWORD MANAGEMENT: EDITABLE [v1.4 Security Policy] --}}
+            <div class="p-8 bg-white shadow-sm sm:rounded-[2.5rem] border border-gray-100">
                 <div class="max-w-xl">
                     @include('profile.partials.update-password-form')
-                </div>
-            </div>
-
-            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
-                <div class="max-w-xl">
-                    @include('profile.partials.delete-user-form')
                 </div>
             </div>
         </div>
@@ -11625,6 +11817,7 @@ Artisan::command('inspire', function () {
 
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\RoleManagerController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
@@ -11715,6 +11908,10 @@ Route::middleware(['auth'])->group(function () {
         // 2. Resource Index
         // Fulfills Section 5.a: On-going Orders
         Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
+
+        Route::get('/orders/cancellation-requests', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancellationRequests'])
+            ->name('orders.cancellations')
+            ->middleware('role:admin|cs_leader');
 
         // 3. Wildcard Routes (Must come last)
         // Fulfills Section 5: Handler Visibility & Handover [8]
@@ -15163,10 +15360,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v17)
+## Update details(v19)
 
-* Added UOM feature.
-* Removed showing the price at customer site.
+* Solve the bug will hit error when updating the user login credentials.
 
 --- END_FILE ---
 

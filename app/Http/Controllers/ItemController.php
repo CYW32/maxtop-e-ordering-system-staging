@@ -28,106 +28,137 @@ class ItemController extends Controller
     }
 
     public function create()
-    {
-        // Requirement: Needs View AND Create
-        if (! auth()->user()->can('view_items') || ! auth()->user()->can('create_items')) {
-            abort(403, 'Unauthorized creation access.');
-        }
+{
+    Gate::authorize('create_items');
+    
+    // ARCHITECTURE FIX: Fetch all catalogs to enable item-side whitelisting
+    $catalogs = \App\Models\Catalog::orderBy('name')->get();
+    
+    return view('admin.items.create', compact('catalogs'));
+}
 
-        return view('admin.items.create');
-    }
+public function store(Request $request)
+{
+    \Illuminate\Support\Facades\Gate::authorize('create_items');
 
-    public function store(Request $request)
-    {
-        Gate::authorize('create_items');
+    $validated = $request->validate([
+        'sku' => 'required|unique:items,sku',
+        'name' => 'required|string|max:255',
+        'price' => 'required|numeric|min:0',
+        'description' => 'nullable|string|max:2000', // Fulfills Requirement
+        'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+        'status' => 'required|in:active,deactive',
+        'catalogs' => 'nullable|array', // Fulfills Requirement
+        'catalogs.*' => 'exists:catalogs,id',
+        'uoms' => 'nullable|array',
+        'uoms.*.uom_name' => 'required|string|max:100',
+        'uoms.*.rate_qty' => 'required|integer|min:1',
+        'uoms.*.price' => 'required|numeric|min:0',
+        'uoms.*.status' => 'required|in:active,inactive',
+    ]);
 
-        $validated = $request->validate([
-            'sku' => 'required|unique:items,sku',
-            'name' => 'required|string|max:255',
-            'price' => 'required|numeric|min:0',
-            'description' => 'nullable|string',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-        ]);
-
+    \Illuminate\Support\Facades\DB::transaction(function () use ($request, $validated) {
         if ($request->hasFile('image')) {
-            $path = $request->file('image')->store('items', 'public');
-            $validated['image_path'] = $path;
+            $validated['image_path'] = $request->file('image')->store('items', 'public');
         }
 
-        // FIX: Assign the created instance to $item so it can be used for relationship syncing
-        $item = Item::create($validated);
-
-        // Fulfills Category Assignment requirement
-        $item->categories()->sync($request->input('categories', []));
-
-        return redirect()->route('items.index')->with('success', 'Item created successfully.');
-    }
-
-    public function edit(Item $item)
-    {
-        // Requirement: Needs View AND Create AND Edit
-        if (! auth()->user()->can('view_items') ||
-            ! auth()->user()->can('create_items') ||
-            ! auth()->user()->can('edit_items')) {
-            abort(403, 'Unauthorized edit access.');
+        // Strict UOM Auto-Inactivation Rule [Addendum 5.a]
+        $itemStatus = $request->status;
+        if (!$request->has('uoms') || count($request->uoms) === 0) {
+            $itemStatus = 'deactive';
         }
 
-        return view('admin.items.edit', compact('item'));
-    }
+        $item = \App\Models\Item::create(array_merge($validated, ['status' => $itemStatus]));
 
-    /**
-     * Fulfills Addendum 5.a & 5.c: Synchronize Items and dynamic UOMs.
-     * ARCHITECTURE FIX: Aligned with Status-Driven visibility and resolved Soft-Delete bug.
-     */
-    public function update(Request $request, Item $item)
-    {
-        \Illuminate\Support\Facades\Gate::authorize('edit_items');
+        // Synchronize Catalog Assignments [Backbone 3.a.3]
+        if ($request->has('catalogs')) {
+            $item->catalogs()->sync($request->input('catalogs', []));
+        }
 
-        $validated = $request->validate([
-            'sku' => 'required|unique:items,sku,'.$item->id,
-            'name' => 'required|string|max:255',
-            'price' => 'required|numeric|min:0',
-            'uoms' => 'nullable|array',
-            'uoms.*.id' => 'nullable|exists:uoms,id',
-            'uoms.*.uom_name' => 'required|string|max:100',
-            'uoms.*.rate_qty' => 'required|integer|min:1',
-            'uoms.*.price' => 'required|numeric|min:0',
-            'uoms.*.status' => 'required|in:active,inactive', // FIX: Validate status enum [4]
-        ]);
+        if ($request->has('categories')) {
+            $item->categories()->sync($request->input('categories', []));
+        }
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($item, $request, $validated) {
-            $item->update($validated);
-
-            if ($request->has('uoms')) {
-                $incomingUomIds = [];
-
-                foreach ($request->uoms as $uomData) {
-                    // ARCHITECTURE FIX: Persist the 'status' and use withTrashed() [3]
-                    $uom = $item->uoms()->withTrashed()->updateOrCreate(
-                        ['id' => $uomData['id'] ?? null],
-                        [
-                            'uom_name' => $uomData['uom_name'],
-                            'rate_qty' => $uomData['rate_qty'],
-                            'price' => $uomData['price'],
-                            'status' => $uomData['status'], // Persist status [5]
-                        ]
-                    );
-
-                    // FIX: Records must be restored so they aren't hidden by SoftDelete [3]
-                    $uom->restore();
-                    $incomingUomIds[] = $uom->id;
-                }
-
-                // Handle orphans per Section 5.c Deletion Protection [6, 7]
-                $orphans = $item->uoms()->withTrashed()->whereNotIn('id', $incomingUomIds)->get();
-                foreach ($orphans as $orphan) {
-                    $orphan->canBeDeleted() ? $orphan->forceDelete() : $orphan->update(['status' => 'inactive']);
-                }
+        if ($request->has('uoms')) {
+            foreach ($request->uoms as $uomData) {
+                $item->uoms()->create($uomData);
             }
-        });
+        }
+    });
 
-        return redirect()->route('items.index')->with('success', 'Product and UOM updated.');
-    }
+    return redirect()->route('items.index')->with('success', 'Product and catalog assignments established.');
+}
+
+public function edit(Item $item)
+{
+    Gate::authorize('edit_items');
+    
+    // Load catalogs and categories for management
+    $catalogs = \App\Models\Catalog::orderBy('name')->get();
+    $categories = \App\Models\Category::orderBy('name')->get();
+    
+    return view('admin.items.edit', compact('item', 'catalogs', 'categories'));
+}
+
+public function update(Request $request, Item $item)
+{
+    \Illuminate\Support\Facades\Gate::authorize('edit_items');
+
+    $validated = $request->validate([
+        'sku' => 'required|unique:items,sku,'.$item->id, // Resolved SKU collision [1]
+        'name' => 'required|string|max:255',
+        'price' => 'required|numeric|min:0',
+        'description' => 'nullable|string|max:2000', // Fulfills Requirement
+        'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+        'status' => 'required|in:active,deactive',
+        'catalogs' => 'nullable|array', // Fulfills Requirement
+        'catalogs.*' => 'exists:catalogs,id',
+        'uoms' => 'nullable|array',
+        'uoms.*.id' => 'nullable|exists:uoms,id',
+        'uoms.*.uom_name' => 'required|string|max:100',
+        'uoms.*.rate_qty' => 'required|integer|min:1',
+        'uoms.*.price' => 'required|numeric|min:0',
+        'uoms.*.status' => 'required|in:active,inactive',
+    ]);
+
+    \Illuminate\Support\Facades\DB::transaction(function () use ($item, $request, $validated) {
+        if ($request->hasFile('image')) {
+            if ($item->image_path) {
+                \Illuminate\Support\Facades\Storage::disk('public')->delete($item->image_path);
+            }
+            $validated['image_path'] = $request->file('image')->store('items', 'public');
+        }
+
+        $item->update($validated);
+
+        // Sync Catalogs [Backbone Whitelist Logic]
+        if ($request->has('catalogs')) {
+            $item->catalogs()->sync($request->input('catalogs', []));
+        }
+
+        if ($request->has('categories')) {
+            $item->categories()->sync($request->input('categories', []));
+        }
+
+        if ($request->has('uoms')) {
+            $incomingUomIds = [];
+            foreach ($request->uoms as $uomData) {
+                $uom = $item->uoms()->withTrashed()->updateOrCreate(
+                    ['id' => $uomData['id'] ?? null],
+                    $uomData
+                );
+                $uom->restore(); 
+                $incomingUomIds[] = $uom->id;
+            }
+            $orphans = $item->uoms()->withTrashed()->whereNotIn('id', $incomingUomIds)->get();
+            foreach ($orphans as $orphan) {
+                $orphan->canBeDeleted() ? $orphan->forceDelete() : $orphan->update(['status' => 'inactive']);
+            }
+        }
+    });
+
+    return redirect()->route('items.index')->with('success', 'Product details and catalog visibility updated.');
+}
 
     public function destroy(Item $item)
     {

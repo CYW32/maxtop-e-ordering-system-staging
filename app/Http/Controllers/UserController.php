@@ -117,36 +117,31 @@ class UserController extends Controller
         return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys'));
     }
 
+    /**
+     * Fulfills Addendum 3.b: User Management ONLY for Credentials and Company Link.
+     * ARCHITECTURE FIX: Purged legacy 'details()' relationship call.
+     */
     public function update(Request $request, User $user)
     {
+        // 1. Validation scoped strictly to User Credential attributes [Addendum 3.b]
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email,'.$user->id,
             'role' => 'required|exists:roles,name',
             'status' => 'required|in:active,deactive',
+            'company_id' => 'required|exists:companys,id', // Fulfills Many-to-One link [2.a]
             'assigned_cs_id' => 'nullable|exists:users,id',
-            'password' => 'nullable|min:8',
-            'parent_id' => 'nullable|exists:users,id',
-            'catalog_id' => 'nullable|exists:catalogs,id',
-            'company_name' => 'nullable|string|max:255',
-            'company_reg_no' => 'nullable|string|max:255',
-            'pic_name' => 'nullable|string|max:255',
-            'pic_phone' => 'nullable|string|max:255',
-            'delivery_address' => 'nullable|string',
-            'postal_code' => 'nullable|string|max:10',
-            'city' => 'nullable|string|max:100',
-            'state' => 'nullable|string|max:100',
+            'password' => 'nullable|min:8|confirmed',
         ]);
 
-        // Start with basic info that is ALWAYS editable
+        // 2. Prepare Core User Data
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
-            'catalog_id' => $request->catalog_id, // Fulfills Single Catalog Policy
+            'company_id' => $request->company_id, // Direct link to business entity
         ];
 
-        // BACKEND SECURITY LOCK:
-        // Only allow changing Status, Role, and Assignment if the target is NOT an admin.
+        // 3. Security Guard: Only allow status/role changes if target is NOT an admin
         if (! $user->hasRole('admin')) {
             $userData['status'] = $request->status;
 
@@ -154,32 +149,25 @@ class UserController extends Controller
                 $userData['assigned_cs_id'] = $request->assigned_cs_id;
             }
 
-            // Only sync roles for non-admins
             $user->syncRoles([$request->role]);
         }
 
+        // 4. Handle Optional Password Update
         if ($request->filled('password')) {
-            $userData['password'] = Hash::make($request->password);
+            $userData['password'] = \Illuminate\Support\Facades\Hash::make($request->password);
         }
 
+        // 5. Atomic Update to Users Table
         $user->update($userData);
-        $user->syncRoles([$request->role]);
 
-        // Update or Create Customer Details
-        $user->details()->updateOrCreate(
-            ['user_id' => $user->id], // Match by user ID
-            $request->only([
-                'company_name', 'company_reg_no', 'pic_name', 'pic_phone',
-                'delivery_address', 'postal_code', 'city', 'state',
-            ])
-        );
+        // ARCHITECTURE FIX: The legacy $user->details() block has been REMOVED.
+        // Business data (PIC, Address, etc.) must be updated via CompanyController [3.c].
 
-        // FIX: Redirect based on role/permission
         if (auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            return redirect()->route('users.index')->with('success', 'User updated successfully.');
+            return redirect()->route('users.index')->with('success', 'User credentials updated successfully.');
         }
 
-        return redirect()->route('users.assigned')->with('success', 'Customer info updated.');
+        return redirect()->route('users.assigned')->with('success', 'Customer login updated.');
     }
 
     /**
