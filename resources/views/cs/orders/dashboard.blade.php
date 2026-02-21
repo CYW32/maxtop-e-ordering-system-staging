@@ -68,6 +68,11 @@
                                     </span>
                                 @endif
                             </a>
+
+                            <a href="{{ route('office.orders.all') }}"
+                                class="flex items-center justify-center bg-indigo-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-indigo-700 transition shadow-lg shadow-indigo-100">
+                                {{ __('All System Orders') }}
+                            </a>
                         @endhasanyrole
                     </div>
                 </div>

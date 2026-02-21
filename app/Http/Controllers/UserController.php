@@ -6,7 +6,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate; // FIXED: Added missing facade import
-use Illuminate\Support\Facades\Hash;   // Added: Required for transaction safety
+// Added: Required for transaction safety
 use Spatie\Permission\Models\Role;
 
 class UserController extends Controller
@@ -55,42 +55,49 @@ class UserController extends Controller
         return view('users.assigned', compact('users', 'roles'));
     }
 
-    // SHOW CREATE FORM
+    /**
+     * Fulfills Backbone 2.a & 3.b: Onboard Login Credentials.
+     * ARCHITECTURE FIX: Resolved "Undefined variable $parent" by providing context.
+     */
     public function create(Request $request)
     {
-        $roles = \Spatie\Permission\Models\Role::all();
-        $parent = null;
-        if ($request->has('parent_id')) {
-            $parent = User::findOrFail($request->parent_id);
-        }
+        Gate::authorize('create_users');
 
-        // ARCHITECTURE FIX: Fetch from Company model (v1.4 Rename) [1.a]
+        // 1. Core Data Collections
+        $roles = \Spatie\Permission\Models\Role::where('name', '!=', 'admin')->get();
         $companys = \App\Models\Company::orderBy('company_name')->get();
-        $catalogs = \App\Models\Catalog::all();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
 
-        return view('users.create', compact('roles', 'parent', 'catalogs', 'csStaffMembers', 'companys'));
+        // 2. ARCHITECTURE FIX: Retrieve parent context if creating a Branch account [Backbone 3.a.2]
+        // This resolves the ErrorException at line 4 of the create blade.
+        $parent = $request->has('parent_id') ? User::find($request->parent_id) : null;
+
+        return view('users.create', compact('roles', 'csStaffMembers', 'companys', 'parent'));
     }
 
-    // Save new user
+    /**
+     * ARCHITECTURE FIX: Conditional validation for 'company_id'.
+     */
     public function store(Request $request)
     {
-        // Fulfills Addendum 3.b: User Management ONLY for Name, Email, Password, and Company Link
+        Gate::authorize('create_users');
+
         $request->validate([
             'name' => 'required|string|max:255',
             'login_id' => 'required|string|unique:users',
             'email' => 'required|email|unique:users',
             'password' => 'required|confirmed|min:8',
-            'company_id' => 'required|exists:companys,id', // Mandatory link to a pre-existing business
             'role' => 'required|exists:roles,name',
+            // FIX: company_id is ONLY required if the user is a customer [Addendum 2.a]
+            'company_id' => 'required_if:role,customer|nullable|exists:companys,id',
         ]);
 
         $user = User::create([
             'name' => $request->name,
             'login_id' => $request->login_id,
             'email' => $request->email,
-            'password' => Hash::make($request->password),
-            'company_id' => $request->company_id,
+            'password' => \Illuminate\Support\Facades\Hash::make($request->password),
+            'company_id' => $request->company_id, // Null for non-customer roles
             'status' => 'active',
         ]);
 
@@ -101,20 +108,20 @@ class UserController extends Controller
 
     public function edit(User $user)
     {
-        if (auth()->user()->hasPermissionTo('edit_assigned_customers') &&
-            ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
-            if ($user->assigned_cs_id !== auth()->id()) {
-                abort(403, 'Unauthorized.');
-            }
+        Gate::authorize('edit_users');
+
+        if ($user->hasRole('admin') && auth()->id() !== $user->id) {
+            abort(403, 'System Integrity Lock: Root Admin is immutable.');
         }
 
-        $roles = \Spatie\Permission\Models\Role::all();
+        $roles = \Spatie\Permission\Models\Role::where('name', '!=', 'admin')->get();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
-
-        // NEW: Pass Companies to Edit view for reassignment [Addendum 3.b]
         $companys = \App\Models\Company::orderBy('company_name')->get();
 
-        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys'));
+        // ARCHITECTURE FIX: Determine if assignment is locked based on order existence [Backbone 9.c.1]
+        $isAssignmentLocked = $user->orders()->exists();
+
+        return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys', 'isAssignmentLocked'));
     }
 
     /**

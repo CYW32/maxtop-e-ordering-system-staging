@@ -8,7 +8,10 @@ class CancelOrderRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return true;
+        // Fulfills Section 5: Only handler or elevated roles can initiate/approve cancellation
+        $order = $this->route('order');
+
+        return $order && ($order->handler_id === auth()->id() || auth()->user()->hasAnyRole(['admin', 'cs_leader']));
     }
 
     /**

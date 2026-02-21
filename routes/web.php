@@ -66,48 +66,53 @@ Route::middleware(['auth'])->group(function () {
         ->name('users.assigned');
 
     // SYSTEM SETTINGS (Strict Admin Only)
-    // Fulfills Section 2.a: Administrator overseeing Activity Logs and assignments
-    Route::middleware('role:admin')->prefix('admin')->group(function () {
+    /**
+     * Fulfills Backbone Section 2.a: Administrator (Developers Only)
+     * ARCHITECTURE FIX: Added name prefix 'admin.' to resolve RouteNotFoundException.
+     */
+    Route::middleware('role:admin')->prefix('admin')->name('admin.')->group(function () {
 
-        // Feature Settings (Feature Matrix) - keep the 'roles.' prefix here
+        // Feature Settings (Feature Matrix)
         Route::name('roles.')->group(function () {
             Route::get('/matrix', [RoleManagerController::class, 'index'])->name('matrix');
             Route::post('/matrix', [RoleManagerController::class, 'update'])->name('update');
+
+            // ARCHITECTURE FIX: Role CRUD for Custom Roles [Backbone 2.f]
+            // This now generates 'admin.roles.manage.index'
+            Route::resource('manage', \App\Http\Controllers\Admin\RoleController::class)->except(['show']);
         });
 
-        // Activity Log Route - Moved outside roles naming to match navigation
-        // Results in: activity.index
+        // Activity Log Route: Results in 'admin.activity.index'
         Route::get('/activity-logs', [ActivityLogController::class, 'index'])->name('activity.index');
+
     });
 
     // Only Admin & CS accessible
     Route::middleware(['role:cs_staff|cs_leader|admin'])->prefix('office')->name('office.')->group(function () {
 
-        // 1. Static Routes (Must come first to prevent shadowing)
-        // Fulfills Section 5.b: General Claiming Queue [4]
+        // 1. Static Registry Routes
         Route::get('/orders/queue', [\App\Http\Controllers\CS\OrderManagementController::class, 'queue'])->name('orders.queue');
-
-        // Fulfills visibility for Completed/Cancelled orders [5, 6]
         Route::get('/orders/history', [\App\Http\Controllers\CS\OrderManagementController::class, 'history'])->name('orders.history');
+        Route::get('/orders/cancellation-requests', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancellationRequests'])->name('orders.cancellations')->middleware('role:admin|cs_leader');
 
-        // 2. Resource Index
-        // Fulfills Section 5.a: On-going Orders
-        Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
-
-        Route::get('/orders/cancellation-requests', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancellationRequests'])
-            ->name('orders.cancellations')
+        // FIX: Moved 'orders/all' above wildcard to ensure proper resolution [Backbone 2.a]
+        Route::get('/orders/all', [\App\Http\Controllers\CS\OrderManagementController::class, 'allOrders'])
+            ->name('orders.all')
             ->middleware('role:admin|cs_leader');
 
-        // 3. Wildcard Routes (Must come last)
-        // Fulfills Section 5: Handler Visibility & Handover [8]
-        Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
+        // 2. Resource Index
+        Route::get('/orders', [\App\Http\Controllers\CS\OrderManagementController::class, 'index'])->name('orders.index');
 
+        // 3. Wildcard Routes (MUST BE LAST)
+        Route::get('/orders/{order}', [\App\Http\Controllers\CS\OrderManagementController::class, 'show'])->name('orders.show');
         Route::post('/orders/{order}/claim', [\App\Http\Controllers\CS\OrderManagementController::class, 'claim'])->name('orders.claim');
         Route::post('/orders/{order}/approve', [\App\Http\Controllers\CS\OrderManagementController::class, 'approve'])->name('orders.approve');
         Route::post('/orders/{order}/cancel', [\App\Http\Controllers\CS\OrderManagementController::class, 'cancel'])->name('orders.cancel');
         Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
         Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
+
     });
+
     // ITEM MANAGEMENT
     Route::resource('items', \App\Http\Controllers\ItemController::class)
         ->middleware(['auth', 'verified']);

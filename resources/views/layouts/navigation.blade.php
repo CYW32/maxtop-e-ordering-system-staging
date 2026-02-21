@@ -74,14 +74,24 @@
         @endhasanyrole
 
         @role('admin')
-            <div class="mt-4 px-4 py-2 font-black text-xs uppercase text-red-600 tracking-widest">
-                {{ __('System Control') }}</div>
-            <x-nav-link :href="route('roles.matrix')" :active="request()->routeIs('roles.matrix')">
-                {{ __('Feature Settings') }}
-            </x-nav-link>
-            <x-nav-link :href="route('activity.index')" :active="request()->routeIs('activity.index')">
-                {{ __('Activity Log') }}
-            </x-nav-link>
+            <div class="pt-4 pb-1 border-t border-gray-100">
+                <div class="px-4 text-[10px] font-black uppercase text-gray-400 tracking-widest mb-4">
+                    {{ __('System Control') }}
+                </div>
+
+                <x-nav-link :href="route('admin.roles.manage.index')" :active="request()->routeIs('admin.roles.manage.*')">
+                    {{ __('Role Registry') }}
+                </x-nav-link>
+
+                <x-nav-link :href="route('admin.roles.matrix')" :active="request()->routeIs('admin.roles.matrix')">
+                    {{ __('Feature Settings') }}
+                </x-nav-link>
+
+                {{-- ARCHITECTURE FIX: Updated to match new 'admin.activity.index' name --}}
+                <x-nav-link :href="route('admin.activity.index')" :active="request()->routeIs('admin.activity.*')">
+                    {{ __('Activity Log') }}
+                </x-nav-link>
+            </div>
         @endrole
     </div>
 

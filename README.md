@@ -60,8 +60,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v19)
+## Update details(v20)
 
-* Solve the bug will hit error when updating the user login credentials.
-* Added user can preview own profile details.
-* Added when create/edit item also can set status & catagory & catalog.
+* Solve the bug that unable to craete new user other than customer.
+* Solve the "Can modify the assigned business included the existing transaction" bug.
+* Solve the "REQUEST ORDER CANCELLATION" bug.
+* Removed the price at "items" DB table.
+* Added the order status record for admin & CS leader when viewing the order.
+* Added "All System Order" for Admin & CS Leader to view all the order in one page.

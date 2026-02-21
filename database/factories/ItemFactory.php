@@ -15,7 +15,6 @@ class ItemFactory extends Factory
             'sku' => 'MT-'.$this->faker->unique()->numberBetween(1000, 9999),
             'name' => $this->faker->words(3, true),
             'description' => $this->faker->sentence(),
-            'price' => $this->faker->randomFloat(2, 5, 1000),
             'status' => 'active', // Defaulting to active for visibility [3]
         ];
     }

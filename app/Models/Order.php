@@ -72,11 +72,13 @@ class Order extends Model
     }
 
     /**
-     * Check if there is an active cancellation request pending review.
+     * ARCHITECTURE FIX: Align helper with Controller status updates.
+     * Fulfills Addendum Section 4.b workflow.
      */
     public function hasPendingCancellationRequest(): bool
     {
-        return ! is_null($this->cancellation_requested_by) && $this->status === 'approved';
+        // Status is changed to 'cancellation_requested' by the controller during the request phase
+        return $this->status === 'cancellation_requested' && ! is_null($this->cancellation_requested_by);
     }
 
     /**
@@ -102,5 +104,34 @@ class Order extends Model
                         });
                 });
         });
+    }
+
+    /**
+     * ARCHITECTURE FIX: Automated Internal Audit Trail.
+     * Records every status change and the acting user into order_status_history.
+     */
+    protected static function booted()
+    {
+        static::updated(function ($order) {
+            if ($order->isDirty('status') && auth()->check()) {
+                \Illuminate\Support\Facades\DB::table('order_status_history')->insert([
+                    'order_id' => $order->id,
+                    'status' => $order->status,
+                    'changed_by' => auth()->id(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        });
+    }
+
+    /**
+     * ARCHITECTURE FIX: Automated Internal Audit Trail.
+     * Records every status change and the acting user into order_status_history.
+     */
+    public function statusHistory(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        // This will now resolve correctly because the Model file exists.
+        return $this->hasMany(OrderStatusHistory::class)->latest();
     }
 }

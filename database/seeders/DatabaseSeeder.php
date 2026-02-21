@@ -17,15 +17,27 @@ class DatabaseSeeder extends Seeder
 
         // 1. Create Items with Mandatory UOMs [Addendum 5.a]
         $items = Item::factory()->count(60)->create()->each(function ($item) {
+            // Fulfills Requirement: Random 1 to 5 UOMs
             $uomCount = rand(1, 5);
             $units = ['Box', 'Carton', 'Pack', 'Bundle', 'Pallet'];
 
-            for ($i = 0; $i < $uomCount; $i++) {
+            // 1. Mandatory Base Unit (Rate Qty 1) - Already correct in your code [3]
+            Uom::create([
+                'item_id' => $item->id,
+                'uom_name' => 'Individual Unit',
+                'rate_qty' => 1,
+                'price' => rand(10, 100),
+                'status' => 'active',
+            ]);
+
+            // 2. ARCHITECTURE FIX: Randomized Secondary Packaging Units [1]
+            // Added 'price' field to satisfy NOT NULL constraint for Pure UOM model.
+            for ($i = 1; $i < $uomCount; $i++) {
                 Uom::create([
                     'item_id' => $item->id,
-                    'uom_name' => $units[$i].' '.rand(10, 50).'s',
+                    'uom_name' => $units[rand(0, 4)].' '.rand(10, 50).'s',
                     'rate_qty' => rand(5, 100),
-                    'price' => rand(50, 500),
+                    'price' => rand(150, 1000), // FIXED: Mandatory price field
                     'status' => 'active',
                 ]);
             }

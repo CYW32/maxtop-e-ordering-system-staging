@@ -11,12 +11,11 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('items', function (Blueprint $table) {
+        Schema::create('order_status_history', function (Blueprint $table) {
             $table->id();
-            $table->string('sku')->unique();
-            $table->string('name');
-            $table->text('description')->nullable();
-            $table->string('image_path')->nullable(); // For automated compression later [3]
+            $table->foreignId('order_id')->constrained()->onDelete('cascade');
+            $table->string('status');
+            $table->foreignId('changed_by')->constrained('users')->onDelete('cascade');
             $table->timestamps();
         });
     }
@@ -26,6 +25,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('items');
+        Schema::dropIfExists('order_status_history');
     }
 };

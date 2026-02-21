@@ -51,12 +51,6 @@
                                 <x-text-input id="name" name="name" type="text"
                                     class="mt-1 block w-full font-bold" :value="old('name')" required />
                             </div>
-                            <div>
-                                <x-input-label for="price" :value="__('Default Price (RM) - Internal Reference')"
-                                    class="text-[10px] font-black uppercase text-gray-400" />
-                                <x-text-input id="price" name="price" type="number" step="0.01"
-                                    class="mt-1 block w-full" :value="old('price', '0.00')" required />
-                            </div>
                         </div>
 
                         {{-- Universal Description: Fulfills Requirement --}}

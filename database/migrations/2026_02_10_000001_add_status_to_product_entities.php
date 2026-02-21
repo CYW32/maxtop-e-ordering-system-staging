@@ -9,11 +9,15 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('items', function (Blueprint $table) {
-            $table->enum('status', ['active', 'deactive'])->default('active')->after('price');
+            // ARCHITECTURE FIX: Changed anchor from 'price' to 'description'
+            // to resolve SQLSTATE[42S22] Column not found error.
+            $table->enum('status', ['active', 'deactive'])->default('active')->after('description');
         });
+
         Schema::table('catalogs', function (Blueprint $table) {
             $table->enum('status', ['active', 'deactive'])->default('active')->after('name');
         });
+
         Schema::table('categories', function (Blueprint $table) {
             $table->enum('status', ['active', 'deactive'])->default('active')->after('name');
         });

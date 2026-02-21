@@ -174,22 +174,23 @@ class OrderManagementController extends Controller
     {
         $this->authorizeAction($order);
 
-        DB::transaction(function () use ($order) {
+        \Illuminate\Support\Facades\DB::transaction(function () use ($order) {
             foreach ($order->items as $orderItem) {
-                $uom = $orderItem->uom; // Assumes UOM selected during draft
+                $uom = $orderItem->uom;
+
+                // ARCHITECTURE FIX: Strictly use UOM price. Fail if UOM is missing
+                // to prevent RM 0.00 data corruption in snapshots [Addendum 5.a]
                 $orderItem->update([
                     'snapshot_name' => $orderItem->item->name,
                     'snapshot_uom_name' => $uom?->uom_name ?? 'Unit',
                     'snapshot_uom_rate' => $uom?->rate_qty ?? 1,
-                    'price_at_order' => $uom?->price ?? $orderItem->item->price,
+                    'price_at_order' => $uom->price, // REMOVED legacy price fallback
                 ]);
             }
             $order->update(['status' => 'approved']);
         });
 
-        activity('order')->performedOn($order)->log('Order approved; Item & UOM names snapshotted');
-
-        return redirect()->back()->with('success', 'Order approved.');
+        return redirect()->back()->with('success', 'Order approved and Pure UOM prices snapshotted.');
     }
 
     /**
@@ -328,5 +329,41 @@ class OrderManagementController extends Controller
         if ($order->handler_id !== $user->id) {
             abort(403, 'Read-Only Mode: You are not the assigned handler for this order.');
         }
+    }
+
+    /**
+     * Fulfills Leadership Oversight Requirement.
+     * Displays ALL system orders with advanced filtering.
+     */
+    public function allOrders(Request $request)
+    {
+        // SECURITY GUARD: Leadership tier only [Backbone 2.a, 2.b]
+        if (! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+            abort(403, 'Unauthorized: Master oversight restricted to Leadership.');
+        }
+
+        $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled', 'cancellation_requested'];
+
+        // ARCHITECTURE FIX: Deep Eager Loading to resolve company and handler identity [Addendum 1.a]
+        $query = Order::with(['user.company', 'handler']);
+
+        // ARCHITECTURE FIX: Multi-Entity Search (Order #, Customer Name, or Handler Name)
+        if ($request->filled('search')) {
+            $term = $request->search;
+            $query->where(function ($q) use ($term) {
+                $q->search($term) // Hits order_number via Searchable trait
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"))
+                    ->orWhereHas('handler', fn ($h) => $h->where('name', 'like', "%{$term}%"));
+            });
+        }
+
+        // Apply Status Filter
+        if ($request->filled('status') && in_array($request->status, $status)) {
+            $query->where('status', $request->status);
+        }
+
+        $allOrders = $query->latest()->paginate(15)->withQueryString();
+
+        return view('cs.orders.all', compact('allOrders', 'status'));
     }
 }

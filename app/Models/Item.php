@@ -11,7 +11,7 @@ class Item extends Model
 {
     use HasFactory, LogsActivity;
 
-    protected $fillable = ['sku', 'name', 'description', 'price', 'image_path', 'status'];
+    protected $fillable = ['sku', 'name', 'description', 'image_path', 'status'];
 
     public function catalogs()
     {
