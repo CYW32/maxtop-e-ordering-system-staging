@@ -13,6 +13,9 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
+        // ARCHITECTURE FIX: Granular Authorization
+        Gate::authorize('view_login_credentials');
+
         $roles = Role::pluck('name', 'name');
         $status = ['active', 'deactive'];
 

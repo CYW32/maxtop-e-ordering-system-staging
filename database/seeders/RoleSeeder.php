@@ -15,7 +15,8 @@ class RoleSeeder extends Seeder
 
         // 2. Create Permissions
         // We use firstOrCreate to prevent errors if you run seed multiple times
-        Permission::firstOrCreate(['name' => 'view_users']);
+        Permission::firstOrCreate(['name' => 'view_business_entities']);
+        Permission::firstOrCreate(['name' => 'view_login_credentials']);
         Permission::firstOrCreate(['name' => 'create_users']);
         Permission::firstOrCreate(['name' => 'edit_users']);
         Permission::firstOrCreate(['name' => 'view_assigned_customers']);
@@ -30,30 +31,16 @@ class RoleSeeder extends Seeder
 
         // 3. Create Roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
+        $admin->syncPermissions(Permission::all());
         $leader = Role::firstOrCreate(['name' => 'cs_leader']);
         $staff = Role::firstOrCreate(['name' => 'cs_staff']);
         $customer = Role::firstOrCreate(['name' => 'customer']);
 
-        // 4. Assign Permissions
-        // ADMIN: Gets access to everything
-        // $admin->syncPermissions([
-        //     'view_users',
-        //     'create_users',
-        //     'edit_users',
-        //     'view_assigned_customers',
-        //     'edit_assigned_customers',
-        //     'reassign_customers',
-        //     'view_catalogs',
-        //     'create_catalogs',
-        //     'edit_catalogs',
-        // ]);
-        $admin->givePermissionTo(Permission::all());
-
         // CS LEADER: Can view the list (but maybe not create/edit by default)
         // You can change this later in your "Feature Settings" page.
         $leader->syncPermissions([
-            'view_users',
-            'create_users',
+            'view_business_entities',
+            'view_login_credentials',
             'edit_users',
             'view_assigned_customers',
             'edit_assigned_customers',
@@ -69,6 +56,8 @@ class RoleSeeder extends Seeder
         // CS STAFF: Starts with nothing (or add 'view_users' if you prefer)
         // $staff->syncPermissions(['view_users']);
         $staff->syncPermissions([
+            'view_business_entities',
+            'view_login_credentials',
             'view_assigned_customers',
             'edit_assigned_customers',
             'view_catalogs',

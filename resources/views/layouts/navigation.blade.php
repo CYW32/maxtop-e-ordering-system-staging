@@ -50,13 +50,15 @@
                 </x-nav-link>
             @endcan
 
-            @can('view_users')
-                <div class="mt-4 mb-2 px-4 border-t border-gray-100 pt-4">
-                    <p class="text-[9px] font-black uppercase text-gray-400 tracking-widest">{{ __('Accounts') }}</p>
-                </div>
+            {{-- ARCHITECTURE FIX: Split "Business Entities" permission --}}
+            @can('view_business_entities')
                 <x-nav-link :href="route('companys.index')" :active="request()->routeIs('companys.*')">
                     {{ __('Business Entities') }}
                 </x-nav-link>
+            @endcan
+
+            {{-- ARCHITECTURE FIX: Split "Login Credentials" permission --}}
+            @can('view_login_credentials')
                 <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
                     {{ __('Login Credentials') }}
                 </x-nav-link>

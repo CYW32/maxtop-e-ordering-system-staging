@@ -4,12 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Models\Catalog;
 use App\Models\Company;
-use Illuminate\Http\Request;
+use Illuminate\Http\Request; // FIXED: Added missing facade import
+use Illuminate\Support\Facades\Gate;
 
 class CompanyController extends Controller
 {
     public function index(Request $request)
     {
+        Gate::authorize('view_business_entities');
+
         $companys = Company::with(['catalog', 'parent', 'branches'])
             ->whereNull('parent_id')
             ->when($request->search, function ($q) use ($request) {

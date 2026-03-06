@@ -60,11 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## #######################################################################################################################################
 
-## Update details(v20)
+## Update details(v21)
 
-* Solve the bug that unable to craete new user other than customer.
-* Solve the "Can modify the assigned business included the existing transaction" bug.
-* Solve the "REQUEST ORDER CANCELLATION" bug.
-* Removed the price at "items" DB table.
-* Added the order status record for admin & CS leader when viewing the order.
-* Added "All System Order" for Admin & CS Leader to view all the order in one page.
+* Solve:
+** Accessing the “Feature Settings” page will cause an error.
+** CS Staff access page “My Customer” > “Edit Login” will hit error 403.
+** CS Staff missing "Business Entities".

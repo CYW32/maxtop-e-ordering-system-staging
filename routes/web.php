@@ -42,7 +42,7 @@ Route::middleware(['auth'])->group(function () {
 
         // List Users (Requires 'view_users' permission)
         Route::get('/', [UserController::class, 'index'])
-            ->middleware('permission:view_users')
+            ->middleware('permission:view_login_credentials')
             ->name('index');
 
         // Create New User (Requires 'create_users' permission)
@@ -57,6 +57,12 @@ Route::middleware(['auth'])->group(function () {
             Route::put('/{user}', [UserController::class, 'update'])->name('update');
             Route::delete('/{user}', [UserController::class, 'destroy'])->name('destroy');
 
+        });
+
+        // BUSINESS ENTITY MANAGEMENT [Addendum 3.c]
+        // ARCHITECTURE FIX: Wrapped resource in specific permission middleware
+        Route::middleware('permission:view_business_entities')->group(function () {
+            Route::resource('companys', \App\Http\Controllers\CompanyController::class);
         });
     });
 
