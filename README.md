@@ -58,11 +58,13 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
 
-## #######################################################################################################################################
+##
 
-## Update details(v21)
+## Update details(v22)(CYW)
 
-* Solve:
-** Accessing the “Feature Settings” page will cause an error.
-** CS Staff access page “My Customer” > “Edit Login” will hit error 403.
-** CS Staff missing "Business Entities".
+- Solve:
+  ** Change the “price” to “status” at the staff side item list table.
+  ** “Create item” & “Edit item” page change the “Display name” to “Product name”.
+  ** Accessing the “Feature Settings” page will cause an error.
+  ** CS Staff access page “My Customer” > “Edit Login” will hit error 403.
+  \*\* CS Staff missing "Business Entities".

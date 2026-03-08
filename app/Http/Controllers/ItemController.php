@@ -12,22 +12,33 @@ use Illuminate\Support\Facades\Storage;
 
 class ItemController extends Controller
 {
+    /**
+     * Fulfills Requirement: Master Item Registry oversight.
+     * ARCHITECTURE FIX: Removed price logic; optimized for status visibility.
+     */
     public function index(Request $request)
     {
         Gate::authorize('view_items');
 
         $query = Item::query();
 
+        // Multi-attribute search (SKU or Name)
         if ($request->filled('search')) {
-            $query->where('name', 'like', "%{$request->search}%")
-                ->orWhere('sku', 'like', "%{$request->search}%");
+            $query->where(function($q) use ($request) {
+                $q->where('name', 'like', "%{$request->search}%")
+                  ->orWhere('sku', 'like', "%{$request->search}%");
+            });
         }
 
-        // ARCHITECTURE FIX: Removed any potential sorting or filtering by master price field.
-        $items = $query->with(['activeUoms'])->latest()->paginate(10)->withQueryString();
+        // ARCHITECTURE FIX: Pricing is now in UOMs. Removed sorting by 'price' [Addendum 5.a].
+        // Eager load UOMs and Catalogs for performance.
+        $items = $query->with(['activeUoms', 'catalogs'])
+            ->latest()
+            ->paginate(15)
+            ->withQueryString();
 
         return view('admin.items.index', compact('items'));
-    }
+        }
 
     public function create()
     {

@@ -1,105 +1,81 @@
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
-            {{ __('⚙️ Manage Group:') }} {{ $category->name }}
-        </h2>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                {{ __('Edit Category') }}: <span class="text-blue-600">{{ $category->name }}</span>
+            </h2>
+            <a href="{{ route('categories.index') }}" class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                &larr; {{ __('Back to Registry') }}
+            </a>
+        </div>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
+        <div class="max-w-3xl mx-auto sm:px-6 lg:px-8 space-y-8">
+            
+            <form method="POST" action="{{ route('categories.update', $category) }}" class="space-y-8">
+                @csrf
+                @method('PUT')
 
-                <form action="{{ route('categories.update', $category) }}" method="POST" class="space-y-8">
-                    @csrf
-                    @method('PUT')
-
-                    <div>
-                        <x-input-label for="name" :value="__('Group Name')" />
-                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
-                            :value="old('name', $category->name)" required />
-                        <x-input-error class="mt-2" :messages="$errors->get('name')" />
+                <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100 p-10">
+                    <div class="text-[10px] font-black uppercase text-gray-400 mb-8 tracking-widest flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                        {{ __('Category Identity & Visibility') }}
                     </div>
 
-                    <div class="pt-6 border-t border-gray-100">
-                        <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-4">
-                            {{ __('Select Items for this Group') }}</h3>
+                    <div class="space-y-8">
+                        {{-- CATEGORY NAME --}}
+                        <div>
+                            <x-input-label for="name" :value="__('Category Identity (Display Name)')" class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full font-bold uppercase" :value="old('name', $category->name)" required />
+                            <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                        </div>
 
-                        @if ($items->isEmpty())
-                            <p class="text-xs text-gray-500 italic uppercase">
-                                {{ __('No items available. Create items in Product Management first.') }}</p>
-                        @else
-                            <div
-                                class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                                @foreach ($items as $item)
-                                    <label
-                                        class="relative flex items-center p-3 border rounded-lg hover:bg-gray-50 transition-colors cursor-pointer {{ in_array($item->id, $assignedItemIds) ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200' }}">
-                                        <input name="items[]" value="{{ $item->id }}" type="checkbox"
-                                            class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                                            {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}>
-                                        <div class="ml-3">
-                                            <div class="text-sm font-bold text-gray-800 leading-tight">
-                                                {{ $item->name }}</div>
-                                            <div class="text-[10px] font-black text-blue-600 uppercase">
-                                                {{ $item->sku }}</div>
-                                        </div>
-                                    </label>
-                                @endforeach
-                            </div>
-                        @endif
-                    </div>
-
-                    <div class="flex items-center justify-end pt-6 border-t border-gray-100">
-                        <a href="{{ route('categories.index') }}"
-                            class="text-sm text-gray-600 underline mr-4">{{ __('Cancel') }}</a>
-                        <x-primary-button
-                            class="bg-blue-700 hover:bg-blue-800">{{ __('Save Changes') }}</x-primary-button>
-                    </div>
-                </form>
-
-                {{-- Lifecycle Section: Fulfills Soft Deactivation & Secure Delete Requirements --}}
-                <div
-                    class="mt-12 bg-gray-50 p-6 rounded-2xl border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-6">
-                    <div>
-                        <h4 class="font-black uppercase text-xs text-gray-700">
-                            {{ __('Category Visibility & Lifecycle') }}</h4>
-                        <p class="text-[10px] text-gray-500 italic mt-1">
-                            {{ __('Deactivated categories are hidden from the customer catalog.') }}</p>
-                    </div>
-
-                    <div class="flex items-center gap-3">
-                        {{-- Visibility Toggle --}}
-                        <form action="{{ route('categories.update', $category) }}" method="POST">
-                            @csrf @method('PUT')
-                            <input type="hidden" name="name" value="{{ $category->name }}">
-                            <input type="hidden" name="status"
-                                value="{{ $category->status === 'active' ? 'deactive' : 'active' }}">
-
-                            <button type="submit"
-                                class="px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-md {{ $category->status === 'active' ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
-                                {{ $category->status === 'active' ? __('⛔ Deactivate') : __('✅ Reactivate') }}
-                            </button>
-                        </form>
-
-                        {{-- Hard Delete Guard --}}
-                        @if ($category->canBeDeleted())
-                            <form action="{{ route('categories.destroy', $category) }}" method="POST"
-                                onsubmit="return confirm('Hard delete this category? Items will remain but the grouping will be lost.');">
-                                @csrf @method('DELETE')
-                                <button type="submit"
-                                    class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-md">
-                                    {{ __('🔥 Hard Delete') }}
-                                </button>
-                            </form>
-                        @else
-                            <div class="bg-white text-gray-400 px-4 py-2 rounded-xl text-[9px] font-black uppercase border border-gray-200 cursor-help"
-                                title="Locked: Items in this category have order history.">
-                                {{ __('🔒 Deletion Locked') }}
-                            </div>
-                        @endif
+                        {{-- OPERATIONAL STATUS --}}
+                        <div>
+                            <x-input-label for="status" :value="__('Operational Status')" class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                            <select name="status" id="status" class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-black uppercase">
+                                <option value="active" @selected(old('status', $category->status) === 'active')>{{ __('Active (Visible in Catalogs)') }}</option>
+                                <option value="deactive" @selected(old('status', $category->status) === 'deactive')>{{ __('Inactive (Hidden/Hold)') }}</option>
+                            </select>
+                            <x-input-error :messages="$errors->get('status')" class="mt-2" />
+                        </div>
                     </div>
                 </div>
 
-            </div>
+                <div class="flex items-center justify-between">
+                    {{-- ARCHITECTURE CHECK: Only show Hard Delete if no transaction records exist [User Request] --}}
+                    @if($canBeDeleted)
+                        <button type="button" 
+                                onclick="if(confirm('{{ __('WARNING: This will permanently purge this category. This action is irreversible. Proceed?') }}')) document.getElementById('delete-category-form').submit();"
+                                class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition tracking-tighter">
+                            {{ __('Hard Delete') }}
+                        </button>
+                    @else
+                        <span class="text-[9px] font-black uppercase text-gray-300 italic flex items-center gap-2">
+                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                            {{ __('Deletion Locked: Transaction Records Exist') }} [9.c.1]
+                        </span>
+                    @endif
+
+                    <div class="flex items-center gap-4">
+                        <a href="{{ route('categories.index') }}" class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                            {{ __('Cancel') }}
+                        </a>
+                        <x-primary-button class="bg-gray-900 hover:bg-black py-4 px-12 rounded-2xl shadow-lg transition-all uppercase text-[10px] font-black">
+                            {{ __('Save Changes') }}
+                        </x-primary-button>
+                    </div>
+                </div>
+            </form>
+
+            {{-- HIDDEN DELETE FORM --}}
+            @if($canBeDeleted)
+                <form id="delete-category-form" action="{{ route('categories.destroy', $category) }}" method="POST" class="hidden">
+                    @csrf
+                    @method('DELETE')
+                </form>
+            @endif
         </div>
     </div>
 </x-app-layout>

@@ -46,7 +46,7 @@
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <x-input-label for="name" :value="__('Display Name')"
+                                <x-input-label for="name" :value="__('Product Name')"
                                     class="text-[10px] font-black uppercase text-gray-400" />
                                 <x-text-input id="name" name="name" type="text"
                                     class="mt-1 block w-full font-bold" :value="old('name')" required />
