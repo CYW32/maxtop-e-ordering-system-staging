@@ -49,4 +49,18 @@ class Uom extends Model
     {
         return $query->where('status', 'active');
     }
+
+    public function item(): BelongsTo
+    {
+        return $this->belongsTo(Item::class);
+    }
+
+    /**
+     * ARCHITECTURE FIX: Snapshot Integrity Link [Backbone 5.c.1].
+     * Resolves BadMethodCallException by defining the relationship to historical orders.
+     */
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
 }

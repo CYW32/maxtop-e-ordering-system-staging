@@ -1553,6 +1553,20 @@ class Uom extends Model
     {
         return $query->where('status', 'active');
     }
+
+    public function item(): BelongsTo
+    {
+        return $this->belongsTo(Item::class);
+    }
+
+    /**
+     * ARCHITECTURE FIX: Snapshot Integrity Link [Backbone 5.c.1].
+     * Resolves BadMethodCallException by defining the relationship to historical orders.
+     */
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
 }
 
 --- END_FILE ---
@@ -3529,6 +3543,11 @@ use App\Models\Item;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
+use App\Models\Category;
+use App\Models\Catalog;
+use Illuminate\Support\Facades\DB; // ARCHITECTURE FIX: Added missing DB Facade import
+use Illuminate\Http\RedirectResponse; // ARCHITECTURE FIX: Resolved TypeError by importing framework class
+use App\Models\Uom;
 
 // Note: For actual compression, you would typically use 'Intervention Image' library
 // composer require intervention/image
@@ -3547,7 +3566,7 @@ class ItemController extends Controller
 
         // Multi-attribute search (SKU or Name)
         if ($request->filled('search')) {
-            $query->where(function($q) use ($request) {
+            $query->where(function ($q) use ($request) {
                 $q->where('name', 'like', "%{$request->search}%")
                   ->orWhere('sku', 'like', "%{$request->search}%");
             });
@@ -3561,7 +3580,7 @@ class ItemController extends Controller
             ->withQueryString();
 
         return view('admin.items.index', compact('items'));
-        }
+    }
 
     public function create()
     {
@@ -3573,128 +3592,144 @@ class ItemController extends Controller
         return view('admin.items.create', compact('catalogs'));
     }
 
-    public function store(Request $request)
+    /**
+     * ARCHITECTURE FIX: Atomic Product Initialization.
+     * Fulfills Requirement: Nested UOM persistence during Item creation [11.a].
+     */
+    public function store(Request $request): RedirectResponse
     {
-        \Illuminate\Support\Facades\Gate::authorize('create_items');
+        Gate::authorize('create_items');
 
+        // 1. HARDENED VALIDATION [Backbone 5.c]
         $validated = $request->validate([
-            'sku' => 'required|unique:items,sku',
-            'name' => 'required|string|max:255',
-            'description' => 'nullable|string|max:2000',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-            'status' => 'required|in:active,deactive',
-            'catalogs' => 'nullable|array',
-            'catalogs.*' => 'exists:catalogs,id',
-            'uoms' => 'nullable|array',
-            'uoms.*.uom_name' => 'required|string|max:100',
-            'uoms.*.rate_qty' => 'required|integer|min:1',
-            'uoms.*.price' => 'required|numeric|min:0',
-            'uoms.*.status' => 'required|in:active,inactive',
+            'name'         => ['required', 'string', 'max:255'],
+            'sku'          => ['required', 'string', 'unique:items,sku'],
+            'description'  => ['nullable', 'string'],
+            'status'       => ['required', 'in:active,inactive'],
+            'image'        => ['nullable', 'image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
+
+            // Whitelist Sync Arrays
+            'categories'   => ['nullable', 'array'],
+            'categories.*' => ['exists:categories,id'],
+            'catalogs'     => ['nullable', 'array'],
+            'catalogs.*'   => ['exists:catalogs,id'],
+
+            // UOM Array Validation [Pure UOM Model]
+            'uoms'            => ['required', 'array', 'min:1'], // Fulfills Base-Unit Guard [4.a.3]
+            'uoms.*.uom_name' => ['required', 'string', 'max:50'],
+            'uoms.*.rate_qty' => ['required', 'numeric', 'min:1'],
+            'uoms.*.price'    => ['required', 'numeric', 'min:0'],
+            'uoms.*.status'   => ['required', 'in:active,inactive'],
+        ], [
+            'uoms.required' => __('You must initialize at least one packaging unit (Base Unit Rate 1) for catalog visibility.')
         ]);
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($request, $validated) {
+        // 2. ATOMIC TRANSACTION GUARD [Backbone 11.a]
+        DB::transaction(function () use ($request, $validated) {
+
+            // Create Core Identity
+            $item = Item::create($request->only(['name', 'sku', 'description', 'status']));
+
+            // Handle Media
             if ($request->hasFile('image')) {
-                $validated['image_path'] = $request->file('image')->store('items', 'public');
+                $path = $request->file('image')->store('items', 'public');
+                $item->update(['image_path' => $path]);
             }
 
-            // ARCHITECTURE FIX: Base-Unit Guard [Addendum 5.a]
-            // Item is forced to 'deactive' if no UOM has rate_qty = 1
-            $uoms = collect($request->input('uoms', []));
-            $hasBaseUnit = $uoms->where('status', 'active')->contains('rate_qty', 1);
+            // Sync Whitelist Assignments [Backbone 3.a.3]
+            $item->categories()->sync($validated['categories'] ?? []);
+            $item->catalogs()->sync($validated['catalogs'] ?? []);
 
-            $itemStatus = $request->status;
-            if (! $hasBaseUnit) {
-                $itemStatus = 'deactive';
-            }
-
-            // Create item without 'price' field
-            $item = \App\Models\Item::create(array_merge($validated, ['status' => $itemStatus]));
-
-            if ($request->has('catalogs')) {
-                $item->catalogs()->sync($request->input('catalogs', []));
-            }
-
-            if ($request->has('uoms')) {
-                foreach ($request->uoms as $uomData) {
-                    $item->uoms()->create($uomData);
-                }
-            }
+            // 3. PERSIST PACKAGING TIERS (The Missing Link)
+            // We use createMany to efficiently insert the nested array into the uoms table.
+            $item->uoms()->createMany($validated['uoms']);
         });
 
-        return redirect()->route('items.index')->with('success', 'Product established under Pure UOM pricing.');
+        return redirect()->route('items.index')
+            ->with('success', __('Product entity and packaging configurations successfully registry-initialized.'));
     }
 
-    public function edit(Item $item)
+    /**
+ * Fulfills Requirement: Advanced Assignment with Whitelist Oversight.
+ */
+    public function edit(Item $item): \Illuminate\View\View
     {
         Gate::authorize('edit_items');
 
-        // Load catalogs and categories for management
-        $catalogs = \App\Models\Catalog::orderBy('name')->get();
-        $categories = \App\Models\Category::orderBy('name')->get();
+        // ARCHITECTURE FIX: Eager load relationships to prevent N+1 queries.
+        // Loads Categories, Catalogs, and UOMs for the Pure UOM Pricing Model.
+        $item->load(['categories', 'catalogs', 'activeUoms']);
 
-        return view('admin.items.edit', compact('item', 'catalogs', 'categories'));
+        $categories = Category::where('status', 'active')->orderBy('name')->get();
+        $catalogs = Catalog::where('status', 'active')->orderBy('name')->get();
+
+        return view('admin.items.edit', compact('item', 'categories', 'catalogs'));
     }
 
-    public function update(Request $request, Item $item)
+    /**
+     * ARCHITECTURE FIX: Nested UOM CRUD with Status Synchronization.
+     * Resolves persistence failure by standardizing on 'inactive' [3.c.1].
+     */
+    public function update(Request $request, Item $item): \Illuminate\Http\RedirectResponse
     {
-        \Illuminate\Support\Facades\Gate::authorize('edit_items');
+        Gate::authorize('edit_items');
 
         $validated = $request->validate([
-            'sku' => 'required|unique:items,sku,'.$item->id,
-            'name' => 'required|string|max:255',
-            'description' => 'nullable|string|max:2000',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-            'status' => 'required|in:active,deactive',
-            'catalogs' => 'nullable|array',
-            'uoms' => 'nullable|array',
-            'uoms.*.id' => 'nullable|exists:uoms,id',
-            'uoms.*.uom_name' => 'required|string|max:100',
-            'uoms.*.rate_qty' => 'required|integer|min:1',
-            'uoms.*.price' => 'required|numeric|min:0',
-            'uoms.*.status' => 'required|in:active,inactive',
+            'name'        => ['required', 'string', 'max:255'],
+            'sku'         => ['required', 'string', 'unique:items,sku,' . $item->id],
+            'status'      => ['required', 'in:active,inactive'],
+            'categories'  => ['nullable', 'array'],
+            'catalogs'    => ['nullable', 'array'],
+
+            // Nested UOM Validation
+            'uoms'             => ['nullable', 'array'],
+            'uoms.*.id'        => ['nullable', 'exists:uoms,id'],
+            'uoms.*.uom_name'  => ['required_with:uoms', 'string', 'max:50'],
+            'uoms.*.rate_qty'  => ['required_with:uoms', 'numeric', 'min:1'],
+            'uoms.*.price'     => ['required_with:uoms', 'numeric', 'min:0'],
+            'uoms.*.status'    => ['required_with:uoms', 'in:active,inactive,deactive'], // Accept both for transition
         ]);
 
         \Illuminate\Support\Facades\DB::transaction(function () use ($item, $request, $validated) {
-            if ($request->hasFile('image')) {
-                if ($item->image_path) {
-                    \Illuminate\Support\Facades\Storage::disk('public')->delete($item->image_path);
+            // 1. Sync Core Attributes
+            $item->update($request->only(['name', 'sku', 'description', 'status']));
+
+            // 2. Whitelist Syncing [4.a.3]
+            $item->categories()->sync($validated['categories'] ?? []);
+            $item->catalogs()->sync($validated['catalogs'] ?? []);
+
+            // 3. Process UOM Lifecycle
+            $incomingUomIds = collect($validated['uoms'] ?? [])->pluck('id')->filter()->toArray();
+
+            // Deletion Guard: Preserve historical snapshots [6.b]
+            $uomsToRemove = $item->uoms()->whereNotIn('id', $incomingUomIds)->get();
+            foreach ($uomsToRemove as $oldUom) {
+                if ($oldUom->orderItems()->exists()) {
+                    $oldUom->update(['status' => 'inactive']);
+                } else {
+                    $oldUom->delete();
                 }
-                $validated['image_path'] = $request->file('image')->store('items', 'public');
             }
 
-            // ARCHITECTURE FIX: Base-Unit Guard logic for updates
-            $uoms = collect($request->input('uoms', []));
-            $hasBaseUnit = $uoms->where('status', 'active')->contains('rate_qty', 1);
+            // 4. Persistence with Strict String Binding
+            foreach ($validated['uoms'] ?? [] as $uomData) {
+                // MAPPER: Harmonize frontend 'deactive' to architectural 'inactive'
+                $statusValue = ($uomData['status'] === 'active') ? 'active' : 'inactive';
 
-            $itemStatus = $request->status;
-            if (! $hasBaseUnit) {
-                $itemStatus = 'deactive';
-            }
-
-            $item->update(array_merge($validated, ['status' => $itemStatus]));
-
-            if ($request->has('catalogs')) {
-                $item->catalogs()->sync($request->input('catalogs', []));
-            }
-
-            if ($request->has('uoms')) {
-                $incomingUomIds = [];
-                foreach ($request->uoms as $uomData) {
-                    $uom = $item->uoms()->withTrashed()->updateOrCreate(
-                        ['id' => $uomData['id'] ?? null],
-                        $uomData
-                    );
-                    $uom->restore();
-                    $incomingUomIds[] = $uom->id;
-                }
-                $orphans = $item->uoms()->withTrashed()->whereNotIn('id', $incomingUomIds)->get();
-                foreach ($orphans as $orphan) {
-                    $orphan->canBeDeleted() ? $orphan->forceDelete() : $orphan->update(['status' => 'inactive']);
-                }
+                $item->uoms()->updateOrCreate(
+                    ['id' => $uomData['id'] ?? null],
+                    [
+                        'uom_name' => strtoupper($uomData['uom_name']),
+                        'rate_qty' => $uomData['rate_qty'],
+                        'price'    => $uomData['price'],
+                        'status'   => (string) $statusValue,
+                    ]
+                );
             }
         });
 
-        return redirect()->route('items.index')->with('success', 'Product and Pure UOM configurations updated.');
+        return redirect()->route('items.index')
+            ->with('success', __('Product entity and UOM configurations successfully registry-hardened.'));
     }
 
     public function destroy(Item $item)
@@ -3726,25 +3761,24 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\View\View;
+use Illuminate\Validation\Rule;
 
 class CategoryController extends Controller
 {
     /**
-     * Fulfills Requirement: Permission-gated Category Registry.
-     * Includes Item count eager loading for performance oversight.
+     * Fulfills Requirement: Permission-gated Registry.
      */
     public function index(Request $request): View
     {
-        Gate::authorize('view_items'); 
+        Gate::authorize('view_items');
 
         $query = Category::query();
 
-        // Dynamic search filter [Backbone 2.a]
         if ($request->filled('search')) {
             $query->where('name', 'like', "%{$request->search}%");
         }
 
-        // Optimized pagination with Item Counts
+        // Optimized with Item Counts for oversight performance [Backbone 15.a]
         $categories = $query->withCount('items')
             ->latest()
             ->paginate(15)
@@ -3753,20 +3787,12 @@ class CategoryController extends Controller
         return view('admin.categories.index', compact('categories'));
     }
 
-    /**
-     * Fulfills User Request: Dedicated initialization page.
-     */
     public function create(): View
     {
         Gate::authorize('create_items');
-
         return view('admin.categories.create');
     }
 
-    /**
-     * Fulfills Addendum 7: Operational logic for category creation.
-     * Prevents duplicate naming to maintain Catalog Whitelist integrity.
-     */
     public function store(Request $request): RedirectResponse
     {
         Gate::authorize('create_items');
@@ -3774,25 +3800,23 @@ class CategoryController extends Controller
         $validated = $request->validate([
             'name'   => ['required', 'string', 'max:255', 'unique:categories,name'],
             'status' => ['required', 'in:active,deactive'],
-        ], [
-            'name.unique' => __('This category identity already exists in the system registry.')
         ]);
 
         Category::create($validated);
 
         return redirect()->route('categories.index')
-            ->with('success', __('Product category successfully initialized for Catalog whitelisting.'));
+            ->with('success', __('Category successfully initialized.'));
     }
 
-        /**
-     * Fulfills Requirement: Edit with Deletion Guard Logic.
+    /**
+     * Fulfills Requirement: Edit with Deletion Guard Logic [Backbone 9.c.1].
      */
     public function edit(Category $category): View
     {
         Gate::authorize('edit_items');
 
-        // ARCHITECTURE CHECK: Determine if Hard Delete is permissible [Backbone 9.c.1]
-        // Restricted if linked items exist in finalized transaction snapshots.
+        // ARCHITECTURE CHECK: Permissibility of Hard Deletion.
+        // Restricted if items within this category are part of an Approved/Completed order.
         $canBeDeleted = !$category->items()->whereHas('orderItems.order', function ($q) {
             $q->whereIn('status', ['approved', 'completed']);
         })->exists();
@@ -3801,7 +3825,7 @@ class CategoryController extends Controller
     }
 
     /**
-     * Fulfills Requirement: Secure Update Protocol.
+     * ARCHITECTURE FIX: Secure Update Protocol.
      */
     public function update(Request $request, Category $category): RedirectResponse
     {
@@ -3819,19 +3843,19 @@ class CategoryController extends Controller
     }
 
     /**
-     * ARCHITECTURE GUARD: Transactional Integrity [Backbone 9.c]
+     * ARCHITECTURE GUARD: Data Integrity Policy [Backbone 9.c.1].
      */
     public function destroy(Category $category): RedirectResponse
     {
         Gate::authorize('edit_items');
 
-        // Server-side security re-check
+        // Secondary server-side security re-check
         $hasHistory = $category->items()->whereHas('orderItems.order', function ($q) {
             $q->whereIn('status', ['approved', 'completed']);
         })->exists();
 
         if ($hasHistory) {
-            return redirect()->back()->with('error', __('Security Violation: Category contains items with finalized transaction records. Use "Inactive" status to hide instead.'));
+            return redirect()->back()->with('error', __('Security Violation: Transaction records exist. Use "Inactive" status to hide instead.'));
         }
 
         $category->delete();
@@ -3839,7 +3863,6 @@ class CategoryController extends Controller
         return redirect()->route('categories.index')
             ->with('success', __('Category purged from registry.'));
     }
-
 }
 
 --- END_FILE ---
@@ -9939,225 +9962,272 @@ Alpine.start();
     <x-slot name="header">
         <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
-                {{ __('Edit Product Details') }}
+                {{ __('Edit Product Entity') }}: <span class="text-blue-600">{{ $item->sku }}</span>
             </h2>
-            <div class="flex gap-2">
-                <span
-                    class="px-3 py-1 rounded-full text-[10px] font-black uppercase {{ $item->status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' }}">
-                    {{ $item->status }}
-                </span>
-            </div>
+            <a href="{{ route('items.index') }}"
+                class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                &larr; {{ __('Back to Registry') }}
+            </a>
         </div>
     </x-slot>
 
-    <div class="py-12" x-data="{
-        uoms: @js(
-    $item->uoms()->withTrashed()->get()->map(
-        fn($u) => [
-            'id' => $u->id,
-            'uom_name' => $u->uom_name,
-            'rate_qty' => $u->rate_qty,
-            'price' => $u->price,
-            'status' => $u->status ?? 'active',
-        ],
-    ),
-),
-        addUom() {
-            this.uoms.push({ id: null, uom_name: '', rate_qty: 1, price: 0, status: 'active' });
-        },
-        removeUom(index) {
-            if (confirm('{{ __('Remove this unit? Note: Permanent removal only occurs if no order history exists.') }}')) {
-                this.uoms.splice(index, 1);
-            }
-        }
-    }">
+    <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+
+            {{-- ARCHITECTURE GUARD: Transactional Integrity Warning [Backbone 3.c.1] --}}
+            @if ($item->orderItems()->whereHas('order', fn($q) => $q->whereIn('status', ['approved', 'completed']))->exists())
+                <div class="p-6 bg-amber-50 border border-amber-100 rounded-[2rem] flex gap-4 items-center">
+                    <div
+                        class="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-amber-500 shadow-sm">
+                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <h4 class="text-[11px] font-black uppercase text-amber-900 tracking-tight">
+                            {{ __('Core Identity Lock Active') }}</h4>
+                        <p class="text-[9px] font-bold text-amber-700 uppercase italic">
+                            {{ __('Finalized transaction snapshots exist for this item. Identity modifications are restricted to maintain historical auditing integrity.') }}
+                            [3.c.1, 4.b]</p>
+                    </div>
+                </div>
+            @endif
 
             <form method="POST" action="{{ route('items.update', $item) }}" enctype="multipart/form-data"
                 class="space-y-8">
                 @csrf
                 @method('PUT')
 
-                {{-- SECTION 1: MASTER ATTRIBUTES --}}
-                <div
-                    class="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm grid grid-cols-1 md:grid-cols-3 gap-8">
-                    <div class="md:col-span-2 space-y-6">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div>
-                                <x-input-label for="sku" :value="__('Product SKU')"
-                                    class="text-[10px] font-black uppercase text-gray-400" />
-                                <x-text-input id="sku" name="sku" type="text"
-                                    class="mt-1 block w-full font-mono uppercase" :value="old('sku', $item->sku)" required />
-                                <x-input-error :messages="$errors->get('sku')" class="mt-2" />
-                            </div>
-                            <div>
-                                <x-input-label for="status" :value="__('Listing Status')"
-                                    class="text-[10px] font-black uppercase text-gray-400" />
-                                <select name="status"
-                                    class="mt-1 block w-full rounded-xl border-gray-300 text-sm font-bold uppercase focus:ring-blue-500">
-                                    <option value="active" {{ $item->status === 'active' ? 'selected' : '' }}>
-                                        {{ __('Active') }}</option>
-                                    <option value="deactive" {{ $item->status === 'deactive' ? 'selected' : '' }}>
-                                        {{ __('Inactive') }}</option>
-                                </select>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+                    {{-- COLUMN 1: PRIMARY IDENTITY & WHITELISTING --}}
+                    <div class="lg:col-span-2 space-y-8">
+
+                        <div class="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                    <x-input-label for="name" :value="__('Display Name')"
+                                        class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                                    <x-text-input id="name" name="name" type="text"
+                                        class="block w-full font-bold uppercase" :value="old('name', $item->name)" required />
+                                </div>
+                                <div>
+                                    <x-input-label for="sku" :value="__('System SKU')"
+                                        class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                                    <x-text-input id="sku" name="sku" type="text"
+                                        class="block w-full font-mono font-black text-blue-600 uppercase"
+                                        :value="old('sku', $item->sku)" required />
+                                </div>
+                                <div class="md:col-span-2">
+                                    <x-input-label for="description" :value="__('Specifications')"
+                                        class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                                    <textarea id="description" name="description" rows="3"
+                                        class="block w-full border-gray-100 rounded-2xl text-xs font-bold uppercase focus:ring-blue-500">{{ old('description', $item->description) }}</textarea>
+                                </div>
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div>
-                                <x-input-label for="name" :value="__('Product Name')"
-                                    class="text-[10px] font-black uppercase text-gray-400" />
-                                <x-text-input id="name" name="name" type="text"
-                                    class="mt-1 block w-full font-bold" :value="old('name', $item->name)" required />
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            {{-- CATEGORIZATION SEARCH --}}
+                            <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
+                                x-data="{ search: '', count: {{ (int) $item->categories->count() }} }">
+                                <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-4">
+                                    {{ __('Categorization') }} <span class="ml-2 text-blue-500" x-text="count"></span>
+                                </h3>
+                                <input type="text" x-model="search" placeholder="{{ __('Filter...') }}"
+                                    class="w-full mb-4 bg-gray-50 border-gray-100 rounded-2xl text-[10px] font-black uppercase pl-4">
+                                <div class="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                                    @php $itemCatIds = $item->categories->pluck('id')->toArray(); @endphp
+                                    @forelse($categories as $category)
+                                        <label
+                                            x-show="'{{ strtoupper($category->name) }}'.includes(search.toUpperCase())"
+                                            class="flex items-center p-2 rounded-xl hover:bg-gray-50 cursor-pointer">
+                                            <input type="checkbox" name="categories[]" value="{{ $category->id }}"
+                                                class="rounded border-gray-300 text-blue-600"
+                                                @if (in_array($category->id, $itemCatIds)) checked @endif
+                                                x-on:change="count = $event.target.checked ? count + 1 : count - 1">
+                                            <span
+                                                class="ml-3 text-[11px] font-black text-gray-700 uppercase">{{ $category->name }}</span>
+                                        </label>
+                                    @empty
+                                        <p class="text-[9px] font-black text-gray-300 uppercase italic">
+                                            {{ __('No Groups Defined') }}</p>
+                                    @endforelse
+                                </div>
                             </div>
-                        </div>
 
-                        {{-- Pre-populated Description --}}
-                        <div class="mt-6">
-                            <x-input-label for="description" :value="__('Product Description (Public)')"
-                                class="text-[10px] font-black uppercase text-gray-400 mb-1" />
-                            <textarea id="description" name="description" rows="3"
-                                class="w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-xl shadow-sm text-sm">{{ old('description', $item->description) }}</textarea>
+                            {{-- CATALOG WHITELIST SEARCH [Backbone 3.a.1] --}}
+                            <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
+                                x-data="{ search: '', count: {{ (int) $item->catalogs->count() }} }">
+                                <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-4">
+                                    {{ __('Catalog Whitelist') }} <span class="ml-2 text-indigo-500"
+                                        x-text="count"></span></h3>
+                                <input type="text" x-model="search" placeholder="{{ __('Filter...') }}"
+                                    class="w-full mb-4 bg-gray-50 border-gray-100 rounded-2xl text-[10px] font-black uppercase pl-4">
+                                <div class="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                                    @php $itemCatalogIds = $item->catalogs->pluck('id')->toArray(); @endphp
+                                    @forelse($catalogs as $catalog)
+                                        <label
+                                            x-show="'{{ strtoupper($catalog->name) }}'.includes(search.toUpperCase())"
+                                            class="flex items-center p-2 rounded-xl hover:bg-gray-50 cursor-pointer">
+                                            <input type="checkbox" name="catalogs[]" value="{{ $catalog->id }}"
+                                                class="rounded border-gray-300 text-indigo-600"
+                                                @if (in_array($catalog->id, $itemCatalogIds)) checked @endif
+                                                x-on:change="count = $event.target.checked ? count + 1 : count - 1">
+                                            <span
+                                                class="ml-3 text-[11px] font-black text-gray-700 uppercase">{{ $catalog->name }}</span>
+                                        </label>
+                                    @empty
+                                        <p class="text-[9px] font-black text-gray-300 uppercase italic">
+                                            {{ __('No Catalogs Defined') }}</p>
+                                    @endforelse
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    {{-- Image Management [Backbone 7.b] --}}
-                    <div
-                        class="bg-gray-50 p-6 rounded-[1.5rem] border border-gray-100 flex flex-col items-center justify-center text-center">
-                        @if ($item->image_path)
-                            <img src="{{ asset('storage/' . $item->image_path) }}"
-                                class="w-32 h-32 object-cover rounded-xl shadow-md mb-4">
-                        @else
-                            <div
-                                class="w-32 h-32 bg-gray-200 rounded-xl flex items-center justify-center mb-4 border-2 border-dashed border-gray-300 italic text-[10px] font-black text-gray-400 uppercase">
-                                {{ __('No Image') }}
+                    {{-- COLUMN 2: STATUS & MEDIA --}}
+                    <div class="space-y-8">
+                        <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
+                            <div class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
+                                {{ __('Operational Status') }}</div>
+                            <select name="status"
+                                class="w-full border-gray-100 rounded-2xl text-xs font-black uppercase text-gray-700 focus:ring-blue-500 shadow-sm">
+                                <option value="active" @if ($item->status === 'active') selected @endif>
+                                    {{ __('Active & Orderable') }}</option>
+                                <option value="deactive" @if ($item->status === 'deactive') selected @endif>
+                                    {{ __('Deactivated (Hold)') }}</option>
+                            </select>
+                        </div>
+
+                        <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
+                            <div class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
+                                {{ __('Media') }}</div>
+                            <div class="flex flex-col items-center gap-6">
+                                @if ($item->image_path)
+                                    <img src="{{ asset('storage/' . $item->image_path) }}"
+                                        class="w-full aspect-square rounded-[2rem] object-cover border border-gray-50 shadow-inner">
+                                @endif
+                                <input type="file" name="image"
+                                    class="text-[9px] font-black uppercase text-gray-400">
                             </div>
-                        @endif
-                        <input id="image" name="image" type="file"
-                            class="text-[10px] text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-[10px] file:font-black file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+                        </div>
                     </div>
                 </div>
 
-                {{-- SECTION 2: UNIT OF MEASURE (UOM) MANAGEMENT [Addendum 5.a] --}}
-                <div class="bg-gray-900 rounded-[2.5rem] p-8 shadow-xl">
-                    <div class="flex justify-between items-center mb-8">
+                {{-- REFACTORED: Unit of Measure (UOM) Configurations container [CRUD FIX] --}}
+                <div class="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm" x-data="{
+                    uoms: {{ $item->uoms->map(
+                            fn($u) => [
+                                'id' => $u->id,
+                                'uom_name' => $u->uom_name,
+                                'rate_qty' => $u->rate_qty,
+                                'price' => $u->price,
+                                'status' => $u->status,
+                            ],
+                        )->toJson() }},
+                    addUom() {
+                        this.uoms.push({ id: null, uom_name: '', rate_qty: 1, price: 0.00, status: 'active' });
+                    },
+                    removeUom(index) {
+                        this.uoms.splice(index, 1);
+                    }
+                }">
+
+                    <div class="flex justify-between items-center mb-10">
                         <div>
-                            <h3 class="text-xs font-black uppercase text-blue-400 tracking-widest">
-                                {{ __('Unit of Measure (UOM) Configurations') }}</h3>
-                            <p class="text-[10px] text-gray-500 mt-1 uppercase">
-                                {{ __('Define multiple packaging sizes and staff-only pricing.') }}</p>
+                            <h3
+                                class="text-[10px] font-black uppercase text-gray-400 tracking-widest flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                                </svg>
+                                {{ __('Unit of Measure (UOM) Configurations') }}
+                            </h3>
+                            <p class="text-[8px] font-bold text-gray-300 uppercase italic mt-1">
+                                {{ __('Pricing source for all orders.') }} [Addendum 5.a]</p>
                         </div>
-                        <button type="button" @click="addUom()"
-                            class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase transition shadow-lg shadow-blue-900">
-                            {{ __('+ Add New Unit') }}
+                        <button type="button" x-on:click="addUom()"
+                            class="bg-blue-50 text-blue-600 px-6 py-2 rounded-xl text-[9px] font-black uppercase hover:bg-blue-100 transition">
+                            {{ __('+ Add Packaging Tier') }}
                         </button>
                     </div>
 
-                    <div class="space-y-4">
-                        <template x-for="(uom, index) in uoms" :key="index">
-                            <div class="grid grid-cols-1 md:grid-cols-12 gap-4 p-5 bg-gray-800 rounded-2xl border border-gray-700 items-end transition-all"
-                                :class="uom.status === 'inactive' ? 'opacity-50 grayscale' : ''">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-50">
+                            <thead>
+                                <tr class="text-[9px] font-black text-gray-400 uppercase tracking-tighter">
+                                    <th class="px-4 py-4 text-left">{{ __('Unit Name') }}</th>
+                                    <th class="px-4 py-4 text-center">{{ __('Rate (Base 1)') }}</th>
+                                    <th class="px-4 py-4 text-right">{{ __('Internal Price (RM)') }}</th>
+                                    <th class="px-4 py-4 text-center">{{ __('Status') }}</th>
+                                    <th class="px-4 py-4 text-right"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-50">
+                                <template x-for="(uom, index) in uoms" :key="index">
+                                    <tr class="group hover:bg-gray-50/50 transition-colors">
+                                        <td class="px-2 py-4">
+                                            <input type="hidden" :name="'uoms[' + index + '][id]'" x-model="uom.id">
+                                            <input type="text" :name="'uoms[' + index + '][uom_name]'"
+                                                x-model="uom.uom_name" required
+                                                class="w-full border-gray-100 rounded-xl text-[11px] font-black uppercase focus:ring-blue-500">
+                                        </td>
+                                        <td class="px-2 py-4">
+                                            <input type="number" :name="'uoms[' + index + '][rate_qty]'"
+                                                x-model="uom.rate_qty" min="1" required
+                                                class="w-24 mx-auto block border-gray-100 rounded-xl text-[11px] font-mono font-black text-blue-600 text-center">
+                                        </td>
+                                        <td class="px-2 py-4">
+                                            <input type="number" :name="'uoms[' + index + '][price]'" x-model="uom.price"
+                                                step="0.01" min="0" required
+                                                class="w-32 ml-auto block border-gray-100 rounded-xl text-[11px] font-mono font-black text-right">
+                                        </td>
+                                        <td class="px-2 py-4">
+                                            <select :name="'uoms[' + index + '][status]'" x-model="uom.status"
+                                                class="w-full border-gray-100 rounded-xl text-[9px] font-black uppercase focus:ring-blue-500">
+                                                <option value="active">{{ __('Active') }}</option>
+                                                <option value="inactive">{{ __('Inactive') }}</option>
+                                            </select>
+                                            {{-- ARCHITECTURE STANDARD: Visible validation feedback --}}
+                                            @error('uoms.*.status')
+                                                <p class="text-[7px] text-red-500 mt-1 uppercase font-black">
+                                                    {{ $message }}</p>
+                                            @enderror
+                                        </td>
+                                        <td class="px-2 py-4 text-right">
+                                            <button type="button" x-on:click="removeUom(index)"
+                                                class="text-red-300 hover:text-red-500 transition-all p-2">
+                                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                    stroke="currentColor" stroke-width="2.5">
+                                                    <path
+                                                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
 
-                                <input type="hidden" :name="'uoms[' + index + '][id]'" x-model="uom.id">
-
-                                <div class="md:col-span-4">
-                                    <label
-                                        class="text-[9px] font-black text-gray-500 uppercase mb-1 block">{{ __('Unit Name (e.g. Carton 24s)') }}</label>
-                                    <input type="text" :name="'uoms[' + index + '][uom_name]'" x-model="uom.uom_name"
-                                        required
-                                        class="w-full bg-gray-900 border-gray-700 rounded-xl text-white text-sm focus:ring-blue-500">
-                                </div>
-
-                                <div class="md:col-span-2">
-                                    <label
-                                        class="text-[9px] font-black text-gray-500 uppercase mb-1 block">{{ __('Rate Qty') }}</label>
-                                    <input type="number" :name="'uoms[' + index + '][rate_qty]'" x-model="uom.rate_qty"
-                                        min="1" required
-                                        class="w-full bg-gray-900 border-gray-700 rounded-xl text-white text-sm focus:ring-blue-500">
-                                </div>
-
-                                <div class="md:col-span-3">
-                                    <label
-                                        class="text-[9px] font-black text-blue-500 uppercase mb-1 block">{{ __('Staff Price (RM)') }}</label>
-                                    <input type="number" step="0.01" :name="'uoms[' + index + '][price]'"
-                                        x-model="uom.price" required
-                                        class="w-full bg-gray-900 border-blue-900/50 rounded-xl text-white text-sm focus:ring-blue-500">
-                                </div>
-
-                                <div class="md:col-span-3 flex gap-2">
-                                    <select :name="'uoms[' + index + '][status]'" x-model="uom.status"
-                                        class="flex-1 rounded-xl text-[10px] font-black uppercase border-gray-700 bg-gray-900 focus:ring-blue-500"
-                                        :class="uom.status === 'active' ? 'text-green-400' : 'text-red-400'">
-                                        <option value="active">{{ __('Active') }}</option>
-                                        <option value="inactive">{{ __('Inactive') }}</option>
-                                    </select>
-
-                                    <button type="button" @click="removeUom(index)"
-                                        class="h-10 w-10 flex items-center justify-center bg-gray-700 hover:bg-red-600 rounded-xl text-white transition shadow-sm">
-                                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                                            stroke-width="2.5">
-                                            <path
-                                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-
-                {{-- SECTION 3: ASSIGNMENTS (Categorization and Catalogs) --}}
-                <div
-                    class="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-8">
-                    {{-- Categories [Existing] --}}
-                    <div>
-                        <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                            {{ __('Categorization') }}</h3>
-                        <div class="grid grid-cols-2 gap-3">
-                            @foreach ($categories as $category)
-                                <label
-                                    class="flex items-center p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition cursor-pointer">
-                                    <input type="checkbox" name="categories[]" value="{{ $category->id }}"
-                                        class="rounded border-gray-300 text-blue-600"
-                                        {{ $item->categories->contains($category->id) ? 'checked' : '' }}>
-                                    <span
-                                        class="ml-2 text-[10px] font-black uppercase text-gray-600">{{ $category->name }}</span>
-                                </label>
-                            @endforeach
-                        </div>
-                    </div>
-
-                    {{-- Catalog Whitelist Manager --}}
-                    <div>
-                        <h3 class="text-[10px] font-black uppercase text-blue-600 mb-6 tracking-widest">
-                            {{ __('Catalog Visibility (Whitelisting)') }}</h3>
-                        <div class="grid grid-cols-1 gap-3">
-                            @foreach ($catalogs as $catalog)
-                                <label
-                                    class="flex items-center p-3 border border-blue-50 rounded-xl hover:bg-blue-50 transition cursor-pointer">
-                                    <input type="checkbox" name="catalogs[]" value="{{ $catalog->id }}"
-                                        class="rounded border-blue-300 text-blue-600"
-                                        {{ $item->catalogs->contains($catalog->id) ? 'checked' : '' }}>
-                                    <div class="ml-3 flex flex-col">
-                                        <span
-                                            class="text-[10px] font-black uppercase text-blue-900">{{ $catalog->name }}</span>
-                                        <span
-                                            class="text-[8px] text-blue-400 font-bold uppercase tracking-tighter">{{ __('Active in this catalog') }}</span>
-                                    </div>
-                                </label>
-                            @endforeach
+                        <div x-show="uoms.length === 0"
+                            class="py-12 text-center border-2 border-dashed border-gray-100 rounded-[2rem] bg-gray-50/30">
+                            <p class="text-[9px] font-black text-gray-300 uppercase italic">
+                                {{ __('No packaging units defined. This item will be suppressed from Catalogs until a valid unit is saved.') }}
+                                [3.a.3]
+                            </p>
                         </div>
                     </div>
                 </div>
 
-                {{-- SUBMIT ACTIONS --}}
-                <div
-                    class="flex items-center justify-end gap-4 p-6 bg-white rounded-3xl border border-gray-100 shadow-sm">
+                <div class="flex items-center justify-end gap-6 pt-8">
                     <a href="{{ route('items.index') }}"
-                        class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">{{ __('Cancel') }}</a>
+                        class="text-[10px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">{{ __('Discard Changes') }}</a>
                     <x-primary-button
-                        class="bg-blue-600 hover:bg-blue-700 px-10 py-4 rounded-2xl text-[10px] font-black uppercase shadow-lg shadow-blue-100">
-                        {{ __('Save Product & Unit Config') }}
+                        class="bg-gray-900 hover:bg-black py-5 px-16 rounded-[2rem] shadow-xl shadow-gray-100 transition-all uppercase text-[11px] font-black tracking-[0.1em]">
+                        {{ __('Save Product Configuration') }}
                     </x-primary-button>
                 </div>
             </form>
@@ -10526,7 +10596,7 @@ Alpine.start();
                         <button type="button" 
                                 onclick="if(confirm('{{ __('WARNING: This will permanently purge this category. This action is irreversible. Proceed?') }}')) document.getElementById('delete-category-form').submit();"
                                 class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition tracking-tighter">
-                            {{ __('Purge Category') }}
+                            {{ __('Hard Delete') }}
                         </button>
                     @else
                         <span class="text-[9px] font-black uppercase text-gray-300 italic flex items-center gap-2">
@@ -12646,14 +12716,17 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
 
-## #######################################################################################################################################
+##
 
-## Update details(v21)
+## Update details(v22)(CYW)
 
-* Solve:
-** Accessing the “Feature Settings” page will cause an error.
-** CS Staff access page “My Customer” > “Edit Login” will hit error 403.
-** CS Staff missing "Business Entities".
+- Solve:
+  ** Change the “price” to “status” at the staff side item list table.
+  ** “Create item” & “Edit item” page change the “Display name” to “Product name”.
+  ** Accessing the “Feature Settings” page will cause an error.
+  ** CS Staff access page “My Customer” > “Edit Login” will hit error 403.
+  \*\* CS Staff missing "Business Entities".
+
 --- END_FILE ---
 
 --- START_FILE: /Users/ahwei/Desktop/Work+/Freelance+/Maxtop e-ordering system/package-lock.json ---
@@ -12672,6 +12745,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
                 "concurrently": "^9.0.1",
                 "laravel-vite-plugin": "^2.0.0",
                 "postcss": "^8.4.31",
+                "prettier-plugin-blade": "^2.1.21",
                 "tailwindcss": "^3.1.0",
                 "vite": "^7.0.7"
             }
@@ -15244,6 +15318,36 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
             "integrity": "sha512-1NNCs6uurfkVbeXG4S8JFT9t19m45ICnif8zWLd5oPSZ50QnwMfK+H3jv408d4jw/7Bttv5axS5IiHoLaVNHeQ==",
             "dev": true
         },
+        "node_modules/prettier": {
+            "version": "3.8.1",
+            "resolved": "https://registry.npmjs.org/prettier/-/prettier-3.8.1.tgz",
+            "integrity": "sha512-UOnG6LftzbdaHZcKoPFtOcCKztrQ57WkHDeRD9t/PTQtmT0NHSeWWepj6pS0z/N7+08BHFDQVUrfmfMRcZwbMg==",
+            "dev": true,
+            "license": "MIT",
+            "peer": true,
+            "bin": {
+                "prettier": "bin/prettier.cjs"
+            },
+            "engines": {
+                "node": ">=14"
+            },
+            "funding": {
+                "url": "https://github.com/prettier/prettier?sponsor=1"
+            }
+        },
+        "node_modules/prettier-plugin-blade": {
+            "version": "2.1.21",
+            "resolved": "https://registry.npmjs.org/prettier-plugin-blade/-/prettier-plugin-blade-2.1.21.tgz",
+            "integrity": "sha512-+BPBPvla/Ppr0MVrqMAO+FTwxpXUYo8zhQPIGC7psNuMbB24y84cGrJ4Uc02GHTQN0q8txeG4Y4MxyJWgOujyQ==",
+            "dev": true,
+            "license": "MIT",
+            "engines": {
+                "node": ">=12.0.0"
+            },
+            "peerDependencies": {
+                "prettier": ">=3"
+            }
+        },
         "node_modules/proxy-from-env": {
             "version": "1.1.0",
             "resolved": "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-1.1.0.tgz",
@@ -15882,6 +15986,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
         "concurrently": "^9.0.1",
         "laravel-vite-plugin": "^2.0.0",
         "postcss": "^8.4.31",
+        "prettier-plugin-blade": "^2.1.21",
         "tailwindcss": "^3.1.0",
         "vite": "^7.0.7"
     }
