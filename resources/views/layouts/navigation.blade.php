@@ -1,120 +1,121 @@
-<nav x-data="{ open: false }" class="bg-white border-b border-gray-100">
-    <!-- Primary Navigation Menu -->
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between h-16">
-            <div class="flex">
-                <!-- Logo -->
-                <div class="shrink-0 flex items-center">
-                    <a href="{{ route('dashboard') }}">
-                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800" />
-                    </a>
-                </div>
-            </div>
+<div class="flex flex-col h-full overflow-y-auto overflow-x-hidden custom-scrollbar">
+    <!-- Header: Logo & Hamburger Menu -->
+    <div class="py-6 flex items-center h-24 transition-all duration-300 border-b border-white/5"
+        :class="sidebarOpen ? 'px-6 justify-between' : 'px-0 justify-center'">
 
-        </div>
+        <!-- Logo -->
+        <a href="{{ route('dashboard') }}" x-show="sidebarOpen" x-transition.opacity>
+            <img src="https://maxtop.com.my/wp-content/themes/maxtop/assets/img/logo.svg" alt="Maxtop Logo"
+                class="h-10 w-auto object-contain filter brightness-0 invert" />
+        </a>
+
+        <!-- Hamburger Menu Button -->
+        <button @click="sidebarOpen = !sidebarOpen"
+            class="text-white/80 hover:text-white focus:outline-none p-2 rounded-xl hover:bg-white/10 transition-colors">
+            <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16">
+                </path>
+            </svg>
+        </button>
     </div>
 
-    <!-- Sidebar -->
-    <div class="pt-4 pb-1 border-t border-gray-200">
+    <!-- Navigation Links -->
+    <nav class="flex-1 py-6 space-y-6 px-4">
+
         @role('customer')
-            <x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.index')">
-                {{ __('Order Products') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.index')">
-                {{ __('My Order History') }}
-            </x-nav-link>
-
-            <x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.index')">
-                {{ __('My Reservation Draft') }}
-            </x-nav-link>
-        @endrole
-        @hasanyrole('admin|cs_leader|cs_staff')
-            <div class="px-4 py-2 font-black text-xs uppercase text-gray-400 tracking-widest">{{ __('Office Operations') }}
+            <div x-cloak x-show="sidebarOpen" x-transition.opacity class="pb-4 border-b border-white/5 last:border-none">
+                <div class="text-[10px] font-black uppercase text-white/50 tracking-widest mb-3 px-2">
+                    {{ __('Customer Portal') }}</div>
+                <ul class="space-y-1.5">
+                    <li><x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">{{ __('Dashboard') }}</x-nav-link></li>
+                    <li><x-nav-link :href="route('customer.products.index')" :active="request()->routeIs('customer.products.*')">{{ __('Order Products') }}</x-nav-link></li>
+                    <li><x-nav-link :href="route('customer.orders.index')" :active="request()->routeIs('customer.orders.*')">{{ __('My Order History') }}</x-nav-link></li>
+                    <li><x-nav-link :href="route('reservation.index')" :active="request()->routeIs('reservation.*')">{{ __('My Reservation Draft') }}</x-nav-link></li>
+                </ul>
             </div>
+        @endrole
 
-            @can('view_items')
-                <x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">
-                    {{ __('Product Items') }}
-                </x-nav-link>
+        @hasanyrole('admin|cs_leader|cs_staff')
+            <div x-cloak x-show="sidebarOpen" x-transition.opacity class="pb-4 border-b border-white/5 last:border-none">
+                <div class="text-[10px] font-black uppercase text-white/50 tracking-widest mb-3 px-2">
+                    {{ __('Office Operations') }}</div>
+                <ul class="space-y-1.5">
+                    @can('view_items')
+                        <li><x-nav-link :href="route('items.index')" :active="request()->routeIs('items.*')">{{ __('Product Items') }}</x-nav-link></li>
+                        <li><x-nav-link :href="route('categories.index')" :active="request()->routeIs('categories.*')">{{ __('Product Categories') }}</x-nav-link></li>
+                    @endcan
 
-                {{-- Fulfills Item Grouping Management Requirement --}}
-                <x-nav-link :href="route('categories.index')" :active="request()->routeIs('categories.*')">
-                    {{ __('Product Categories') }}
-                </x-nav-link>
-            @endcan
+                    @can('view_catalogs')
+                        <li><x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">{{ __('Catalog Folders') }}</x-nav-link></li>
+                    @endcan
 
-            @can('view_catalogs')
-                <x-nav-link :href="route('catalogs.index')" :active="request()->routeIs('catalogs.*')">
-                    {{ __('Catalog Folders') }}
-                </x-nav-link>
-            @endcan
+                    @can('view_business_entities')
+                        <li><x-nav-link :href="route('companys.index')" :active="request()->routeIs('companys.*')">{{ __('Business Entities') }}</x-nav-link></li>
+                    @endcan
 
-            {{-- ARCHITECTURE FIX: Split "Business Entities" permission --}}
-            @can('view_business_entities')
-                <x-nav-link :href="route('companys.index')" :active="request()->routeIs('companys.*')">
-                    {{ __('Business Entities') }}
-                </x-nav-link>
-            @endcan
+                    @can('view_login_credentials')
+                        <li><x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">{{ __('Login Credentials') }}</x-nav-link></li>
+                    @endcan
 
-            {{-- ARCHITECTURE FIX: Split "Login Credentials" permission --}}
-            @can('view_login_credentials')
-                <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">
-                    {{ __('Login Credentials') }}
-                </x-nav-link>
-            @endcan
+                    @can('view_assigned_customers')
+                        <li><x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">{{ __('My Customers') }}</x-nav-link></li>
+                    @endcan
 
-            @can('view_assigned_customers')
-                <x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">
-                    {{ __('My Customers') }}
-                </x-nav-link>
-            @endcan
-
-            <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
-                {{ __('Order Overview') }}
-            </x-nav-link>
+                    <!-- Unified Dashboard Overview -->
+                    <li><x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">{{ __('Order Overview') }}</x-nav-link></li>
+                </ul>
+            </div>
         @endhasanyrole
 
         @role('admin')
-            <div class="pt-4 pb-1 border-t border-gray-100">
-                <div class="px-4 text-[10px] font-black uppercase text-gray-400 tracking-widest mb-4">
-                    {{ __('System Control') }}
-                </div>
-
-                <x-nav-link :href="route('admin.roles.manage.index')" :active="request()->routeIs('admin.roles.manage.*')">
-                    {{ __('Role Registry') }}
-                </x-nav-link>
-
-                <x-nav-link :href="route('admin.roles.matrix')" :active="request()->routeIs('admin.roles.matrix')">
-                    {{ __('Feature Settings') }}
-                </x-nav-link>
-
-                {{-- ARCHITECTURE FIX: Updated to match new 'admin.activity.index' name --}}
-                <x-nav-link :href="route('admin.activity.index')" :active="request()->routeIs('admin.activity.*')">
-                    {{ __('Activity Log') }}
-                </x-nav-link>
+            <div x-cloak x-show="sidebarOpen" x-transition.opacity class="pb-4 border-b border-white/5 last:border-none">
+                <div class="text-[10px] font-black uppercase text-white/50 tracking-widest mb-3 px-2">
+                    {{ __('System Control') }}</div>
+                <ul class="space-y-1.5">
+                    <li><x-nav-link :href="route('admin.roles.manage.index')" :active="request()->routeIs('admin.roles.manage.*')">{{ __('Role Registry') }}</x-nav-link></li>
+                    <li><x-nav-link :href="route('admin.roles.matrix')" :active="request()->routeIs('admin.roles.matrix')">{{ __('Feature Settings') }}</x-nav-link></li>
+                    <li><x-nav-link :href="route('admin.activity.index')" :active="request()->routeIs('admin.activity.*')">{{ __('Activity Log') }}</x-nav-link></li>
+                </ul>
             </div>
         @endrole
-    </div>
+    </nav>
 
-    <!-- Responsive Settings Options -->
-    <div class="pt-4 pb-1 border-t border-gray-200">
-        {{-- Consolidated Identity & Profile Link: Fulfills standard UI/UX consolidation --}}
-        <a href="{{ route('profile.edit') }}"
-            class="block px-4 py-2 hover:bg-gray-100 transition duration-150 ease-in-out">
-            <div class="text-sm font-medium text-gray-800">{{ Auth::user()->name }}</div>
-            <div class="text-xs text-gray-500">{{ Auth::user()->email }}</div>
+    <!-- Footer: Profile & Logout -->
+    <div class="p-4 mt-auto border-t border-white/5 flex flex-col"
+        :class="sidebarOpen ? 'items-start' : 'items-center'">
+
+        <!-- Profile Section -->
+        <a href="{{ route('profile.edit') }}" class="block mb-4 group w-full transition-all"
+            :class="sidebarOpen ? 'text-left px-2' : 'text-center'">
+            <div x-show="sidebarOpen">
+                <div class="text-sm font-bold text-white group-hover:text-gray-200 truncate">{{ Auth::user()->name }}
+                </div>
+                <div class="text-xs text-white/50 truncate">{{ Auth::user()->email }}</div>
+            </div>
+            <!-- Minimized Avatar -->
+            <div x-cloak x-show="!sidebarOpen"
+                class="w-10 h-10 mx-auto bg-white/10 group-hover:bg-white/20 transition-colors rounded-full text-white flex items-center justify-center text-lg font-black shadow-sm"
+                title="{{ Auth::user()->name }}">
+                {{ substr(Auth::user()->name, 0, 1) }}
+            </div>
         </a>
 
-        <div class="mt-3 space-y-1">
-            <form method="POST" action="{{ route('logout') }}">
-                @csrf
-                <x-responsive-nav-link :href="route('logout')"
-                    onclick="event.preventDefault();
-                                    this.closest('form').submit();">
-                    {{ __('Log Out') }}
-                </x-responsive-nav-link>
-            </form>
-        </div>
+        <!-- Logout Section -->
+        <form method="POST" action="{{ route('logout') }}" class="w-full flex"
+            :class="sidebarOpen ? 'justify-start' : 'justify-center'">
+            @csrf
+            <button type="submit" class="flex items-center transition-colors rounded-xl"
+                :class="sidebarOpen ? 'px-2 py-2 text-sm font-bold text-white hover:text-gray-200 w-full' :
+                    'p-2.5 hover:bg-white/10 text-white/70 hover:text-white'"
+                title="{{ __('Log Out') }}">
+                <span x-show="sidebarOpen">{{ __('Log Out') }}</span>
+                <!-- Logout Icon -->
+                <svg x-cloak x-show="!sidebarOpen" class="w-6 h-6" fill="none" stroke="currentColor"
+                    viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+            </button>
+        </form>
     </div>
-</nav>
+</div>

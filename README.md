@@ -64,3 +64,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 - Solve:
   ** Improve the “CATEGORIZATION” & ”CATALOG VISIBILITY (WHITELISTING)” listing way, able searchable and will list out the chosen.
+
+## Update details(v1)(zj)
+
+- Solve:
+   ** Improve the UI design of Navigation Menu 
