@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Category;
+use App\Models\Item; // IMPORTANT: Required to fetch the $items
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Http\RedirectResponse;
@@ -11,9 +12,6 @@ use Illuminate\Validation\Rule;
 
 class CategoryController extends Controller
 {
-    /**
-     * Fulfills Requirement: Permission-gated Registry.
-     */
     public function index(Request $request): View
     {
         Gate::authorize('view_items');
@@ -24,11 +22,7 @@ class CategoryController extends Controller
             $query->where('name', 'like', "%{$request->search}%");
         }
 
-        // Optimized with Item Counts for oversight performance [Backbone 15.a]
-        $categories = $query->withCount('items')
-            ->latest()
-            ->paginate(15)
-            ->withQueryString();
+        $categories = $query->withCount('items')->latest()->paginate(15)->withQueryString();
 
         return view('admin.categories.index', compact('categories'));
     }
@@ -36,7 +30,11 @@ class CategoryController extends Controller
     public function create(): View
     {
         Gate::authorize('create_items');
-        return view('admin.categories.create');
+
+        // FIX: Fetch all items to pass to the create view
+        $items = Item::orderBy('name')->get();
+
+        return view('admin.categories.create', compact('items'));
     }
 
     public function store(Request $request): RedirectResponse
@@ -44,69 +42,90 @@ class CategoryController extends Controller
         Gate::authorize('create_items');
 
         $validated = $request->validate([
-            'name'   => ['required', 'string', 'max:255', 'unique:categories,name'],
+            'name' => ['required', 'string', 'max:255', 'unique:categories,name'],
             'status' => ['required', 'in:active,deactive'],
+            'items' => ['nullable', 'array'],
+            'items.*' => ['exists:items,id'],
         ]);
 
-        Category::create($validated);
+        $category = Category::create([
+            'name' => $validated['name'],
+            'status' => $validated['status'],
+        ]);
 
-        return redirect()->route('categories.index')
-            ->with('success', __('Category successfully initialized.'));
+        // Sync items to the category
+        $category->items()->sync($request->input('items', []));
+
+        return redirect()
+            ->route('categories.index')
+            ->with('success', "Category ({$category->name}) been created successfully.");
     }
 
-    /**
-     * Fulfills Requirement: Edit with Deletion Guard Logic [Backbone 9.c.1].
-     */
     public function edit(Category $category): View
     {
         Gate::authorize('edit_items');
 
-        // ARCHITECTURE CHECK: Permissibility of Hard Deletion.
-        // Restricted if items within this category are part of an Approved/Completed order.
-        $canBeDeleted = !$category->items()->whereHas('orderItems.order', function ($q) {
-            $q->whereIn('status', ['approved', 'completed']);
-        })->exists();
+        $canBeDeleted = !$category
+            ->items()
+            ->whereHas('orderItems.order', function ($q) {
+                $q->whereIn('status', ['approved', 'completed']);
+            })
+            ->exists();
 
-        return view('admin.categories.edit', compact('category', 'canBeDeleted'));
+        // FIX: Fetch items and assigned IDs for the edit view
+        $items = Item::orderBy('name')->get();
+        $assignedItemIds = $category->items()->pluck('items.id')->toArray();
+
+        return view('admin.categories.edit', compact('category', 'canBeDeleted', 'items', 'assignedItemIds'));
     }
 
-    /**
-     * ARCHITECTURE FIX: Secure Update Protocol.
-     */
     public function update(Request $request, Category $category): RedirectResponse
     {
         Gate::authorize('edit_items');
 
         $validated = $request->validate([
-            'name'   => ['required', 'string', 'max:255', Rule::unique('categories')->ignore($category->id)],
+            'name' => ['required', 'string', 'max:255', Rule::unique('categories')->ignore($category->id)],
             'status' => ['required', 'in:active,deactive'],
+            'items' => ['nullable', 'array'],
+            'items.*' => ['exists:items,id'],
         ]);
 
-        $category->update($validated);
+        $isDeactivating = $category->status === 'active' && $validated['status'] === 'deactive';
 
-        return redirect()->route('categories.index')
-            ->with('success', __('Category configuration updated.'));
+        $category->update([
+            'name' => $validated['name'],
+            'status' => $validated['status'],
+        ]);
+
+        // Sync items to the category (updates existing, adds new, removes unchecked)
+        $category->items()->sync($request->input('items', []));
+
+        $message = $isDeactivating ? "Category ({$category->name}) deactivated successfully." : "Category ({$category->name}) updated successfully.";
+
+        return redirect()->route('categories.index')->with('success', $message);
     }
 
-    /**
-     * ARCHITECTURE GUARD: Data Integrity Policy [Backbone 9.c.1].
-     */
     public function destroy(Category $category): RedirectResponse
     {
         Gate::authorize('edit_items');
 
-        // Secondary server-side security re-check
-        $hasHistory = $category->items()->whereHas('orderItems.order', function ($q) {
-            $q->whereIn('status', ['approved', 'completed']);
-        })->exists();
+        $hasHistory = $category
+            ->items()
+            ->whereHas('orderItems.order', function ($q) {
+                $q->whereIn('status', ['approved', 'completed']);
+            })
+            ->exists();
 
         if ($hasHistory) {
             return redirect()->back()->with('error', __('Security Violation: Transaction records exist. Use "Inactive" status to hide instead.'));
         }
 
+        $categoryName = $category->name;
+
         $category->delete();
 
-        return redirect()->route('categories.index')
-            ->with('success', __('Category purged from registry.'));
+        return redirect()
+            ->route('categories.index')
+            ->with('success', "Category ({$categoryName}) deleted successfully.");
     }
 }

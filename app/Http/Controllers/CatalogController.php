@@ -24,14 +24,17 @@ class CatalogController extends Controller
         return view('admin.catalogs.index', compact('catalogs'));
     }
 
-    public function create()
+public function create()
     {
         // Requirement: Needs View + Create
         if (! auth()->user()->can('view_catalogs') || ! auth()->user()->can('create_catalogs')) {
             abort(403);
         }
 
-        return view('admin.catalogs.create');
+        // Fetch all items to populate the Whitelist Interface during creation
+        $items = Item::orderBy('name')->get();
+
+        return view('admin.catalogs.create', compact('items'));
     }
 
     public function store(Request $request)
@@ -45,9 +48,18 @@ class CatalogController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255|unique:catalogs,name',
+            'items' => 'nullable|array',
+            'items.*' => 'exists:items,id',
         ]);
 
-        Catalog::create($validated);
+        $catalog = Catalog::create([
+            'name' => $validated['name']
+        ]);
+
+        // Sync items if the whitelist data is present in the request
+        if ($request->has('items')) {
+            $catalog->items()->sync($request->input('items', []));
+        }
 
         return redirect()->route('catalogs.index')->with('success', 'Catalog created successfully.');
     }
