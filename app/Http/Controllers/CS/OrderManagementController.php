@@ -21,23 +21,19 @@ class OrderManagementController extends Controller
         // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade [3]
         $status = ['pending', 'approved', 'in_transit'];
 
-        $query = Order::whereIn('status', $status)
-            ->where(function ($query) use ($user) {
-                $query->where('handler_id', $user->id)
-                    ->orWhere(function ($sub) use ($user) {
-                        $sub->whereNull('handler_id')
-                            ->whereHas('user', function ($u) use ($user) {
-                                $u->where('assigned_cs_id', $user->id);
-                            });
-                    });
+        $query = Order::whereIn('status', $status)->where(function ($query) use ($user) {
+            $query->where('handler_id', $user->id)->orWhere(function ($sub) use ($user) {
+                $sub->whereNull('handler_id')->whereHas('user', function ($u) use ($user) {
+                    $u->where('assigned_cs_id', $user->id);
+                });
             });
+        });
 
         // Apply Dynamic Search [1, 5]
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term)
-                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+                $q->search($term)->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
@@ -47,9 +43,7 @@ class OrderManagementController extends Controller
         }
 
         // Finalize with Pagination and Query String Persistence
-        $myOrders = $query->latest()
-            ->paginate(15)
-            ->withQueryString();
+        $myOrders = $query->latest()->paginate(15)->withQueryString();
 
         // Pass $status to resolve the ErrorException in the Blade view [3]
         return view('cs.orders.index', compact('myOrders', 'status'));
@@ -59,8 +53,9 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
      * Displays orders from customers who have NO assigned CS Staff.
      */
-    public function queue(Request $request) // Inject Request
+    public function queue(Request $request)
     {
+        // Inject Request
         $query = Order::where('status', 'pending')
             ->whereNull('handler_id')
             ->whereHas('user', function ($q) {
@@ -72,7 +67,7 @@ class OrderManagementController extends Controller
             $term = $request->search;
             $query->where(function ($q) use ($term) {
                 $q->search($term) // Hits order_number [12]
-                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+                    ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
@@ -90,10 +85,15 @@ class OrderManagementController extends Controller
         // Also load 'items.uom' to ensure unit names display correctly in the CS view.
         $order->load(['items.item', 'items.uom', 'user.company', 'handler']);
 
-        $eligibleStaff = User::role(['admin', 'cs_leader', 'cs_staff'])
-            ->where('id', '!=', auth()->id())
-            ->where('status', 'active')
-            ->get();
+        $staffQuery = User::role(['admin', 'cs_leader', 'cs_staff'])->where('status', 'active');
+
+        // FIX: Exclude the *current handler* from the list (instead of the logged-in user).
+        // This allows Admins/Leaders to transfer tickets to themselves.
+        if ($order->handler_id) {
+            $staffQuery->where('id', '!=', $order->handler_id);
+        }
+
+        $eligibleStaff = $staffQuery->get();
 
         return view('cs.orders.show', compact('order', 'eligibleStaff'));
     }
@@ -111,7 +111,12 @@ class OrderManagementController extends Controller
         $newHandler = User::findOrFail($request->new_handler_id);
 
         // Security: Only the current handler or a Leader/Admin can initiate handover [5, 6]
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+        if (
+            $order->handler_id !== auth()->id() &&
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
+        ) {
             abort(403, 'Unauthorized handover attempt.');
         }
 
@@ -122,7 +127,10 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log("Order handed over from {$oldHandlerName} to {$newHandler->name}");
 
-        return redirect()->route('office.orders.index')->with('success', "Order handed over to {$newHandler->name}.");
+        // FIX: Redirect back to the order instead of forcing the user out to the index
+        return redirect()
+            ->back()
+            ->with('success', "Order handed over to {$newHandler->name}.");
     }
 
     /**
@@ -155,7 +163,7 @@ class OrderManagementController extends Controller
                 activity('user_assignment')
                     ->performedOn($hq)
                     ->causedBy(auth()->user())
-                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: ".auth()->user()->name);
+                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: " . auth()->user()->name);
             }
         });
 
@@ -198,14 +206,12 @@ class OrderManagementController extends Controller
      */
     public function cancellationRequests(Request $request)
     {
-        $query = Order::where('status', 'cancellation_requested')
-            ->with(['user.company', 'handler', 'cancellationRequester']);
+        $query = Order::where('status', 'cancellation_requested')->with(['user.company', 'handler', 'cancellationRequester']);
 
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term)
-                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+                $q->search($term)->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
@@ -254,7 +260,12 @@ class OrderManagementController extends Controller
     public function updateStatus(Request $request, Order $order)
     {
         // Security: Only handler or CS Leader/Admin [5]
-        if ($order->handler_id !== auth()->id() && ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+        if (
+            $order->handler_id !== auth()->id() &&
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
+        ) {
             abort(403);
         }
 
@@ -280,8 +291,9 @@ class OrderManagementController extends Controller
      * Fulfills Section 5.c: My Claimed Orders (Master List)
      * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
-    public function history(Request $request) // Added Request injection
+    public function history(Request $request)
     {
+        // Added Request injection
         $user = auth()->user();
 
         // Define the statuses available for filtering
@@ -295,7 +307,7 @@ class OrderManagementController extends Controller
             $term = $request->search;
             $query->where(function ($q) use ($term) {
                 $q->search($term) // Uses Searchable trait [4]
-                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"));
+                    ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
@@ -305,9 +317,7 @@ class OrderManagementController extends Controller
         }
 
         // 4. Finalize with Pagination and Query String Persistence
-        $history = $query->latest()
-            ->paginate(15)
-            ->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
+        $history = $query->latest()->paginate(15)->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
 
         return view('cs.orders.history', compact('history', 'status'));
     }
@@ -338,7 +348,11 @@ class OrderManagementController extends Controller
     public function allOrders(Request $request)
     {
         // SECURITY GUARD: Leadership tier only [Backbone 2.a, 2.b]
-        if (! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+        if (
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
+        ) {
             abort(403, 'Unauthorized: Master oversight restricted to Leadership.');
         }
 
@@ -352,8 +366,8 @@ class OrderManagementController extends Controller
             $term = $request->search;
             $query->where(function ($q) use ($term) {
                 $q->search($term) // Hits order_number via Searchable trait
-                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$term}%"))
-                    ->orWhereHas('handler', fn ($h) => $h->where('name', 'like', "%{$term}%"));
+                    ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"))
+                    ->orWhereHas('handler', fn($h) => $h->where('name', 'like', "%{$term}%"));
             });
         }
 

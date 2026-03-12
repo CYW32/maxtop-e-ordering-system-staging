@@ -70,9 +70,15 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 - Solve:
    ** Improve the UI design of Navigation Menu 
 
-## Update details(v2)(zj)
+## Update details(v24)(zj)
 - Solve:
    ** Done combine the “Create catalog" container & manage whitelist when creating a new catalog(Not the edit existing catalog page). Also include the search user function.
    ** Done add the notification to inform CS Staff after CS staff make action on Catelog.
    ** Done added the search function on Product Categories > Create Category and Product Categorie > Edit
+
+## Update Details (v25)(zj)
+- Solve : 
+   ** Done resolve the Product Categories (Notifcation), should be 100% fix
+   ** CS Leader and Admin able to transfer the ticket by themself.
+   
   
