@@ -60,13 +60,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update details(v23)(CYW)
-
-- Solve:
-  ** Improve the “CATEGORIZATION” & ”CATALOG VISIBILITY (WHITELISTING)” listing way, able searchable and will list out the chosen.
-
-## Update Details (v25)(zj)
+## Update Details (v26)(zj)
 - Solve : 
-   ** Done resolve the Product Categories (Notifcation), should be 100% fix
-   ** CS Leader and Admin able to transfer the ticket by themself.
+  ** CS LEADER and ADMIN able to transfer the support ticket to our selves (ZJ)
+  ** Login Credentials > Create New Login = Remove Steps due to its make confusion (ZJ) 
+
+
+
   

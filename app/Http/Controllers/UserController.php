@@ -24,20 +24,19 @@ class UserController extends Controller
         $query = User::with(['roles', 'company']);
 
         if (auth()->user()->hasRole('cs_leader')) {
-            $query->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'cs_leader']));
+            $query->whereDoesntHave('roles', fn($q) => $q->whereIn('name', ['admin', 'cs_leader']));
         }
 
-        if (auth()->user()->hasPermissionTo('view_assigned_customers') &&
-            ! auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+        if (
+            auth()->user()->hasPermissionTo('view_assigned_customers') &&
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
+        ) {
             $query->where('assigned_cs_id', auth()->id());
         }
 
-        $users = $query->search($request->search)
-            ->filterByDate()
-            ->filterByRole()
-            ->latest()
-            ->paginate(15)
-            ->withQueryString();
+        $users = $query->search($request->search)->filterByDate()->filterByRole()->latest()->paginate(15)->withQueryString();
 
         return view('users.index', compact('users', 'roles', 'status'));
     }
@@ -136,10 +135,11 @@ class UserController extends Controller
         // 1. Validation scoped strictly to User Credential attributes [Addendum 3.b]
         $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email,'.$user->id,
+            'email' => 'required|email|unique:users,email,' . $user->id,
             'role' => 'required|exists:roles,name',
             'status' => 'required|in:active,deactive',
-            'company_id' => 'required|exists:companys,id', // Fulfills Many-to-One link [2.a]
+            // FIX: company_id is ONLY required if the user being updated is a customer
+            'company_id' => 'required_if:role,customer|nullable|exists:companys,id',
             'assigned_cs_id' => 'nullable|exists:users,id',
             'password' => 'nullable|min:8|confirmed',
         ]);
@@ -152,7 +152,7 @@ class UserController extends Controller
         ];
 
         // 3. Security Guard: Only allow status/role changes if target is NOT an admin
-        if (! $user->hasRole('admin')) {
+        if (!$user->hasRole('admin')) {
             $userData['status'] = $request->status;
 
             if (auth()->user()->hasPermissionTo('reassign_customers')) {
@@ -170,10 +170,11 @@ class UserController extends Controller
         // 5. Atomic Update to Users Table
         $user->update($userData);
 
-        // ARCHITECTURE FIX: The legacy $user->details() block has been REMOVED.
-        // Business data (PIC, Address, etc.) must be updated via CompanyController [3.c].
-
-        if (auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+        if (
+            auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
+        ) {
             return redirect()->route('users.index')->with('success', 'User credentials updated successfully.');
         }
 
@@ -192,7 +193,7 @@ class UserController extends Controller
 
         // Refined Section 3.c.1 Check:
         // Verification happens in the Model to ensure clusters are clean.
-        if (! $user->canBeDeleted()) {
+        if (!$user->canBeDeleted()) {
             return redirect()->back()->with('error', 'This user or its branches have existing order records and cannot be deleted to protect data integrity.');
         }
 

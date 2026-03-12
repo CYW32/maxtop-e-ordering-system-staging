@@ -26,10 +26,10 @@
                             <path
                                 d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0.293-.707l5.964-5.964A6 6 0 1121 9z" />
                         </svg>
-                        {{ __('System Identity & Business Assignment') }}
+                        {{ __('System Identity') }}{{ $user->hasRole('customer') ? __(' & Business Assignment') : '' }}
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 {{ $user->hasRole('customer') ? 'mb-8' : '' }}">
                         {{-- Locked Login ID --}}
                         <div>
                             <x-input-label for="login_id" :value="__('Login Identity (Locked)')"
@@ -59,35 +59,38 @@
                         </div>
                     </div>
 
-                    {{-- Searchable Company Assignment [Addendum 2.a & 3.d] --}}
-                    <div class="space-y-2">
-                        <x-input-label for="company_id" :value="__('Assigned Business (Searchable)')"
-                            class="text-[10px] font-black uppercase text-blue-600" />
-                        <select name="company_id" id="company_id"
-                            class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm @if ($isAssignmentLocked) bg-gray-50 cursor-not-allowed @endif"
-                            @if ($isAssignmentLocked) disabled @endif>
-                            <option value="">{{ __('-- Select Business Entity --') }}</option>
-                            @foreach ($companys as $company)
-                                <option value="{{ $company->id }}"
-                                    {{ old('company_id', $user->company_id) == $company->id ? 'selected' : '' }}>
-                                    {{ $company->company_name }}
-                                    ({{ $company->company_code ?? $company->branch_code }})
-                                </option>
-                            @endforeach
-                        </select>
+                    @if ($user->hasRole('customer'))
+                        {{-- Searchable Company Assignment [Addendum 2.a & 3.d] --}}
+                        <div class="space-y-2 border-t border-gray-100 pt-6 mt-6">
+                            <x-input-label for="company_id" :value="__('Assigned Business Entity')"
+                                class="text-[10px] font-black uppercase text-blue-600" />
+                            <select name="company_id" id="company_id"
+                                class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm @if ($isAssignmentLocked) bg-gray-50 cursor-not-allowed @endif"
+                                @if ($isAssignmentLocked) disabled @endif>
+                                <option value="">{{ __('-- Select Business Entity --') }}</option>
+                                @foreach ($companys as $company)
+                                    <option value="{{ $company->id }}"
+                                        {{ old('company_id', $user->company_id) == $company->id ? 'selected' : '' }}>
+                                        {{ $company->company_name }}
+                                        ({{ $company->company_code ?? $company->branch_code }})
+                                    </option>
+                                @endforeach
+                            </select>
 
-                        @if ($isAssignmentLocked)
-                            {{-- ARCHITECTURE: Hidden field prevents data loss on submit since select is disabled --}}
-                            <input type="hidden" name="company_id" value="{{ $user->company_id }}">
-                            <p class="text-[9px] font-black text-amber-600 uppercase italic mt-2">
-                                {{ __('⚠️ Assignment Locked: Transaction history exists for this account. Relocation to a new business entity is restricted to maintain audit integrity.') }}
-                            </p>
-                        @else
-                            <p class="mt-2 text-[9px] text-gray-400 italic uppercase">
-                                {{ __('Strategic Alert: Changing the company assignment immediately updates this user\'s product visibility based on the new Company\'s Catalog.') }}
-                            </p>
-                        @endif
-                    </div>
+                            @if ($isAssignmentLocked)
+                                {{-- ARCHITECTURE: Hidden field prevents data loss on submit since select is disabled --}}
+                                <input type="hidden" name="company_id" value="{{ $user->company_id }}">
+                                <p class="text-[9px] font-black text-amber-600 uppercase italic mt-2">
+                                    {{ __('⚠️ Assignment Locked: Transaction history exists for this account. Relocation to a new business entity is restricted to maintain audit integrity.') }}
+                                </p>
+                            @else
+                                <p class="mt-2 text-[9px] text-gray-400 italic uppercase">
+                                    {{ __('Strategic Alert: Changing the company assignment immediately updates this user\'s product visibility based on the new Company\'s Catalog.') }}
+                                </p>
+                            @endif
+                            <x-input-error :messages="$errors->get('company_id')" class="mt-2" />
+                        </div>
+                    @endif
                 </div>
 
                 {{-- SECTION 2: PERSONAL INFORMATION --}}
@@ -122,29 +125,32 @@
                 {{-- SECTION 3: SECURITY & OFFICE ASSIGNMENT --}}
                 <div class="bg-white shadow-sm sm:rounded-3xl border border-gray-100 p-8">
                     <div class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                        {{ __('Security & Office Assignment') }}</div>
+                        {{ __('Security & Control') }}</div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <div>
                             <x-input-label for="password" :value="__('New Password')" class="text-[10px] font-black uppercase" />
                             <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
                                 autocomplete="new-password" />
                         </div>
-                        @can('reassign_customers')
-                            <div>
-                                <x-input-label for="assigned_cs_id" :value="__('Responsible CS Staff')"
-                                    class="text-[10px] font-black uppercase" />
-                                <select name="assigned_cs_id"
-                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
-                                    <option value="">{{ __('-- Unassigned --') }}</option>
-                                    @foreach ($csStaffMembers as $cs)
-                                        <option value="{{ $cs->id }}"
-                                            {{ old('assigned_cs_id', $user->assigned_cs_id) == $cs->id ? 'selected' : '' }}>
-                                            {{ $cs->name }} ({{ $cs->login_id }})
-                                        </option>
-                                    @endforeach
-                                </select>
-                            </div>
-                        @endcan
+
+                        @if ($user->hasRole('customer'))
+                            @can('reassign_customers')
+                                <div>
+                                    <x-input-label for="assigned_cs_id" :value="__('Responsible CS Staff')"
+                                        class="text-[10px] font-black uppercase" />
+                                    <select name="assigned_cs_id"
+                                        class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                        <option value="">{{ __('-- Unassigned --') }}</option>
+                                        @foreach ($csStaffMembers as $cs)
+                                            <option value="{{ $cs->id }}"
+                                                {{ old('assigned_cs_id', $user->assigned_cs_id) == $cs->id ? 'selected' : '' }}>
+                                                {{ $cs->name }} ({{ $cs->login_id }})
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                            @endcan
+                        @endif
                     </div>
                 </div>
 
