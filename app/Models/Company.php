@@ -2,13 +2,14 @@
 
 namespace App\Models;
 
+use App\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
 class Company extends Model
 {
-    use LogsActivity;
+    use LogsActivity, Searchable;
 
     protected $table = 'companys'; // Aligning with requested naming
 
@@ -25,6 +26,14 @@ class Company extends Model
         'postal_code',
         'city',
         'state',
+    ];
+
+    // Define what the search bar can look for
+    protected $searchable = [
+        'company_code',
+        'company_name',
+        'company_reg_no',
+        'pic_name',
     ];
 
     public function catalog()

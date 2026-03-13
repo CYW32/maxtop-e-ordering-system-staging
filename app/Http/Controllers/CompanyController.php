@@ -14,13 +14,19 @@ class CompanyController extends Controller
         Gate::authorize('view_business_entities');
 
         $companys = Company::with(['catalog', 'parent', 'branches'])
-            ->whereNull('parent_id')
-            ->when($request->search, function ($q) use ($request) {
-                $q->where('company_name', 'like', "%{$request->search}%")
-                    ->orWhere('company_code', 'like', "%{$request->search}%");
+            // 1. Use the Searchable trait's scope instead of manual where/orWhere
+            ->when(!$request->filled('search'), function ($query) {
+                $query->whereNull('parent_id');
             })
+
+            ->when($request->filled('search'), function ($query) use ($request) {
+                $query->search($request->input('search'));
+            })
+
             ->latest()
-            ->paginate(15);
+            ->paginate(15)
+            // 2. CRITICAL: Add this so pagination links remember the ?search=... term
+            ->withQueryString();
 
         return view('admin.companys.index', compact('companys'));
     }

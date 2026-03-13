@@ -8,6 +8,14 @@
     </x-slot>
 
     <div class="py-12">
+        <div class="mb-4">
+            <x-filter-toolbar
+                :placeholder="__('Search Company Code, Name or Email...')"
+                :search="request('search')"
+                :action="route('companys.index')"
+            />
+        </div>
+        
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
             <a href="{{ route('companys.create') }}"
                 class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-xs font-black uppercase shadow-lg shadow-blue-200 transition-all">
