@@ -60,6 +60,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v27)(cyw)
+## Update Details (v28)(cyw)
 - Solve : 
   ** Added a searchable feature in Company model & controller & page.
