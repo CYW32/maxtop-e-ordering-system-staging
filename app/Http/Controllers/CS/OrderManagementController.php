@@ -85,7 +85,17 @@ class OrderManagementController extends Controller
         // Also load 'items.uom' to ensure unit names display correctly in the CS view.
         $order->load(['items.item', 'items.uom', 'user.company', 'handler']);
 
-        $staffQuery = User::role(['admin', 'cs_leader', 'cs_staff'])->where('status', 'active');
+        $currentUser = auth()->user();
+
+        // Default: Admins and Leaders can transfer to any of these roles
+        $targetRoles = ['admin', 'cs_leader', 'cs_staff'];
+
+        // RESTRICTION: If the user is just a CS Staff, they can ONLY hand over to a CS Leader.
+        if ($currentUser->hasRole('cs_staff') && !$currentUser->hasAnyRole(['admin', 'cs_leader'])) {
+            $targetRoles = ['cs_leader'];
+        }
+
+        $staffQuery = User::role($targetRoles)->where('status', 'active');
 
         // FIX: Exclude the *current handler* from the list (instead of the logged-in user).
         // This allows Admins/Leaders to transfer tickets to themselves.

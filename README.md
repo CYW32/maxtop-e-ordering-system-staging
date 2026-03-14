@@ -60,6 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v28)(cyw)
+## Update Details (v29)(cyw)
 - Solve : 
-  ** Added a searchable feature in Company model & controller & page.
+  ** CS Staff unable to transfer to others by itself, only can transfer to CS Leader(Not include admin).(CYW)
+  ** CS Staff > order details(Cancel status) > “UOM unit” is not showing (Remark : PACKAGING UNIT is under UOM), and remove the “Unit Price”. Also missing “Order ID”. And add a “Sum QTY” to show the sum up of all the ordered UOM QTY. (CYW)
+  ** “Order” page & “INTERNAL OFFICE LOG (PRIVATE)” make it separate from showing and edit area.(CYW)
+

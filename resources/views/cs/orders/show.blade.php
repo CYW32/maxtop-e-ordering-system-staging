@@ -1,5 +1,9 @@
 <x-app-layout>
     <x-slot name="header">
+
+    </x-slot>
+
+    <div class="py-12">
         <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
                 <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
@@ -8,7 +12,7 @@
                 </h2>
                 <div class="mt-1 flex items-center gap-2">
                     <span
-                        class="px-3 py-1 rounded-full text-[10px] font-black uppercase border shadow-sm 
+                        class="px-3 py-1 rounded-full text-[10px] font-black uppercase border shadow-sm
                         {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : '' }}
                         {{ $order->status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : '' }}
                         {{ $order->status === 'in_transit' ? 'bg-blue-100 text-blue-800 border-blue-300' : '' }}
@@ -21,13 +25,11 @@
                 </div>
             </div>
             <a href="{{ route('office.orders.index') }}"
-                class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+               class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                 &larr; {{ __('Back to Workspace') }}
             </a>
         </div>
-    </x-slot>
 
-    <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
             {{-- 1. OWNERSHIP & STATE ALERTS [Backbone 4.a, 4.b] --}}
@@ -69,69 +71,103 @@
                             <span class="text-[10px] font-black text-blue-600 uppercase">{{ $order->items->count() }}
                                 {{ __('Line Items') }}</span>
                         </div>
-                        <table class="min-w-full divide-y divide-gray-100">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th
-                                        class="px-8 py-4 text-left text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                                        {{ __('Product Details') }}</th>
-                                    <th
-                                        class="px-6 py-4 text-center text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                                        {{ __('Packaging Unit') }}</th>
-                                    <th
-                                        class="px-6 py-4 text-center text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                                        {{ __('Qty') }}</th>
-                                    <th
-                                        class="px-8 py-4 text-right text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                                        {{ __('Unit Price') }}</th>
-                                </tr>
+                        <table class="min-w-full divide-y divide-gray-50">
+                            <thead class="bg-gray-50/50">
+                            <tr class="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                                <th class="px-10 py-6 text-left">{{ __('Product Entity') }}</th>
+                                {{-- ARCHITECTURE FIX: Correct Packaging Unit Data Header --}}
+                                <th class="px-6 py-6 text-center">{{ __('Packaging Unit (UOM)') }}</th>
+                                <th class="px-10 py-6 text-right">{{ __('Ordered Qty') }}</th>
+                                {{-- REMOVED: Unit Price column as requested --}}
+                            </tr>
                             </thead>
-                            <tbody class="divide-y divide-gray-50 bg-white">
-                                @foreach ($order->items as $item)
-                                    <tr class="hover:bg-gray-50/50 transition-colors">
-                                        <td class="px-8 py-4">
-                                            <div class="flex flex-col">
-                                                <span
-                                                    class="text-[10px] font-mono font-black text-blue-600 uppercase">{{ $item->item->sku }}</span>
-                                                <span class="text-xs font-black text-gray-700 uppercase">
-                                                    {{ in_array($order->status, ['draft', 'pending']) ? $item->item->name : $item->snapshot_name }}
-                                                </span>
-                                            </div>
-                                        </td>
-                                        <td class="px-6 py-4 text-center">
-                                            <span
-                                                class="px-3 py-1 rounded-full text-[10px] font-black uppercase {{ $item->uom_id ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'bg-gray-50 text-gray-400' }}">
-                                                {{ in_array($order->status, ['draft', 'pending']) ? $item->uom->uom_name ?? __('Individual Unit') : $item->snapshot_uom_name }}
-                                            </span>
-                                        </td>
-                                        <td class="px-6 py-4 text-center font-mono font-black text-sm text-gray-900">
-                                            {{ $item->quantity }}</td>
-                                        <td class="px-8 py-4 text-right font-mono font-black text-sm text-gray-600">
-                                            {{-- ARCHITECTURE FIX: Display Live UOM price if snapshot hasn't happened yet --}}
-                                            @if (in_array($order->status, ['draft', 'pending']))
-                                                RM {{ number_format($item->uom->price ?? 0.0, 2) }}
-                                            @else
-                                                RM {{ number_format($item->price_at_order, 2) }}
-                                            @endif
-                                        </td>
-                                    </tr>
-                                @endforeach
+                            <tbody class="divide-y divide-gray-50">
+                            @forelse($order->items as $item)
+                                <tr class="hover:bg-gray-50/30 transition-colors">
+                                    <td class="px-10 py-6">
+                                        <div class="flex flex-col">
+                                            {{-- Backbone 6.b: Prioritizing Snapshot Name --}}
+                                            <span class="text-[11px] font-black text-gray-800 uppercase tracking-tight">
+                                            {{ $item->snapshot_name ?? $item->item->name }}
+                                        </span>
+                                            <span class="text-[9px] font-mono font-bold text-blue-500 uppercase italic">
+                                            SKU: {{ $item->item->sku }}
+                                        </span>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-6 text-center">
+                                        {{-- ARCHITECTURE FIX: Fetch Snapshot Packaging Unit [Backbone 6.b, 67] --}}
+                                        <span class="px-4 py-2 bg-gray-50 rounded-xl text-[10px] font-black text-gray-600 uppercase border border-gray-100">
+                                        {{ $item->snapshot_uom_name ?? ($item->uom->uom_name ?? __('UNIT')) }}
+                                    </span>
+                                    </td>
+                                    <td class="px-10 py-6 text-right">
+                                    <span class="text-sm font-mono font-black text-gray-900">
+                                        {{ number_format($item->quantity, 0) }}
+                                    </span>
+                                    </td>
+                                </tr>
+                            @empty
+                                {{-- ARCHITECTURE STANDARD: Professional Empty State --}}
+                                <tr>
+                                    <td colspan="3" class="px-10 py-20 text-center">
+                                        <p class="text-[10px] font-black text-gray-300 uppercase italic tracking-widest">
+                                            {{ __('No item records found for this order ID.') }}
+                                        </p>
+                                    </td>
+                                </tr>
+                            @endforelse
                             </tbody>
+
+                            {{-- ARCHITECTURE FIX: Logistical Summary Footer --}}
+                            <tfoot class="bg-gray-50/30">
+                            <tr class="border-t-2 border-gray-100">
+                                <td colspan="2" class="px-10 py-8 text-right">
+                                    <span class="text-[10px] font-black uppercase text-gray-400 tracking-widest">{{ __('Aggregated Sum Qty') }}</span>
+                                </td>
+                                <td class="px-10 py-8 text-right">
+                                <span class="text-xl font-mono font-black text-blue-600">
+                                    {{ number_format($order->items->sum('quantity'), 0) }}
+                                </span>
+                                </td>
+                            </tr>
+                            </tfoot>
                         </table>
                     </div>
 
                     {{-- 3. INTERNAL OFFICE NOTES [Backbone 6.b] --}}
                     <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
                         <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                            {{ __('Internal Office Log (Private)') }}</h3>
-                        <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST"
-                            class="space-y-4">
+                            {{ __('Internal Office Log (Private)') }}
+                        </h3>
+
+                        <div class="mb-6 p-5 bg-gray-50 rounded-[1.5rem] border border-dashed border-gray-200">
+                            <p class="text-[10px] font-bold text-gray-500 uppercase mb-2">{{ __('Current Log') }}</p>
+                            <div class="text-sm text-gray-700 whitespace-pre-wrap">
+                                {{ $order->internal_notes ?: __('No internal notes recorded yet.') }}
+                            </div>
+                        </div>
+
+                        <hr class="border-gray-100 mb-6">
+
+                        <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST" class="space-y-4">
                             @csrf
                             @method('PUT')
+
                             <input type="hidden" name="status" value="{{ $order->status }}">
-                            <textarea name="internal_notes" rows="4"
-                                class="w-full border-gray-200 rounded-[1.5rem] text-sm focus:ring-blue-500 placeholder-gray-300"
-                                placeholder="{{ __('Add staff-only comments, delivery instructions, or verification notes...') }}">{{ old('internal_notes', $order->internal_notes) }}</textarea>
+
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-2 ml-2">
+                                    {{ __('Update Log') }}
+                                </label>
+                                <textarea
+                                    name="internal_notes"
+                                    rows="3"
+                                    class="w-full border-gray-200 rounded-[1.5rem] text-sm focus:ring-blue-500 placeholder-gray-300 transition-all focus:border-blue-400"
+                                    placeholder="{{ __('Type instructions or verification notes here...') }}"
+                                >{{ old('internal_notes') }}</textarea>
+                            </div>
+
                             <div class="flex justify-end">
                                 <x-primary-button
                                     class="bg-gray-800 hover:bg-black py-2 px-6 rounded-xl text-[9px] font-black uppercase shadow-lg shadow-gray-200">
