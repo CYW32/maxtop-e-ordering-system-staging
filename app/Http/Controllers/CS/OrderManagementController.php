@@ -3,8 +3,8 @@
 namespace App\Http\Controllers\CS;
 
 use App\Http\Controllers\Controller;
-use App\Models\Order; // Added: Fulfills Section 5 Handover Context
-use App\Models\User; // Added: Required for form handling
+use App\Models\Order; 
+use App\Models\User; 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -18,7 +18,7 @@ class OrderManagementController extends Controller
     {
         $user = auth()->user();
 
-        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade [3]
+        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade
         $status = ['pending', 'approved', 'in_transit'];
 
         $query = Order::whereIn('status', $status)->where(function ($query) use ($user) {
@@ -29,7 +29,7 @@ class OrderManagementController extends Controller
             });
         });
 
-        // Apply Dynamic Search [1, 5]
+        // Apply Dynamic Search
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
@@ -45,7 +45,6 @@ class OrderManagementController extends Controller
         // Finalize with Pagination and Query String Persistence
         $myOrders = $query->latest()->paginate(15)->withQueryString();
 
-        // Pass $status to resolve the ErrorException in the Blade view [3]
         return view('cs.orders.index', compact('myOrders', 'status'));
     }
 
@@ -55,7 +54,6 @@ class OrderManagementController extends Controller
      */
     public function queue(Request $request)
     {
-        // Inject Request
         $query = Order::where('status', 'pending')
             ->whereNull('handler_id')
             ->whereHas('user', function ($q) {
@@ -66,7 +64,7 @@ class OrderManagementController extends Controller
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term) // Hits order_number [12]
+                $q->search($term)
                     ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
@@ -81,8 +79,6 @@ class OrderManagementController extends Controller
      */
     public function show(Order $order)
     {
-        // ARCHITECTURE FIX: Change 'user.details' to 'user.company' [Addendum 1.a]
-        // Also load 'items.uom' to ensure unit names display correctly in the CS view.
         $order->load(['items.item', 'items.uom', 'user.company', 'handler']);
 
         $currentUser = auth()->user();
@@ -98,7 +94,6 @@ class OrderManagementController extends Controller
         $staffQuery = User::role($targetRoles)->where('status', 'active');
 
         // FIX: Exclude the *current handler* from the list (instead of the logged-in user).
-        // This allows Admins/Leaders to transfer tickets to themselves.
         if ($order->handler_id) {
             $staffQuery->where('id', '!=', $order->handler_id);
         }
@@ -109,7 +104,7 @@ class OrderManagementController extends Controller
     }
 
     /**
-     * Fulfills Section 5: Handover Protocol (CS A to CS B) [5]
+     * Fulfills Section 5: Handover Protocol (CS A to CS B)
      */
     public function handover(Request $request, Order $order)
     {
@@ -120,12 +115,10 @@ class OrderManagementController extends Controller
         $oldHandlerName = $order->handler->name ?? 'Unassigned';
         $newHandler = User::findOrFail($request->new_handler_id);
 
-        // Security: Only the current handler or a Leader/Admin can initiate handover [5, 6]
+        // Security: Only the current handler or a Leader/Admin can initiate handover
         if (
             $order->handler_id !== auth()->id() &&
-            !auth()
-                ->user()
-                ->hasAnyRole(['admin', 'cs_leader'])
+            !auth()->user()->hasAnyRole(['admin', 'cs_leader'])
         ) {
             abort(403, 'Unauthorized handover attempt.');
         }
@@ -137,10 +130,7 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log("Order handed over from {$oldHandlerName} to {$newHandler->name}");
 
-        // FIX: Redirect back to the order instead of forcing the user out to the index
-        return redirect()
-            ->back()
-            ->with('success', "Order handed over to {$newHandler->name}.");
+        return redirect()->back()->with('success', "Order handed over to {$newHandler->name}.");
     }
 
     /**
@@ -157,17 +147,11 @@ class OrderManagementController extends Controller
             $order->update(['handler_id' => auth()->id()]);
 
             // 2. Fulfills Section 5.a Cluster Logic:
-            // If the HQ is unassigned, assign the entire hierarchy to this CS
             $customer = $order->user;
-
-            // Find the "Root HQ" (The user themselves if they have no parent)
             $hq = $customer->parent_id ? $customer->parent : $customer;
 
             if (is_null($hq->assigned_cs_id)) {
-                // Assign the HQ
                 $hq->update(['assigned_cs_id' => auth()->id()]);
-
-                // Assign all associated branches
                 $hq->branches()->update(['assigned_cs_id' => auth()->id()]);
 
                 activity('user_assignment')
@@ -192,17 +176,15 @@ class OrderManagementController extends Controller
     {
         $this->authorizeAction($order);
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($order) {
+        DB::transaction(function () use ($order) {
             foreach ($order->items as $orderItem) {
                 $uom = $orderItem->uom;
 
-                // ARCHITECTURE FIX: Strictly use UOM price. Fail if UOM is missing
-                // to prevent RM 0.00 data corruption in snapshots [Addendum 5.a]
                 $orderItem->update([
                     'snapshot_name' => $orderItem->item->name,
                     'snapshot_uom_name' => $uom?->uom_name ?? 'Unit',
                     'snapshot_uom_rate' => $uom?->rate_qty ?? 1,
-                    'price_at_order' => $uom->price, // REMOVED legacy price fallback
+                    'price_at_order' => $uom->price, 
                 ]);
             }
             $order->update(['status' => 'approved']);
@@ -249,7 +231,7 @@ class OrderManagementController extends Controller
             return redirect()->route('office.orders.show', $order)->with('success', 'Cancellation request submitted for manager approval.');
         }
 
-        // SECURITY FIX: Explicitly block CS Staff from finalizing cancellations [Addendum 4.b]
+        // SECURITY FIX: Explicitly block CS Staff from finalizing cancellations
         if ($order->status === 'cancellation_requested' && $user->hasRole('cs_staff')) {
             abort(403, 'Unauthorized: CS Staff cannot finalize cancellation requests.');
         }
@@ -269,18 +251,14 @@ class OrderManagementController extends Controller
      */
     public function updateStatus(Request $request, Order $order)
     {
-        // Security: Only handler or CS Leader/Admin [5]
         if (
             $order->handler_id !== auth()->id() &&
-            !auth()
-                ->user()
-                ->hasAnyRole(['admin', 'cs_leader'])
+            !auth()->user()->hasAnyRole(['admin', 'cs_leader'])
         ) {
             abort(403);
         }
 
         $validated = $request->validate([
-            // FIX: Added 'pending' to the allowed list so notes can be saved early [1, 3]
             'status' => 'required|in:pending,approved,in_transit,completed',
             'internal_notes' => 'nullable|string',
             'tracking_number' => 'required_if:status,in_transit|nullable|string',
@@ -299,53 +277,42 @@ class OrderManagementController extends Controller
 
     /**
      * Fulfills Section 5.c: My Claimed Orders (Master List)
-     * Displays all orders ever claimed by this CS, providing a full historical audit trail.
      */
     public function history(Request $request)
     {
-        // Added Request injection
         $user = auth()->user();
-
-        // Define the statuses available for filtering
         $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'];
 
-        // 1. Initialize query scoped to the current handler [Section 5.c]
-        $query = \App\Models\Order::where('handler_id', $user->id);
+        $query = Order::where('handler_id', $user->id);
 
-        // 2. Apply Dynamic Search (Order Number or Customer Name)
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term) // Uses Searchable trait [4]
+                $q->search($term)
                     ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
-        // 3. ARCHITECTURE FIX: Apply the Status Filter from the dropdown
         if ($request->filled('status') && in_array($request->status, $status)) {
             $query->where('status', $request->status);
         }
 
-        // 4. Finalize with Pagination and Query String Persistence
-        $history = $query->latest()->paginate(15)->withQueryString(); // Prevents losing filters when clicking "Page 2" [5]
+        $history = $query->latest()->paginate(15)->withQueryString(); 
 
         return view('cs.orders.history', compact('history', 'status'));
     }
 
     /**
      * Fulfills Section 5.d Handover Protocol & Ownership Logic.
-     * Ensures only the current handler or an elevated role can execute state changes.
      */
     private function authorizeAction(Order $order): void
     {
         $user = auth()->user();
 
-        // Allow Admin and CS Leaders full authority over all orders [Backbone 2.a, 2.b]
         if ($user->hasAnyRole(['admin', 'cs_leader'])) {
             return;
         }
 
-        // CS Staff can only process orders where they are the explicit handler [Section 5.c]
         if ($order->handler_id !== $user->id) {
             abort(403, 'Read-Only Mode: You are not the assigned handler for this order.');
         }
@@ -353,35 +320,26 @@ class OrderManagementController extends Controller
 
     /**
      * Fulfills Leadership Oversight Requirement.
-     * Displays ALL system orders with advanced filtering.
      */
     public function allOrders(Request $request)
     {
-        // SECURITY GUARD: Leadership tier only [Backbone 2.a, 2.b]
-        if (
-            !auth()
-                ->user()
-                ->hasAnyRole(['admin', 'cs_leader'])
-        ) {
+        if (!auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             abort(403, 'Unauthorized: Master oversight restricted to Leadership.');
         }
 
         $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled', 'cancellation_requested'];
 
-        // ARCHITECTURE FIX: Deep Eager Loading to resolve company and handler identity [Addendum 1.a]
         $query = Order::with(['user.company', 'handler']);
 
-        // ARCHITECTURE FIX: Multi-Entity Search (Order #, Customer Name, or Handler Name)
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term) // Hits order_number via Searchable trait
+                $q->search($term) 
                     ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"))
                     ->orWhereHas('handler', fn($h) => $h->where('name', 'like', "%{$term}%"));
             });
         }
 
-        // Apply Status Filter
         if ($request->filled('status') && in_array($request->status, $status)) {
             $query->where('status', $request->status);
         }
@@ -390,15 +348,37 @@ class OrderManagementController extends Controller
 
         return view('cs.orders.all', compact('allOrders', 'status'));
     }
-    
-/**
-     * Display the Stock Order PDF view.
+
+    /**
+     * STREAM the Order PDF (View in browser tab).
      */
     public function pdf(\App\Models\Order $order)
     {
-        // FIX: Removed 'user.details' and changed 'orderItems' to 'items'
         $order->load(['user.company', 'items.item', 'items.uom']);
 
-        return view('cs.orders.pdf', compact('order'));
+        // Bulletproof Way: Prevents Facade Class Not Found Error
+        $pdf = app('dompdf.wrapper')->loadView('cs.orders.pdf', compact('order'));
+
+        // Requested filename change
+        $filename = 'Stock_Order_' . $order->order_number . '.pdf';
+
+        // Use stream() to just "view only" in the browser tab
+        return $pdf->stream($filename);
+    }
+
+    /**
+     * Generate and DOWNLOAD the Stock Order PDF.
+     */
+    public function stockOrder(\App\Models\Order $order)
+    {
+        $order->load(['user.company', 'items.item', 'items.uom']);
+
+        // Bulletproof Way: Prevents Facade Class Not Found Error
+        $pdf = app('dompdf.wrapper')->loadView('cs.orders.stock-order', compact('order'));
+
+        $filename = 'Stock_Order_' . $order->order_number . '.pdf';
+
+        // Use download() to force the file to save to the user's PC
+        return $pdf->download($filename);
     }
 }

@@ -48,7 +48,7 @@
                                             {{ $order->order_number }}</td>
                                         <td class="px-4 py-4 text-sm">
                                             <div class="font-bold text-gray-900">
-                                                {{ $order->user->details->company_name ?? $order->user->name }}</div>
+                                                {{ $order->user->company->company_name ?? $order->user->name }}</div>
                                             <div class="text-xs text-gray-400">{{ $order->user->email }}</div>
                                         </td>
                                         <td class="px-4 py-4 text-sm text-gray-600">
@@ -73,9 +73,12 @@
                                         </td>
                                         <td class="px-4 py-4 text-right">
                                             <div class="flex items-center justify-end gap-2">
+
                                                 @if (in_array($order->status, ['approved', 'in_transit', 'completed']))
+                                                    {{-- 1. View Button (Opens in new tab to view only) --}}
                                                     <a href="{{ route('office.orders.pdf', $order) }}" target="_blank"
-                                                        class="inline-block bg-red-50 text-red-700 hover:bg-red-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-red-200">
+                                                        class="inline-block bg-red-50 text-red-700 hover:bg-red-100 px-3 py-2 rounded-lg text-xs font-black uppercase transition border border-red-200"
+                                                        title="View Order PDF">
                                                         <svg xmlns="http://www.w3.org/2000/svg"
                                                             class="h-4 w-4 inline-block mr-1 -mt-1" fill="none"
                                                             viewBox="0 0 24 24" stroke="currentColor">
@@ -84,6 +87,20 @@
                                                                 d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
                                                         </svg>
                                                         {{ __('View') }}
+                                                    </a>
+
+                                                    {{-- 2. Download Button (Forces download to PC) --}}
+                                                    <a href="{{ route('office.orders.stock-order', $order) }}"
+                                                        class="inline-block bg-purple-50 text-purple-700 hover:bg-purple-100 px-3 py-2 rounded-lg text-xs font-black uppercase transition border border-purple-200"
+                                                        title="Download Stock Order">
+                                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                                            class="h-4 w-4 inline-block mr-1 -mt-1" fill="none"
+                                                            viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                                stroke-width="2"
+                                                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                        </svg>
+                                                        {{ __('Download') }}
                                                     </a>
                                                 @endif
 
