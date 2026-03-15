@@ -72,10 +72,26 @@
                                             </span>
                                         </td>
                                         <td class="px-4 py-4 text-right">
-                                            <a href="{{ route('office.orders.show', $order) }}"
-                                                class="inline-block bg-white text-gray-700 hover:bg-gray-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-gray-200">
-                                                {{ in_array($order->status, ['completed', 'cancelled']) ? __('View Summary') : __('Process Order') }}
-                                            </a>
+                                            <div class="flex items-center justify-end gap-2">
+                                                @if (in_array($order->status, ['approved', 'in_transit', 'completed']))
+                                                    <a href="{{ route('office.orders.pdf', $order) }}" target="_blank"
+                                                        class="inline-block bg-red-50 text-red-700 hover:bg-red-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-red-200">
+                                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                                            class="h-4 w-4 inline-block mr-1 -mt-1" fill="none"
+                                                            viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                                stroke-width="2"
+                                                                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                                        </svg>
+                                                        {{ __('View') }}
+                                                    </a>
+                                                @endif
+
+                                                <a href="{{ route('office.orders.show', $order) }}"
+                                                    class="inline-block bg-white text-gray-700 hover:bg-gray-100 px-4 py-2 rounded-lg text-xs font-black uppercase transition border border-gray-200">
+                                                    {{ in_array($order->status, ['completed', 'cancelled']) ? __('View Summary') : __('Process Order') }}
+                                                </a>
+                                            </div>
                                         </td>
                                     </tr>
                                 @endforeach

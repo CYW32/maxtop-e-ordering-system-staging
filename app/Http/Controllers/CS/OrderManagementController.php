@@ -390,4 +390,15 @@ class OrderManagementController extends Controller
 
         return view('cs.orders.all', compact('allOrders', 'status'));
     }
+    
+/**
+     * Display the Stock Order PDF view.
+     */
+    public function pdf(\App\Models\Order $order)
+    {
+        // FIX: Removed 'user.details' and changed 'orderItems' to 'items'
+        $order->load(['user.company', 'items.item', 'items.uom']);
+
+        return view('cs.orders.pdf', compact('order'));
+    }
 }

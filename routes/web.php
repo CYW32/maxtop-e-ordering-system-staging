@@ -6,6 +6,7 @@ use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\RoleManagerController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Office\StockOrderController;
 
 /*
 |--------------------------------------------------------------------------
@@ -117,6 +118,8 @@ Route::middleware(['auth'])->group(function () {
         Route::put('/orders/{order}/status', [\App\Http\Controllers\CS\OrderManagementController::class, 'updateStatus'])->name('orders.updateStatus');
         Route::post('/orders/{order}/handover', [\App\Http\Controllers\CS\OrderManagementController::class, 'handover'])->name('orders.handover');
 
+        Route::get('/orders/{order}/pdf', [\App\Http\Controllers\CS\OrderManagementController::class, 'pdf'])->name('orders.pdf');
+        Route::get('/orders/{order}/stock-order', [\App\Http\Controllers\Office\StockOrderController::class, 'show'])->name('orders.stock-order');
     });
 
     // ITEM MANAGEMENT
@@ -160,6 +163,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'index'])->name('index');
             Route::get('/{order}', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'show'])->name('show');
         });
+
     });
 
 });
