@@ -6,49 +6,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>{{ config('app.name', 'Laravel') }}</title>
+    <title>{{ config('app.name', 'Maxtop B2B') }}</title>
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.bunny.net">
-    <link href="https://fonts.bunny.net/css?family=figtree:400,500,600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700,800,900&display=swap" rel="stylesheet" />
 
     <!-- Scripts -->
     @vite(['resources/css/app.css', 'resources/js/app.js'])
+
+    <!-- Hides collapsed elements before Alpine loads to prevent flickering -->
+    <style>
+        [x-cloak] {
+            display: none !important;
+        }
+    </style>
 </head>
 
-<body class="font-sans antialiased">
-    <div class="min-h-screen bg-gray-100 flex" x-data="{ open: false }">
+<body class="font-sans antialiased text-[#333333] bg-[#597E38]" x-data="{ sidebarOpen: true }">
+    <div class="flex min-h-screen">
 
-        <aside class="bg-white border-r border-gray-100 w-64 min-h-screen hidden md:block">
+        <!-- Dynamic Dark Sidebar: Solid #597E38 with a subtle right border -->
+        <aside :class="sidebarOpen ? 'w-64' : 'w-20'"
+            class="bg-[#597E38] border-r border-white/10 shadow-lg hidden md:flex flex-col shrink-0 fixed inset-y-0 left-0 z-50 transition-all duration-300">
             @include('layouts.navigation')
         </aside>
 
-        <div x-show="open" @click="open = false" class="fixed inset-0 z-40 bg-black opacity-50 md:hidden"
-            style="display: none;"></div>
-
-        <aside :class="{ 'translate-x-0': open, '-translate-x-full': !open }"
-            class="fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-100 transition-transform duration-300 ease-in-out md:hidden transform -translate-x-full">
-            @include('layouts.navigation')
-        </aside>
-
-        <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
-
-            <header class="bg-white shadow flex justify-between items-center p-4 md:hidden">
-                <button @click="open = ! open" class="text-gray-500 focus:outline-none">
-                    <svg class="h-6 w-6" stroke="currentColor" fill="none" viewBox="0 0 24 24">
-                        <path :class="{ 'hidden': open, 'inline-flex': !open }" class="inline-flex"
-                            stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M4 6h16M4 12h16M4 18h16" />
-                        <path :class="{ 'hidden': !open, 'inline-flex': open }" class="hidden" stroke-linecap="round"
-                            stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </header>
-
-            <main class="flex-1 overflow-y-auto p-6">
+        <!-- Main Content Area -->
+        <main :class="sidebarOpen ? 'md:ml-64' : 'md:ml-20'"
+            class="flex-1 p-6 md:p-10 min-w-0 flex flex-col transition-all duration-300">
+            <div class="bg-[#FFFFFF] rounded-[16px] shadow-sm p-[40px] flex-1">
                 {{ $slot }}
-            </main>
-        </div>
+            </div>
+        </main>
+
     </div>
 </body>
 

@@ -58,12 +58,11 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
 
-## #######################################################################################################################################
+##
 
-## Update details(v1)
+## Update Details (v29)(cyw)
+- Solve : 
+  ** CS Staff unable to transfer to others by itself, only can transfer to CS Leader(Not include admin).(CYW)
+  ** CS Staff > order details(Cancel status) > “UOM unit” is not showing (Remark : PACKAGING UNIT is under UOM), and remove the “Unit Price”. Also missing “Order ID”. And add a “Sum QTY” to show the sum up of all the ordered UOM QTY. (CYW)
+  ** “Order” page & “INTERNAL OFFICE LOG (PRIVATE)” make it separate from showing and edit area.(CYW)
 
-* Added the dynamic role & feature on/off.
-* Added the create user.
-* Added the user list.
-* Added the edit user.
-* Change the Admin role are unable to unthick all the feature.

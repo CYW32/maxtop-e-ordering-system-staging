@@ -28,6 +28,12 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
+        // Manual Log for Login Activity
+        activity('auth')
+            ->performedOn(auth()->user())
+            ->causedBy(auth()->user())
+            ->log('User logged into the system');
+
         return redirect()->intended(route('dashboard', absolute: false));
     }
 

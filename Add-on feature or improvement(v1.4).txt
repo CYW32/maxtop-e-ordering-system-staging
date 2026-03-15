@@ -1,0 +1,27 @@
+1. Database Schema Refactoring (The "Company" Entity):
+   a. Rename Table: Change `customer_details` to `companys`.
+   b. Migrate Foreign Key: Move `catalog_id` from the `users` table to the `companys` table.
+   c. Rationale: Catalog visibility is now tied to the Business Entity (HQ/Branch), not the Individual User. All users linked to Company A must see the exact same Catalog.
+   d. Fields: The `companys` table must store `company_code` (for HQ) and `branch_code` (for Branch).
+
+2. Relationship & Ordering Scope (Many-to-One):
+   a. Refactor User model: Remove 1:1 link. Add `company_id` to `users` table (Many Users -> One Company).
+   b. Strict Ordering Policy: 
+      - No "Main ordering for Branch" this feature.
+      - Rule: A logged-in user can ONLY view items and place orders for their assigned `company_id`. 
+      - Workflow: If an HQ manager needs to order for a Branch, they must log out and log in with a credential assigned specifically to that Branch.
+
+3. Admin UI Refactoring:
+   a. Split Modules: Create two distinct management pages:
+   b. User Management: Only for managing Name, Email, Password, and linking them to a Company ID.
+   c. Company Management: For managing HQ/Branch relationships, Addresses, Codes, and Catalog Assignments.
+   d. Dropdown Logic: When creating a user, the "Assign Company" dropdown should list companies (e.g., "MaxTop HQ", "MaxTop Branch A") derived from the `companys` table.
+
+4. Enhanced Security (Cancellation):
+   a. New Rule: If Order Status == Approved, CS Staff cannot set status to Cancelled.
+   b. Workflow: Staff must set status to "Cancellation Requested" (with a reason note). Only CS Leader or Admin can approve this transition to Cancelled.
+
+5. New Entity: UOM (Unit of Measure):
+   a. Create `uoms` table linked to Products (`uom_name`, `rate_qty`, `price`).
+   b. Visibility Guard: `staff_price` is strictly for internal staff views. Never expose this field in Customer/Branch API resources.
+   c. Deletion Rule: Prevent "Hard Delete" of a UOM if it is referenced in any existing `order_items`. Otherwise, allow "Hide" (Soft Delete).

@@ -16,8 +16,11 @@ class ProfileController extends Controller
      */
     public function edit(Request $request): View
     {
+        // ARCHITECTURE FIX: Eager load Company and CS Rep to prevent N+1 in profile view.
+        $user = $request->user()->load(['company', 'csRepresentative', 'roles']);
+
         return view('profile.edit', [
-            'user' => $request->user(),
+            'user' => $user,
         ]);
     }
 

@@ -1,74 +1,134 @@
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Create New User') }}
+        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+            {{ $parent ? __('Add Branch for ') . $parent->name : __('Create New User Credential') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+            <div x-data="{
+                role: '{{ old('role', $parent ? 'customer' : '') }}'
+            }"
+                class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
 
-                <form method="POST" action="{{ route('users.store') }}">
+                <form method="POST" action="{{ route('users.store') }}" class="space-y-8">
                     @csrf
 
-                    <div class="mb-4">
-                        <x-input-label for="name" :value="__('Full Name')" />
-                        <x-text-input id="name" class="block mt-1 w-full" type="text" name="name"
-                            :value="old('name')" required autofocus />
-                        <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        {{-- System Role Selection --}}
+                        <div>
+                            <x-input-label for="role" :value="__('System Access Role')" class="text-[10px] uppercase font-black" />
+                            @php $isRestricted = auth()->user()->hasRole('cs_staff') || $parent; @endphp
+                            <select name="role" id="role" x-model="role"
+                                class="block mt-1 w-full border-gray-300 rounded-xl shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
+                                @if ($isRestricted) readonly @endif required>
+                                <option value="">{{ __('-- Select Account Type --') }}</option>
+                                @foreach ($roles as $roleOption)
+                                    <option value="{{ $roleOption->name }}"
+                                        {{ old('role') == $roleOption->name || ($parent && $roleOption->name == 'customer') ? 'selected' : '' }}>
+                                        {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
+                                    </option>
+                                @endforeach
+                            </select>
+                            @if ($isRestricted)
+                                <input type="hidden" name="role" x-model="role">
+                            @endif
+                            <x-input-error :messages="$errors->get('role')" class="mt-2" />
+                        </div>
+
+                        {{-- Full Name --}}
+                        <div>
+                            <x-input-label for="name" :value="__('Full Name')" class="text-[10px] uppercase font-black" />
+                            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
+                                :value="old('name')" required />
+                            <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="login_id" :value="__('Login ID (e.g. staff01)')" />
-                        <x-text-input id="login_id" class="block mt-1 w-full" type="text" name="login_id"
-                            :value="old('login_id')" required />
-                        <x-input-error :messages="$errors->get('login_id')" class="mt-2" />
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        {{-- Login ID --}}
+                        <div>
+                            <x-input-label for="login_id" :value="__('Login ID (Unique Username)')" class="text-[10px] uppercase font-black" />
+                            <x-text-input id="login_id" name="login_id" type="text"
+                                class="mt-1 block w-full uppercase font-bold" :value="old('login_id')" required />
+                            <x-input-error :messages="$errors->get('login_id')" class="mt-2" />
+                        </div>
+
+                        {{-- Email Address --}}
+                        <div>
+                            <x-input-label for="email" :value="__('Email Address')" class="text-[10px] uppercase font-black" />
+                            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full"
+                                :value="old('email')" required />
+                            <x-input-error :messages="$errors->get('email')" class="mt-2" />
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="email" :value="__('Email Address')" />
-                        <x-text-input id="email" class="block mt-1 w-full" type="email" name="email"
-                            :value="old('email')" required />
-                        <x-input-error :messages="$errors->get('email')" class="mt-2" />
+                    {{-- Show ONLY if Role is 'customer' --}}
+                    <div x-show="role === 'customer'" style="display: none;">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8 border-t border-gray-100 pt-8">
+                            <div>
+                                <x-input-label for="company_id" :value="__('Assigned Business Entity')"
+                                    class="text-blue-800 font-black uppercase text-[10px]" />
+                                <div class="mt-1">
+                                    <select name="company_id" id="company_id"
+                                        class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm">
+                                        <option value="">{{ __('-- Select Business Entity --') }}</option>
+                                        @foreach ($companys as $company)
+                                            <option value="{{ $company->id }}"
+                                                {{ old('company_id') == $company->id ? 'selected' : '' }}>
+                                                {{ $company->company_name }}
+                                                ({{ $company->company_code ?? $company->branch_code }})
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                <x-input-error :messages="$errors->get('company_id')" class="mt-2" />
+                            </div>
+
+                            <div>
+                                <x-input-label for="assigned_cs_id" :value="__('Designated Customer Service Representative')"
+                                    class="text-[10px] uppercase font-black" />
+                                <select name="assigned_cs_id" id="assigned_cs_id"
+                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
+                                    <option value="">{{ __('-- Auto-Assign / Unassigned --') }}</option>
+                                    @foreach ($csStaffMembers as $cs)
+                                        <option value="{{ $cs->id }}"
+                                            {{ old('assigned_cs_id') == $cs->id || (!old('assigned_cs_id') && auth()->id() == $cs->id) ? 'selected' : '' }}>
+                                            {{ $cs->name }} ({{ $cs->login_id }})
+                                        </option>
+                                    @endforeach
+                                </select>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="role" :value="__('Assign Role')" />
-                        <select id="role" name="role"
-                            class="block mt-1 w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm">
-                            <option value="" disabled selected>Select a Role</option>
-                            @foreach ($roles as $role)
-                                <option value="{{ $role->name }}">
-                                    {{ ucfirst(str_replace('_', ' ', $role->name)) }}
-                                </option>
-                            @endforeach
-                        </select>
-                        <x-input-error :messages="$errors->get('role')" class="mt-2" />
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 pt-8 border-t border-gray-100">
+                        <div>
+                            <x-input-label for="password" :value="__('Initial Password')" class="text-[10px] uppercase font-black" />
+                            <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
+                                required autocomplete="new-password" />
+                            <x-input-error :messages="$errors->get('password')" class="mt-2" />
+                        </div>
+                        <div>
+                            <x-input-label for="password_confirmation" :value="__('Confirm Password')"
+                                class="text-[10px] uppercase font-black" />
+                            <x-text-input id="password_confirmation" name="password_confirmation" type="password"
+                                class="mt-1 block w-full" required />
+                        </div>
                     </div>
 
-                    <div class="mb-4">
-                        <x-input-label for="password" :value="__('Password')" />
-                        <x-text-input id="password" class="block mt-1 w-full" type="password" name="password"
-                            required />
-                        <x-input-error :messages="$errors->get('password')" class="mt-2" />
-                    </div>
-
-                    <div class="mb-6">
-                        <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-                        <x-text-input id="password_confirmation" class="block mt-1 w-full" type="password"
-                            name="password_confirmation" required />
-                        <x-input-error :messages="$errors->get('password_confirmation')" class="mt-2" />
-                    </div>
-
-                    <div class="flex items-center justify-end">
-                        <a href="{{ route('users.index') }}" class="text-gray-600 hover:text-gray-900 mr-4">Cancel</a>
-                        <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded-md hover:bg-gray-700">
-                            Create User
-                        </button>
+                    <div class="flex items-center justify-end pt-8 border-t border-gray-100 gap-4">
+                        <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                            {{ __('Cancel') }}
+                        </a>
+                        <x-primary-button
+                            class="bg-blue-600 hover:bg-blue-700 py-4 px-10 rounded-2xl shadow-lg shadow-blue-200 transition-all uppercase text-[10px] font-black">
+                            {{ __('Create User Credential') }}
+                        </x-primary-button>
                     </div>
                 </form>
-
             </div>
         </div>
     </div>

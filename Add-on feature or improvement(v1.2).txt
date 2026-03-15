@@ -1,0 +1,65 @@
+Please incorporate the following "Addendum v1" into the project context, sitting alongside the latest "Laravel E-Ordering System - 项目需求大纲 - EN.txt" and "project_for_ai.txt". Use these rules for all future code generation and analysis:
+
+1. Identity & Relationship Refactoring:
+
+a. Refactor the User-Customer relationship from 1:1 to Many-to-One. Multiple users can now be linked to a single companys record.
+
+b. Permission Gate: Only CS Staff or higher can create these logins and assign them to a specific HQ or Branch via the "My Customer" management module.
+
+c. Schema Update: The companys table must now support company_code (for Main/HQ) and branch_code (for Branches). These fields are mutually exclusive in the frontend based on the user's role.
+
+2. Enhanced Order Security:
+
+a. Cancellation Protocol: Once an order status is Approved, a CS Staff cannot cancel it directly. They must submit a "Cancellation Request" with a mandatory reason.
+
+b. Approval Authority: Only a CS Leader or Admin has the authority to approve this request and move the status to Cancelled.
+
+3. UOM (Unit of Measure) System:
+
+a. Implement a UOM entity linked to Products. Fields: uom_name, rate_qty, and price.
+
+b. Privacy Rule: staff_price must be strictly filtered out of all API responses or Blade views accessible by Customer or Branch roles.
+
+c. Deletion Rule: Prevent "Hard Delete" of a UOM if it is referenced in any existing order_items. Otherwise, allow "Hide" (Soft Delete).
+
+4. Staff Dashboard UI:
+
+a. Create a "Unified Order Dashboard" for Staff.
+
+b. Stats Container: At the top of the dashboard, include a summary container showing real-time counts for: All, Pending, Approved, In Transit, Delivered, and Cancelled.
+
+Constraint: Before suggesting any code, check if the current project_for_ai.txt migration files support these "Many-to-One" relationships. If not, suggest the Migration changes first.
+
+5. Database Schema & Entity Renaming:
+
+a. Table Rename: Rename the customer_details table to companys. Update all Eloquent models and relationships accordingly.
+
+b. Catalog Migration: Move the catalog_id foreign key from the users table to the companys table. Product visibility is now determined by the Company entity, not the individual login credential.
+
+c. Fields: Ensure the companys table includes company_code (for HQ) and branch_code (for Branches).
+
+6. User Management Refactoring:
+
+a. Separation of Concerns: Remove all company-detail fields from the User Management/Profile Edit screens. User Management is now strictly for managing login credentials and assignments.
+
+b. Assignment Logic: When editing or creating a "customer" role user, provide a specific assignment field to link that user to a record in the companys table (HQ or Branch).
+
+c. UI Dropdown Logic:
+
+1. In the "Head" selection, display the Head User Account + HQ Name.
+
+2. In the "Sub-account" selection, display the Linked Sub-Accounts instead of just branch names.
+
+7. New "Company Management" Module:
+
+a. Create a dedicated "Company Management" page for CS Staff/Leaders.
+
+b. This page is the primary location for creating and managing HQ entities and their associated Branches.
+
+c. All company metadata (addresses, codes, assigned catalogs) moves here from the old user-based forms.
+
+8. Functional Consistency Check:
+
+a. Catalog Inheritance: Ensure that when a Branch is created in "Company Management," it still follows the inheritance rules from the Backbone (inheriting the HQ’s catalog unless specified otherwise).
+
+b. Proxy Ordering: Ensure the "Main for Branch" ordering logic now identifies the branch via the new companys table relationship rather than the old user-level link.

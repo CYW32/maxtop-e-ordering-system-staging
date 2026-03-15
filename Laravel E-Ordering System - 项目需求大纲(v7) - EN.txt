@@ -1,0 +1,117 @@
+# MAXTOP B2B E-Ordering System - Project Backbone (2026 Version - v7)
+
+================================================================================
+1. PROJECT VISION
+================================================================================
+a. A customized B2B reservation and order flow system designed for MAXTOP.
+b. Focus: Catalog visibility control, multi-level customer structure, and Draft-to-Order lifecycle management.
+c. Out of Scope: No online payment processing and no real-time inventory management.
+
+
+================================================================================
+2. USER ROLES & PERMISSIONS
+================================================================================
+a. Administrator (Developers Only): 
+  1. Holds the highest privileges.
+  2. Oversees Activity Logs and all role/permission assignments.
+  3. Account is not accessible to end users.
+
+b. CS Leader (Customer Service Leader): 
+  1. Manages CS Staff and reassigns customer accounts.
+  2. Responsible for resetting staff passwords.
+
+c. CS Staff (Customer Service): 
+  1. Primary system operator.
+  2. Manages Items and Catalogs and approves orders.
+  3. Handles customer requests and has Read-Only access to customer Drafts.
+
+d. Customer (Main): 
+  1. Parent company account.
+  2. Can only place orders for their own headquarters.
+
+e. Customer (Branch): 
+  1. Sub-account linked to a Main Customer.
+  2. Can only place orders for their specific branch location.
+
+f. Custom Role: 
+  1. Fully customizable permissions based on specific business requirements.
+
+
+================================================================================
+3. CORE BUSINESS LOGIC
+================================================================================
+
+a. Branch & Catalog Architecture:
+1. Single Catalog Policy: Each Customer (Main or Branch) is assigned to exactly ONE (1) Catalog.
+2. Inheritance: Branches inherit the Catalog assigned to the Main Company by default.
+3. Whitelist Logic: Customers can only see Items that exist within their assigned Catalog.
+
+b. Ordering Scope:
+1. Direct Ordering: Both Main Company HQ and Branches must place their own respective orders.
+2. Identity Policy: No proxy ordering (Main ordering for a Branch) is allowed in this version to maintain data simplicity.
+
+c. Data Integrity & Snapshot Logic:
+1. Deletion Restriction: Items with existing transaction records (Status: Approved or Completed) CANNOT be deleted.
+2. Draft Protection: Items currently held in any active customer Draft cannot be deactivated or removed.
+3. UI Warning: System displays "Item is currently in a customer draft and cannot be modified/deleted" if a CS member attempts removal.
+4. Item Name Synchronization: 
+  a. Draft & Pending Status: Item names update in real-time if the Catalog name is changed.
+  b. Approved Status: The system takes a permanent 'Snapshot' of the item name at the moment of approval.
+  c. Future Catalog changes will not affect the name displayed on Approved or Completed orders.
+
+
+================================================================================
+4. ORDER LIFECYCLE & STATUS FLOW
+================================================================================
+a. Draft (Status: "Draft by [Client Name]"):
+   1. Single Draft policy (only one active draft allowed per client).
+   2. Customers can update quantities, add items, or remove items.
+   3. CS Staff can view the draft list but cannot edit the contents.
+
+b. Pending Review: 
+   1. Initial state after the client submits the draft.
+   2. Customers can still edit or cancel the order at this stage.
+
+c. Approved Order: 
+   1. CS validates the order and triggers the Snapshot.
+   2. Customer editing functionality is LOCKED.
+
+d. In Transit: 
+   1. Goods have been dispatched.
+   2. CS Staff updates the tracking information and status.
+
+e. Completed: 
+   1. Final state upon confirmed delivery.
+
+f. Cancelled: 
+   1. Possible from any stage before the "Completed" status.
+   2. Requires a mandatory 'Cancellation Reason' for records.
+
+
+================================================================================
+5. ASSIGNMENT & HANDOVER LOGIC
+================================================================================
+a. Specific Handling: Customers are assigned to specific CS Staff members by default.
+b. Claiming Mechanism: New orders from unassigned customers appear on all CS dashboards.
+c. Ownership: The first staff member to claim the order (or a Leader-assigned staff) becomes the 'Current Handler'.
+d. Handover Protocol (CS A to CS B): 
+  1. CS A (Original): Becomes Read-Only for that specific order.
+  2. CS B (New): Gains full action authority (Approve, Ship, etc.).
+  3. Documentation: The system automatically records the handover event in the History Log.
+
+
+================================================================================
+6. LOGGING SYSTEM
+================================================================================
+a. Order History Log: Visible to CS, Leaders, Admins, and Customers; tracks all status changes.
+b. Internal Notes: Private section of the Order History visible only to CS and Admins.
+c. Note Availability: Notes become available once an order is moved to Submitted/Pending status.
+d. Permission Log: Admin-only log that records all changes to user roles and access rights.
+
+
+================================================================================
+7. TECHNICAL SPECIFICATIONS
+================================================================================
+a. Environment: Web-based application built on the Laravel (PHP) framework.
+b. Asset Management: Automated image compression to optimize storage and Inode usage.
+c. Notifications: In-system alerts for new submissions, password resets, and assignment changes.
