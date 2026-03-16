@@ -1,92 +1,196 @@
 <x-app-layout>
+    {{-- Keeping the header slot minimal just for the title/status if your layout ever decides to show it --}}
     <x-slot name="header">
-        <div class="flex justify-between items-center">
-            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
-                {{ __('Order Details') }}: {{ $order->order_number }}
+        <div class="flex items-center justify-between">
+            <h2 class="font-bold text-xl text-gray-900 leading-tight">
+                {{ __('Order Details') }}
             </h2>
-            <a href="{{ route('customer.orders.index') }}" class="text-xs font-bold text-blue-600 uppercase">←
-                {{ __('Back to History') }}</a>
         </div>
     </x-slot>
 
-    <div class="py-12">
-        {{-- Fulfills Request: Recall functionality --}}
-        @if ($order->status === 'pending')
-            <form action="{{ route('reservation.recall', $order) }}" method="POST"
-                onsubmit="return confirm('Move this order back to draft for editing?');">
-                @csrf
-                <button type="submit"
-                    class="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-xs font-black uppercase transition shadow-md">
-                    {{ __('Recall to Draft') }}
-                </button>
-            </form>
-        @endif
-        <div class="max-w-5xl mx-auto sm:px-6 lg:px-8 space-y-6">
-            @php
-                // Group by item_id to handle different UOMs for the same SKU [Addendum 5.a]
-                $groupedItems = $order->items->groupBy('item_id');
-                $totalQty = $order->items->sum('quantity');
-            @endphp
+    <div class="py-12 bg-gray-50/50 min-h-screen">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100">
-                <table class="min-w-full divide-y divide-gray-100">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-8 py-4 text-left text-[10px] font-black text-gray-400 uppercase">
-                                {{ __('Item Description') }}</th>
-                            <th class="px-6 py-4 text-center text-[10px] font-black text-gray-400 uppercase">
-                                {{ __('Packaging Unit') }}</th>
-                            <th class="px-6 py-4 text-center text-[10px] font-black text-gray-400 uppercase">
-                                {{ __('Quantity') }}</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-50">
-                        @foreach ($groupedItems as $itemId => $entries)
-                            @php $masterItem = $entries->first()->item; @endphp
-                            <tr class="bg-blue-50/20">
-                                <td colspan="3" class="px-8 py-3">
-                                    <div class="flex items-center gap-2">
-                                        <span
-                                            class="text-[10px] font-mono font-black bg-blue-600 text-white px-2 py-0.5 rounded">{{ $masterItem->sku }}</span>
-                                        <span class="text-xs font-bold text-gray-900">{{ $masterItem->name }}</span>
-                                    </div>
-                                </td>
+            {{-- HEADER ROW: Back Button & Status Badge --}}
+            <div class="flex items-center justify-between">
+                {{-- 🔙 HIGH-CONTRAST BACK BUTTON --}}
+                <a href="{{ route('customer.orders.index') }}"
+                    class="inline-flex items-center gap-2 px-5 py-2.5 bg-gray-900 text-white hover:bg-black rounded-xl shadow-md transition-all group font-bold text-sm">
+                    <svg class="w-4 h-4 group-hover:-translate-x-1 transition-transform" fill="none"
+                        stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                            d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                    </svg>
+                    {{ __('Back to Orders') }}
+                </a>
+
+                {{-- Professional Status Badge --}}
+                <div>
+                    @php
+                        $statusConfig = [
+                            'pending' => [
+                                'bg' => 'bg-amber-50',
+                                'text' => 'text-amber-700',
+                                'border' => 'border-amber-100',
+                                'dot' => 'bg-amber-500',
+                            ],
+                            'approved' => [
+                                'bg' => 'bg-brand-50',
+                                'text' => 'text-brand-700',
+                                'border' => 'border-brand-100',
+                                'dot' => 'bg-brand-500',
+                            ],
+                            'in_transit' => [
+                                'bg' => 'bg-indigo-50',
+                                'text' => 'text-indigo-700',
+                                'border' => 'border-indigo-100',
+                                'dot' => 'bg-indigo-500',
+                            ],
+                            'completed' => [
+                                'bg' => 'bg-emerald-50',
+                                'text' => 'text-emerald-700',
+                                'border' => 'border-emerald-100',
+                                'dot' => 'bg-emerald-500',
+                            ],
+                            'cancelled' => [
+                                'bg' => 'bg-red-50',
+                                'text' => 'text-red-700',
+                                'border' => 'border-red-100',
+                                'dot' => 'bg-red-500',
+                            ],
+                        ];
+                        $cfg = $statusConfig[$order->status] ?? [
+                            'bg' => 'bg-gray-50',
+                            'text' => 'text-gray-700',
+                            'border' => 'border-gray-100',
+                            'dot' => 'bg-gray-500',
+                        ];
+                    @endphp
+                    <span
+                        class="inline-flex items-center px-4 py-2 rounded-xl {{ $cfg['bg'] }} {{ $cfg['text'] }} border {{ $cfg['border'] }} text-xs font-bold uppercase tracking-wider shadow-sm">
+                        <span class="w-2 h-2 rounded-full {{ $cfg['dot'] }} mr-2"></span>
+                        {{ str_replace('_', ' ', $order->status) }}
+                    </span>
+                </div>
+            </div>
+
+            {{-- OVERVIEW SECTION --}}
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div class="grid grid-cols-1 md:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-gray-100">
+
+                    {{-- Order Reference ID --}}
+                    <div class="p-6">
+                        <label
+                            class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{{ __('Order Reference ID') }}</label>
+                        <p class="text-lg font-bold text-gray-900">
+                            {{ $order->order_number ?? 'ORD-' . str_pad($order->id, 5, '0', STR_PAD_LEFT) }}
+                        </p>
+                    </div>
+
+                    {{-- Order Date & Time --}}
+                    <div class="p-6">
+                        <label
+                            class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{{ __('Order Date & Time') }}</label>
+                        <p class="text-base font-medium text-gray-900">
+                            {{ $order->created_at->format('d M Y, h:i A') }}
+                        </p>
+                    </div>
+
+                    {{-- Approved Date & Time --}}
+                    <div class="p-6">
+                        <label
+                            class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{{ __('Approved Date & Time') }}</label>
+                        @php
+                            $approvedHistory = $order->statusHistory->where('status', 'approved')->first();
+                        @endphp
+                        <p class="text-base font-medium text-gray-900">
+                            {{ $approvedHistory ? $approvedHistory->created_at->format('d M Y, h:i A') : '-' }}
+                        </p>
+                    </div>
+
+                    {{-- Total Quantity Summary --}}
+                    <div class="p-6 bg-gray-50/30">
+                        <label
+                            class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{{ __('Total Quantity') }}</label>
+                        <p class="text-lg font-bold text-brand-600">
+                            {{ number_format($order->items->sum('quantity')) }}
+                            <span class="text-xs text-gray-400 font-normal ml-1">{{ __('Units') }}</span>
+                        </p>
+                    </div>
+
+                </div>
+            </div>
+
+            {{-- TABLE SECTION --}}
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div class="px-8 py-5 border-b border-gray-100 bg-gray-50/50">
+                    <h3 class="text-base font-bold text-gray-900 tracking-tight">{{ __('Order Details') }}</h3>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr
+                                class="bg-white text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-100">
+                                <th class="px-8 py-4 w-16 text-center">{{ __('No.') }}</th>
+                                <th class="px-8 py-4">{{ __('Item Description') }}</th>
+                                <th class="px-8 py-4 text-center">{{ __('Item UOM') }}</th>
+                                <th class="px-8 py-4 text-center">{{ __('Quantity') }}</th>
                             </tr>
-                            @foreach ($entries as $item)
-                                <tr>
-                                    <td></td>
-                                    <td class="px-6 py-4 text-center">
-                                        {{-- ARCHITECTURE: Distinguish between UOM and Individual [4] --}}
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            @foreach ($order->items as $index => $orderItem)
+                                <tr class="group hover:bg-gray-50/50 transition-colors">
+                                    <td class="px-8 py-5 text-center font-medium text-gray-400 text-sm">
+                                        {{ $index + 1 }}
+                                    </td>
+                                    <td class="px-8 py-5">
+                                        <div class="flex flex-col gap-1">
+                                            {{-- Item SKU --}}
+                                            <span
+                                                class="text-xs font-bold text-brand-600 uppercase">{{ $orderItem->item->sku ?? 'N/A' }}</span>
+                                            {{-- Item Name --}}
+                                            <span class="font-semibold text-gray-900 text-sm leading-tight">
+                                                {{ $orderItem->snapshot_name ?? ($orderItem->item->name ?? __('Unknown Item')) }}
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td class="px-8 py-5 text-center">
                                         <span
-                                            class="px-3 py-1 rounded-lg text-[10px] font-black uppercase {{ $item->uom_id ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600' }}">
-                                            {{ $item->uom?->uom_name ?? __('Individual Unit') }}
+                                            class="inline-flex items-center px-3 py-1 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-600 shadow-sm">
+                                            {{ $orderItem->uom->uom_name ?? __('Unit') }}
+                                            @if ($orderItem->uom && $orderItem->uom->rate_qty > 1)
+                                                <span
+                                                    class="ml-2 pl-2 border-l border-gray-200 text-gray-400 font-normal">x{{ $orderItem->uom->rate_qty }}</span>
+                                            @endif
                                         </span>
                                     </td>
-                                    <td class="px-6 py-4 text-center text-sm font-bold text-gray-700">
-                                        {{ $item->quantity }}
+                                    <td class="px-8 py-5 text-center">
+                                        <span
+                                            class="text-base font-bold text-gray-900">{{ number_format($orderItem->quantity) }}</span>
                                     </td>
                                 </tr>
                             @endforeach
-                        @endforeach
-                    </tbody>
-                </table>
+                        </tbody>
 
-                {{-- Footer: Fulfills Price Blind Policy [4.b] --}}
-                <div class="p-8 bg-gray-900 text-white flex justify-between items-center">
-                    <div>
-                        <p class="text-[10px] font-black uppercase text-gray-500 tracking-widest">
-                            {{ __('Total Order Volume') }}</p>
-                        <p class="text-2xl font-black">{{ $totalQty }} <span
-                                class="text-sm font-bold text-gray-500 uppercase">{{ __('Units') }}</span></p>
-                    </div>
-                    <div class="text-right">
-                        <span
-                            class="px-4 py-2 bg-blue-600/20 border border-blue-500/30 rounded-xl text-[10px] font-black uppercase text-blue-400">
-                            {{ $order->status }}
-                        </span>
-                    </div>
+                        {{-- TOTAL SUM FOOTER --}}
+                        <tfoot class="bg-gray-50/50 border-t-2 border-gray-100">
+                            <tr>
+                                <td colspan="3" class="px-8 py-6 text-right">
+                                    <span
+                                        class="text-xs font-bold text-gray-500 uppercase tracking-wider">{{ __('Total Sum of Stock Order Quantity') }}</span>
+                                </td>
+                                <td class="px-8 py-6 text-center">
+                                    <span class="text-base font-bold text-brand-600">
+                                        {{ number_format($order->items->sum('quantity')) }}
+                                    </span>
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
                 </div>
             </div>
+
         </div>
     </div>
 </x-app-layout>

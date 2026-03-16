@@ -1,4 +1,3 @@
-// tailwind.config.js
 import defaultTheme from 'tailwindcss/defaultTheme';
 import forms from '@tailwindcss/forms';
 
@@ -16,18 +15,18 @@ export default {
                 sans: ['Figtree', ...defaultTheme.fontFamily.sans],
             },
             colors: {
-                // Your new custom brand palette
+                // You MUST have this brand palette for the UI to work!
                 brand: {
-                    50: '#F0FDFA',
-                    100: '#CCFBF1',
-                    200: '#99F6E4',
-                    300: '#5EEAD4',
-                    400: '#2DD4BF',
-                    500: '#14B8A6', // Your main brand colour
-                    600: '#0D9488',
-                    700: '#0F766E',
-                    800: '#115E59',
-                    900: '#134E4A',
+                    50: '#f0fdfa',
+                    100: '#ccfbf1',
+                    200: '#99f6e4',
+                    300: '#5eead4',
+                    400: '#2dd4bf',
+                    500: '#14b8a6',
+                    600: '#0d9488',
+                    700: '#0f766e',
+                    800: '#115e59',
+                    900: '#134e4a',
                 },
             },
         },

@@ -60,8 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v34)(zj)
+## Update Details (v35)(zj)
  ** Customer Dashboard
- -- Done enhance the UI dashboard on http://127.0.0.1:8000/dashboard
- -- Done enhance UI on http://127.0.0.1:8000/products
- -- Done added the Product Category Filter on searching product category
+   -- Done fix enhance UI order history dashboard on http://127.0.0.1:8000/my-orders
+   -- Done added filter function
+   -- Done enhance UI for reservation Draft
