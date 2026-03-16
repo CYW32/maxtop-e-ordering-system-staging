@@ -11,7 +11,7 @@ class ProductCatalogController extends Controller
 {
     /**
      * Display the whitelisted products for the logged-in customer.
-     * Fulfills Section 3.a Whitelist Logic.
+     * Fulfills Section 3.a Whitelist Logic and Search/Category Filtering.
      */
     public function index(Request $request)
     {
@@ -19,27 +19,48 @@ class ProductCatalogController extends Controller
         $catalogId = $user->getEffectiveCatalogId();
         $catalog = \App\Models\Catalog::find($catalogId);
 
+        // Fail-safe if no valid catalog is assigned or it's deactivated
         if (! $catalog || $catalog->status === 'deactive') {
-            return view('customer.products.index', ['items' => collect(), 'availableCategories' => collect(), 'draftItems' => collect()]);
+            return view('customer.products.index', [
+                'items' => collect(), 
+                'availableCategories' => collect(), 
+                'draftItems' => collect()
+            ]);
         }
 
+        // Base Query: Only Active items inside the customer's assigned catalog
         $query = Item::where('status', 'active')
             ->whereHas('catalogs', fn ($q) => $q->where('catalogs.id', $catalogId));
 
+        // 1. Keyword Search Filter (Name or SKU)
         if ($request->filled('search')) {
-            $query->where(fn ($q) => $q->where('name', 'like', "%{$request->search}%")->orWhere('sku', 'like', "%{$request->search}%"));
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('sku', 'like', "%{$search}%");
+            });
         }
 
+        // 2. Category Dropdown Filter
         if ($request->filled('category')) {
             $query->whereHas('categories', fn ($q) => $q->where('categories.id', $request->category));
         }
 
-        $items = $query->with(['categories', 'activeUoms'])->latest()->paginate(12)->withQueryString();
+        // Fetch Paginated Items (withQueryString ensures pagination links remember the current search/category)
+        $items = $query->with(['categories', 'activeUoms'])
+            ->latest()
+            ->paginate(12)
+            ->withQueryString();
+
+        // Fetch categories that actually contain active products in this specific catalog
         $availableCategories = Category::where('status', 'active')
-            ->whereHas('items', fn ($q) => $q->where('items.status', 'active')->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $catalogId)))
+            ->whereHas('items', function ($q) use ($catalogId) {
+                $q->where('items.status', 'active')
+                  ->whereHas('catalogs', fn ($c) => $c->where('catalogs.id', $catalogId));
+            })
             ->get();
 
-        // Fulfills Requirement: Pass draft items to view for "Mark Down" logic
+        // Fetch draft items to display "Already in Cart" indicator
         $draftItems = $user->currentDraft()?->items ?? collect();
 
         return view('customer.products.index', compact('items', 'availableCategories', 'draftItems'));

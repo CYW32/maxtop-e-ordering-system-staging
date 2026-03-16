@@ -60,6 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v33)(zj)
- -- Done able to show the team orders on http://127.0.0.1:8000/dashboard (CS LEADER) 
- -- Make it clickable on CS and CS leader to directly go into the page
+## Update Details (v34)(zj)
+ ** Customer Dashboard
+ -- Done enhance the UI dashboard on http://127.0.0.1:8000/dashboard
+ -- Done enhance UI on http://127.0.0.1:8000/products
+ -- Done added the Product Category Filter on searching product category
