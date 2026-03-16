@@ -60,6 +60,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v30)(zj)
+## Update Details (v31 & v32)(zj)
 - Solve : 
--- Add the view PDF button after CS Approve to view the Stock Order
+-- Done add the VIEW and DOWNLOAD on CS order dashboard
+   - http://127.0.0.1:8000/office/orders/history (My Claims Order)
+   - http://127.0.0.1:8000/office/orders (On Going Order)
+
+-- Done add the VIEW and DOWNLOAD on CS Leader dashboard
+  - http://127.0.0.1:8000/office/orders/all (All System Orders)
