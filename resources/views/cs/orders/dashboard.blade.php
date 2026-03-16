@@ -8,15 +8,53 @@
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
 
+            @hasanyrole('admin|cs_leader')
+                {{-- Dashboard View Toggle for Leadership --}}
+                <div class="mb-6 flex justify-end">
+                    <div class="inline-flex bg-white rounded-[1.5rem] p-1.5 shadow-sm border border-gray-100">
+                        <a href="{{ route('dashboard', ['view' => 'mine']) }}"
+                            class="px-6 py-2.5 rounded-xl text-[10px] font-black uppercase transition-all {{ $viewMode === 'mine' ? 'bg-gray-900 text-white shadow-md' : 'text-gray-400 hover:text-gray-800 hover:bg-gray-50' }}">
+                            {{ __('My Active Orders') }}
+                        </a>
+                        <a href="{{ route('dashboard', ['view' => 'all']) }}"
+                            class="px-6 py-2.5 rounded-xl text-[10px] font-black uppercase transition-all {{ $viewMode === 'all' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-400 hover:text-gray-800 hover:bg-gray-50' }}">
+                            {{ __('All Team Orders') }}
+                        </a>
+                    </div>
+                </div>
+            @endhasanyrole
+
             {{-- Stats Container: Addendum Section 4.b --}}
             <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
                 @foreach ($stats as $label => $count)
-                    <div
-                        class="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 text-center transition-transform hover:scale-105">
-                        <p class="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">
-                            {{ $label }}</p>
-                        <p class="text-3xl font-black text-gray-800">{{ number_format($count) }}</p>
-                    </div>
+                    @php
+                        // Map the label to the database status column value
+                        $statusValue = match ($label) {
+                            'Pending' => 'pending',
+                            'Approved' => 'approved',
+                            'In Transit' => 'in_transit',
+                            'Delivered' => 'completed',
+                            'Cancelled' => 'cancelled',
+                            default => '',
+                        };
+
+                        // Dynamically route based on whether we are looking at 'mine' or 'all'
+                        $baseRoute = $viewMode === 'all' ? url('office/orders/all') : url('office/orders');
+
+                        // Construct the final URL with the filter parameters if a specific status is clicked
+                        $targetUrl = $statusValue ? "{$baseRoute}?search=&status={$statusValue}" : $baseRoute;
+                    @endphp
+
+                    <a href="{{ $targetUrl }}"
+                        class="block bg-white p-6 rounded-3xl shadow-sm border border-gray-100 text-center transition-all hover:scale-105 hover:shadow-md hover:border-blue-200 {{ $viewMode === 'all' ? 'border-indigo-50 hover:border-indigo-300' : '' }}">
+                        <p
+                            class="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1 transition-colors group-hover:text-blue-500">
+                            {{ $label }}
+                        </p>
+                        <p class="text-3xl font-black {{ $viewMode === 'all' ? 'text-indigo-600' : 'text-gray-800' }}">
+                            {{ number_format($count) }}
+                        </p>
+                    </a>
                 @endforeach
             </div>
 

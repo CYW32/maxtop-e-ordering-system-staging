@@ -60,11 +60,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v31 & v32)(zj)
-- Solve : 
--- Done add the VIEW and DOWNLOAD on CS order dashboard
-   - http://127.0.0.1:8000/office/orders/history (My Claims Order)
-   - http://127.0.0.1:8000/office/orders (On Going Order)
-
--- Done add the VIEW and DOWNLOAD on CS Leader dashboard
-  - http://127.0.0.1:8000/office/orders/all (All System Orders)
+## Update Details (v33)(zj)
+ -- Done able to show the team orders on http://127.0.0.1:8000/dashboard (CS LEADER) 
+ -- Make it clickable on CS and CS leader to directly go into the page
