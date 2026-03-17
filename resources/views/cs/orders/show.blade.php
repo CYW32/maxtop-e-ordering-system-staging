@@ -10,6 +10,14 @@
                     {{ __('Order Fulfillment') }}: <span
                         class="text-blue-600">{{ $order->order_number ?? __('DRAFT') }}</span>
                 </h2>
+
+                <div class="flex items-center gap-2 mt-1">
+                    <span class="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{{ __('Place Order Date') }}:</span>
+                    <span class="text-[10px] font-bold text-gray-700 uppercase italic">
+                        {{ $placeOrderDate ? $placeOrderDate->format('d M Y | H:i') : __('Not Submitted') }}
+                    </span>
+                </div>
+
                 <div class="mt-1 flex items-center gap-2">
                     <span
                         class="px-3 py-1 rounded-full text-[10px] font-black uppercase border shadow-sm
@@ -23,6 +31,7 @@
                         {{ str_replace('_', ' ', $order->status) }}
                     </span>
                 </div>
+
             </div>
             <a href="{{ route('office.orders.index') }}"
                class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
@@ -178,42 +187,47 @@
                     </div>
 
                     {{-- 4. PRIVILEGED AUDIT TRAIL [Internal Order Audit Protocol] --}}
+                    {{-- 5. REFACTORED: PRIVILEGED AUDIT TRAIL [Backbone 33.a, 31.f.2] --}}
                     @hasanyrole('admin|cs_leader')
-                        <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100">
-                            <div class="p-8 border-b border-gray-50 flex items-center gap-2">
-                                <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                                    stroke-width="2.5">
-                                    <path
-                                        d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                </svg>
-                                <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest">
-                                    {{ __('Internal Audit Trail: Status Transitions') }}</h3>
-                            </div>
-                            <div class="p-8 space-y-4">
-                                @forelse ($order->statusHistory as $history)
-                                    <div
-                                        class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                    <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100">
+                        <div class="p-8 border-b border-gray-50 flex items-center gap-2">
+                            <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                            <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest">{{ __('Internal Audit Trail: Status Transitions') }}</h3>
+                        </div>
+                        <div class="p-8 space-y-4">
+                            @forelse ($order->statusHistory as $history)
+                                <div class="flex flex-col p-5 bg-gray-50 rounded-2xl border border-gray-100">
+                                    <div class="flex items-center justify-between mb-2">
                                         <div class="flex items-center gap-4">
-                                            <span
-                                                class="px-2.5 py-1 bg-white border border-gray-200 rounded-lg text-[9px] font-black uppercase text-gray-600 shadow-sm">
-                                                {{ str_replace('_', ' ', $history->status) }}
-                                            </span>
+                                            <span class="px-2.5 py-1 bg-white border border-gray-200 rounded-lg text-[9px] font-black uppercase text-gray-600 shadow-sm">{{ str_replace('_', ' ', $history->status) }}</span>
                                             <div class="flex flex-col">
-                                                <span
-                                                    class="text-[10px] font-black text-gray-900 uppercase tracking-tight">{{ $history->changer->name }}</span>
-                                                <span
-                                                    class="text-[8px] font-bold text-blue-500 uppercase">{{ $history->changer->roles->first()->name }}</span>
+                                                <span class="text-[10px] font-black text-gray-900 uppercase">{{ $history->changer->name }}</span>
+                                                <span class="text-[8px] font-bold text-blue-500 uppercase">{{ $history->changer->roles->first()->name }}</span>
                                             </div>
                                         </div>
-                                        <span
-                                            class="text-[9px] font-black text-gray-400 uppercase">{{ $history->created_at->format('d M Y, H:i') }}</span>
+                                        <span class="text-[9px] font-black text-gray-400 uppercase">{{ $history->created_at->format('d M Y, H:i') }}</span>
                                     </div>
-                                @empty
-                                    <p class="text-[10px] text-gray-400 italic uppercase text-center py-4">
-                                        {{ __('No status transition records found.') }}</p>
-                                @endforelse
-                            </div>
+
+                                    {{-- ARCHITECTURE FIX: Cancellation Reason Injection in Audit Trail --}}
+                                    @if($history->status === 'cancellation_requested' && $order->cancellation_request_reason)
+                                        <div class="mt-2 p-3 bg-purple-100/50 rounded-xl border border-purple-100">
+                                            <p class="text-[8px] font-black text-purple-400 uppercase mb-1 tracking-widest">{{ __('Cancel Reason') }}</p>
+                                            <p class="text-[11px] font-bold text-purple-700 italic">"{{ $order->cancellation_request_reason }}"</p>
+                                        </div>
+                                    @endif
+
+                                    @if($history->status === 'cancelled' && $order->cancellation_reason)
+                                        <div class="mt-2 p-3 bg-red-100/50 rounded-xl border border-red-100">
+                                            <p class="text-[8px] font-black text-red-400 uppercase mb-1 tracking-widest">{{ __('Manager Approval Note') }}</p>
+                                            <p class="text-[11px] font-bold text-red-700 italic">"{{ $order->cancellation_reason }}"</p>
+                                        </div>
+                                    @endif
+                                </div>
+                            @empty
+                                <p class="text-[10px] text-gray-400 italic uppercase text-center py-4">{{ __('No status records found.') }}</p>
+                            @endforelse
                         </div>
+                    </div>
                     @endhasanyrole
                 </div>
 

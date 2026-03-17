@@ -60,8 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v35)(zj)
- ** Customer Dashboard
-   -- Done fix enhance UI order history dashboard on http://127.0.0.1:8000/my-orders
-   -- Done added filter function
-   -- Done enhance UI for reservation Draft
+## Update Details (v36)(cyw)
+ ** Solve:
+ * Order Date is show at the order details page.(CYW)(HOLD)
+ * The request cancel reason should include in the “Internal Audit Trail: Status Transitions”(CYW)
+ * Timestamps update to Malaysia time.(CYW)

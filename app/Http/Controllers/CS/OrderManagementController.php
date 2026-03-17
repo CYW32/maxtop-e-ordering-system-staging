@@ -3,8 +3,8 @@
 namespace App\Http\Controllers\CS;
 
 use App\Http\Controllers\Controller;
-use App\Models\Order; 
-use App\Models\User; 
+use App\Models\Order;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -79,28 +79,49 @@ class OrderManagementController extends Controller
      */
     public function show(Order $order)
     {
-        $order->load(['items.item', 'items.uom', 'user.company', 'handler']);
+        /**
+         * ARCHITECTURE FIX: Eager load relationships.
+         * Added 'statusHistory.changer' to support the view's audit trail without N+1 queries [2].
+         */
+        $order->load(['items.item', 'items.uom', 'user.company', 'handler', 'statusHistory.changer']);
+
+        /**
+         * PRAGMATIC FIX: Resolve 'Undefined variable $placeOrderDate' Error.
+         * As requested, mapping this to the record's creation timestamp [1].
+         */
+        $placeOrderDate = $order->created_at;
 
         $currentUser = auth()->user();
 
-        // Default: Admins and Leaders can transfer to any of these roles
+        // 1. DEFINE TARGET ROLES FOR HANDOVER [Backbone 25]
+        // Default: Admins and Leaders can transfer authority to any CS role.
         $targetRoles = ['admin', 'cs_leader', 'cs_staff'];
 
-        // RESTRICTION: If the user is just a CS Staff, they can ONLY hand over to a CS Leader.
+        /**
+         * 2. RESTRICTION: CS Staff Escalation Path [Backbone 32.d.2]
+         * If the user is strictly CS Staff, they can ONLY hand over to a CS Leader.
+         */
         if ($currentUser->hasRole('cs_staff') && !$currentUser->hasAnyRole(['admin', 'cs_leader'])) {
             $targetRoles = ['cs_leader'];
         }
 
         $staffQuery = User::role($targetRoles)->where('status', 'active');
 
-        // FIX: Exclude the *current handler* from the list (instead of the logged-in user).
+        /**
+         * 3. OWNERSHIP GUARD [Backbone 32.c]
+         * Exclude the *current handler* from the list to prevent lateral assignment loops.
+         */
         if ($order->handler_id) {
             $staffQuery->where('id', '!=', $order->handler_id);
         }
 
-        $eligibleStaff = $staffQuery->get();
+        $eligibleStaff = $staffQuery->orderBy('name')->get();
 
-        return view('cs.orders.show', compact('order', 'eligibleStaff'));
+        /**
+         * 4. PASS DATA TO VIEW
+         * Including $placeOrderDate ensures the header template can render without failure [3].
+         */
+        return view('cs.orders.show', compact('order', 'eligibleStaff', 'placeOrderDate'));
     }
 
     /**
@@ -184,7 +205,7 @@ class OrderManagementController extends Controller
                     'snapshot_name' => $orderItem->item->name,
                     'snapshot_uom_name' => $uom?->uom_name ?? 'Unit',
                     'snapshot_uom_rate' => $uom?->rate_qty ?? 1,
-                    'price_at_order' => $uom->price, 
+                    'price_at_order' => $uom->price,
                 ]);
             }
             $order->update(['status' => 'approved']);
@@ -297,7 +318,7 @@ class OrderManagementController extends Controller
             $query->where('status', $request->status);
         }
 
-        $history = $query->latest()->paginate(15)->withQueryString(); 
+        $history = $query->latest()->paginate(15)->withQueryString();
 
         return view('cs.orders.history', compact('history', 'status'));
     }
@@ -334,7 +355,7 @@ class OrderManagementController extends Controller
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term) 
+                $q->search($term)
                     ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"))
                     ->orWhereHas('handler', fn($h) => $h->where('name', 'like', "%{$term}%"));
             });
