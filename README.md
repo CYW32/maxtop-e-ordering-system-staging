@@ -60,8 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v36)(cyw)
+## Update Details (v37)(zj)
  ** Solve:
- * Order Date is show at the order details page.(CYW)(HOLD)
- * The request cancel reason should include in the “Internal Audit Trail: Status Transitions”(CYW)
- * Timestamps update to Malaysia time.(CYW)
+ * Done add the view button on Product Items
+ * Done add "More Filter Functions" to let CS easier to find out more related items
+ * Added the Back on top right to let CS run more smoothly.
+ * Enhanced notification and overall UI on Product Items

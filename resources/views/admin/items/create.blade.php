@@ -16,6 +16,26 @@
     }">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
+            {{-- NEW: Global Error Catcher so you know if something fails --}}
+            @if ($errors->any())
+                <div class="p-6 bg-red-50 border border-red-200 rounded-[2rem] shadow-sm">
+                    <div class="flex items-center gap-3 mb-2">
+                        <svg class="w-5 h-5 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <h4 class="text-[11px] font-black uppercase text-red-900 tracking-tight">
+                            {{ __('Validation Error') }}</h4>
+                    </div>
+                    <ul class="list-disc list-inside text-[10px] font-bold text-red-700 uppercase ml-8 space-y-1">
+                        @foreach ($errors->all() as $error)
+                            <li>{{ $error }}</li>
+                        @endforeach
+                    </ul>
+                </div>
+            @endif
+
             <form method="POST" action="{{ route('items.store') }}" enctype="multipart/form-data" class="space-y-8">
                 @csrf
 
@@ -29,15 +49,17 @@
                                     class="text-[10px] font-black uppercase text-gray-400" />
                                 <x-text-input id="sku" name="sku" type="text"
                                     class="mt-1 block w-full font-mono uppercase" :value="old('sku')" required />
-                                <x-input-error :messages="$errors->get('sku')" class="mt-2" />
                             </div>
                             <div>
                                 <x-input-label for="status" :value="__('Listing Status')"
                                     class="text-[10px] font-black uppercase text-gray-400" />
                                 <select name="status"
                                     class="mt-1 block w-full rounded-xl border-gray-300 text-sm font-bold uppercase focus:ring-blue-500">
-                                    <option value="active">{{ __('Active') }}</option>
-                                    <option value="deactive">{{ __('Inactive') }}</option>
+                                    <option value="active" {{ old('status') === 'active' ? 'selected' : '' }}>
+                                        {{ __('Active') }}</option>
+                                    {{-- FIX: Changed value from 'deactive' to 'inactive' to match the database --}}
+                                    <option value="inactive" {{ old('status') === 'inactive' ? 'selected' : '' }}>
+                                        {{ __('Inactive') }}</option>
                                 </select>
                                 <p class="mt-2 text-[9px] text-amber-600 font-black uppercase italic">
                                     {{ __('Note: Status forced to Inactive if no UOM is added.') }}</p>
@@ -53,12 +75,12 @@
                             </div>
                         </div>
 
-                        {{-- Universal Description: Fulfills Requirement --}}
+                        {{-- Universal Description --}}
                         <div>
                             <x-input-label for="description" :value="__('Product Description (Public)')"
                                 class="text-[10px] font-black uppercase text-gray-400 mb-1" />
                             <textarea id="description" name="description" rows="3"
-                                class="w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-xl shadow-sm text-sm"
+                                class="w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-xl shadow-sm text-sm uppercase"
                                 placeholder="{{ __('Provide technical specs or context for customers...') }}">{{ old('description') }}</textarea>
                         </div>
                     </div>
@@ -69,7 +91,7 @@
                         <div
                             class="w-32 h-32 bg-white rounded-xl flex items-center justify-center mb-4 border-2 border-dashed border-gray-200 text-gray-300">
                             <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                             </svg>
                         </div>
@@ -78,7 +100,7 @@
                     </div>
                 </div>
 
-                {{-- SECTION 2: UNIT OF MEASURE (UOM) MANAGEMENT [Addendum 5.a] --}}
+                {{-- SECTION 2: UNIT OF MEASURE (UOM) MANAGEMENT --}}
                 <div class="bg-gray-900 rounded-[2.5rem] p-8 shadow-xl">
                     <div class="flex justify-between items-center mb-8">
                         <div>
@@ -130,7 +152,7 @@
                                         class="h-10 w-10 flex items-center justify-center bg-gray-700 hover:bg-red-600 rounded-xl text-white transition">
                                         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
                                             stroke-width="2.5">
-                                            <path
+                                            <path stroke-linecap="round" stroke-linejoin="round"
                                                 d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                         </svg>
                                     </button>
@@ -149,7 +171,7 @@
                 {{-- SECTION 3: ASSIGNMENTS (Categorization and Catalogs) --}}
                 <div
                     class="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-8">
-                    {{-- Categories [Backbone 3.a.3] --}}
+                    {{-- Categories --}}
                     <div>
                         <h3 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
                             {{ __('Categorization') }}</h3>
@@ -166,7 +188,7 @@
                         </div>
                     </div>
 
-                    {{-- Catalog Whitelist Selection: Fulfills Requirement --}}
+                    {{-- Catalog Whitelist Selection --}}
                     <div>
                         <h3 class="text-[10px] font-black uppercase text-blue-600 mb-6 tracking-widest">
                             {{ __('Catalog Visibility (Whitelisting)') }}</h3>

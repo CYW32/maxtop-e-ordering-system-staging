@@ -13,7 +13,10 @@
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
-
+            <a href="{{ route('items.index') }}"
+                class="text-[11px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                &larr; {{ __('Back To Product Items') }}
+            </a>
             @if ($errors->any())
                 <div class="alert alert-danger">
                     <ul>
@@ -58,20 +61,31 @@
                         <div class="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <x-input-label for="name" :value="__('Display Name')"
+                                    <x-input-label for="name" :value="__('PRODUCT SKU')"
                                         class="text-[10px] font-black uppercase text-gray-400 mb-2" />
                                     <x-text-input id="name" name="name" type="text"
                                         class="block w-full font-bold uppercase" :value="old('name', $item->name)" required />
                                 </div>
+
+                                {{-- FRONTEND LOCK: System SKU --}}
                                 <div>
-                                    <x-input-label for="sku" :value="__('System SKU')"
+                                    <x-input-label for="sku" :value="__('PRODUCT SKU (Locked)')"
                                         class="text-[10px] font-black uppercase text-gray-400 mb-2" />
-                                    <x-text-input id="sku" name="sku" type="text"
-                                        class="block w-full font-mono font-black text-blue-600 uppercase"
-                                        :value="old('sku', $item->sku)" required />
+                                    <div class="relative">
+                                        <input id="sku" type="text"
+                                            class="block w-full border-gray-100 bg-gray-50 text-gray-400 rounded-2xl font-mono font-black uppercase cursor-not-allowed shadow-none focus:ring-0"
+                                            value="{{ $item->sku }}" disabled readonly />
+                                        {{-- Lock Icon to visually indicate it cannot be changed --}}
+                                        <svg class="w-4 h-4 text-gray-300 absolute right-4 top-1/2 -translate-y-1/2"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                        </svg>
+                                    </div>
                                 </div>
+
                                 <div class="md:col-span-2">
-                                    <x-input-label for="description" :value="__('Specifications')"
+                                    <x-input-label for="description" :value="__('Product Description')"
                                         class="text-[10px] font-black uppercase text-gray-400 mb-2" />
                                     <textarea id="description" name="description" rows="3"
                                         class="block w-full border-gray-100 rounded-2xl text-xs font-bold uppercase focus:ring-blue-500">{{ old('description', $item->description) }}</textarea>
@@ -152,16 +166,66 @@
                             </select>
                         </div>
 
-                        <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
-                            <div class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                                {{ __('Media') }}</div>
-                            <div class="flex flex-col items-center gap-6">
-                                @if ($item->image_path)
-                                    <img src="{{ asset('storage/' . $item->image_path) }}"
-                                        class="w-full aspect-square rounded-[2rem] object-cover border border-gray-50 shadow-inner">
-                                @endif
-                                <input type="file" name="image"
-                                    class="text-[9px] font-black uppercase text-gray-400">
+                        <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
+                            x-data="{
+                                imagePreview: '{{ $item->image_path ? asset('storage/' . $item->image_path) : '' }}',
+                                fileChosen(event) {
+                                    const file = event.target.files[0];
+                                    if (file) {
+                                        const reader = new FileReader();
+                                        reader.onload = (e) => {
+                                            this.imagePreview = e.target.result;
+                                        };
+                                        reader.readAsDataURL(file);
+                                    }
+                                }
+                            }">
+
+                            <div
+                                class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest flex justify-between items-center">
+                                <span>{{ __('Product Media') }}</span>
+                            </div>
+
+                            {{-- INTERACTIVE DROPZONE --}}
+                            <div class="relative w-full aspect-square border-2 border-dashed border-gray-200 rounded-[2rem] hover:border-blue-400 hover:bg-blue-50/50 transition-colors overflow-hidden group flex flex-col items-center justify-center cursor-pointer"
+                                @click="$refs.fileInput.click()">
+
+                                <input type="file" name="image" x-ref="fileInput" @change="fileChosen"
+                                    class="hidden" accept="image/jpeg, image/png, image/webp">
+
+                                <div x-show="!imagePreview"
+                                    class="flex flex-col items-center justify-center p-6 text-center">
+                                    <div
+                                        class="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 mb-4 group-hover:bg-white group-hover:text-blue-500 transition-colors shadow-sm">
+                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                        </svg>
+                                    </div>
+                                    <span
+                                        class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload image') }}</span>
+                                    <span
+                                        class="text-[8px] font-bold text-gray-400 mt-2 uppercase tracking-widest">{{ __('PNG, JPG, WEBP') }}</span>
+                                </div>
+
+                                <div x-show="imagePreview" class="absolute inset-0 w-full h-full"
+                                    style="display: none;">
+                                    <img :src="imagePreview" class="w-full h-full object-cover">
+
+                                    <div
+                                        class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center backdrop-blur-[2px]">
+                                        <div
+                                            class="bg-white/90 text-gray-900 text-[10px] font-black uppercase tracking-widest px-6 py-3 rounded-xl shadow-lg flex items-center gap-2">
+                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                stroke="currentColor" stroke-width="2.5">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                                            </svg>
+                                            {{ __('Replace Image') }}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -201,7 +265,7 @@
                         </div>
                         <button type="button" x-on:click="addUom()"
                             class="bg-blue-50 text-blue-600 px-6 py-2 rounded-xl text-[9px] font-black uppercase hover:bg-blue-100 transition">
-                            {{ __('+ Add Packaging Tier') }}
+                            {{ __('+ Add UOM') }}
                         </button>
                     </div>
 
