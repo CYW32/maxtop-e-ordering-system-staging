@@ -13,10 +13,14 @@
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+
+            {{-- Back Link --}}
             <a href="{{ route('items.index') }}"
                 class="text-[11px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                 &larr; {{ __('Back To Product Items') }}
             </a>
+
+            {{-- Error Catcher --}}
             @if ($errors->any())
                 <div class="alert alert-danger">
                     <ul>
@@ -93,62 +97,109 @@
                             </div>
                         </div>
 
+                        {{-- Searchable Assignments Grid --}}
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+
                             {{-- CATEGORIZATION SEARCH --}}
                             <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
-                                x-data="{ search: '', count: {{ (int) $item->categories->count() }} }">
+                                x-data="{
+                                    search: '',
+                                    count: {{ count(old('categories', $item->categories->pluck('id')->toArray())) }}
+                                }">
                                 <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-4">
-                                    {{ __('Categorization') }} <span class="ml-2 text-blue-500" x-text="count"></span>
+                                    {{ __('Categorization') }} <span class="ml-2 text-blue-500 font-mono"
+                                        x-text="count"></span>
                                 </h3>
-                                <input type="text" x-model="search" placeholder="{{ __('Filter...') }}"
-                                    class="w-full mb-4 bg-gray-50 border-gray-100 rounded-2xl text-[10px] font-black uppercase pl-4">
+
+                                {{-- Search Input with Icon --}}
+                                <div class="relative mb-4">
+                                    <input type="text" x-model="search"
+                                        placeholder="{{ __('Filter categories...') }}"
+                                        class="w-full bg-gray-50 border-gray-100 rounded-2xl text-[10px] font-black uppercase pl-10 focus:ring-blue-500 focus:border-blue-500 transition-all">
+                                    <svg class="w-4 h-4 text-gray-300 absolute left-3 top-1/2 -translate-y-1/2"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                    </svg>
+                                </div>
+
                                 <div class="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                                    @php $itemCatIds = $item->categories->pluck('id')->toArray(); @endphp
+                                    @php
+                                        // Merge existing category IDs with any old input from a failed validation
+                                        $selectedIds = old('categories', $item->categories->pluck('id')->toArray());
+                                    @endphp
+
                                     @forelse($categories as $category)
                                         <label
                                             x-show="'{{ strtoupper($category->name) }}'.includes(search.toUpperCase())"
-                                            class="flex items-center p-2 rounded-xl hover:bg-gray-50 cursor-pointer">
+                                            class="flex items-center p-2 rounded-xl hover:bg-gray-50 cursor-pointer transition-colors group">
                                             <input type="checkbox" name="categories[]" value="{{ $category->id }}"
-                                                class="rounded border-gray-300 text-blue-600"
-                                                @if (in_array($category->id, $itemCatIds)) checked @endif
+                                                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                {{ in_array($category->id, $selectedIds) ? 'checked' : '' }}
                                                 x-on:change="count = $event.target.checked ? count + 1 : count - 1">
                                             <span
-                                                class="ml-3 text-[11px] font-black text-gray-700 uppercase">{{ $category->name }}</span>
+                                                class="ml-3 text-[11px] font-black text-gray-600 uppercase group-hover:text-gray-900 transition-colors">
+                                                {{ $category->name }}
+                                            </span>
                                         </label>
                                     @empty
                                         <p class="text-[9px] font-black text-gray-300 uppercase italic">
-                                            {{ __('No Groups Defined') }}</p>
+                                            {{ __('No Groups Defined') }}
+                                        </p>
                                     @endforelse
                                 </div>
                             </div>
 
-                            {{-- CATALOG WHITELIST SEARCH [Backbone 3.a.1] --}}
+                            {{-- CATALOG WHITELIST SEARCH --}}
                             <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
-                                x-data="{ search: '', count: {{ (int) $item->catalogs->count() }} }">
+                                x-data="{
+                                    search: '',
+                                    count: {{ count(old('catalogs', $item->catalogs->pluck('id')->toArray())) }}
+                                }">
+
                                 <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-4">
-                                    {{ __('Catalog Whitelist') }} <span class="ml-2 text-indigo-500"
-                                        x-text="count"></span></h3>
-                                <input type="text" x-model="search" placeholder="{{ __('Filter...') }}"
-                                    class="w-full mb-4 bg-gray-50 border-gray-100 rounded-2xl text-[10px] font-black uppercase pl-4">
+                                    {{ __('Catalog Whitelist') }}
+                                    <span class="ml-2 text-indigo-500 font-mono" x-text="count"></span>
+                                </h3>
+
+                                {{-- Search Input with SVG Icon --}}
+                                <div class="relative mb-4">
+                                    <input type="text" x-model="search" placeholder="{{ __('Filter catalogs...') }}"
+                                        class="w-full bg-gray-50 border-gray-100 rounded-2xl text-[10px] font-black uppercase pl-10 focus:ring-indigo-500 focus:border-indigo-500 transition-all">
+                                    <svg class="w-4 h-4 text-gray-300 absolute left-3 top-1/2 -translate-y-1/2"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                    </svg>
+                                </div>
+
                                 <div class="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                                    @php $itemCatalogIds = $item->catalogs->pluck('id')->toArray(); @endphp
+                                    @php
+                                        // Pre-calculate selected IDs from old input OR database
+                                        $selectedCatalogIds = old('catalogs', $item->catalogs->pluck('id')->toArray());
+                                    @endphp
+
                                     @forelse($catalogs as $catalog)
                                         <label
                                             x-show="'{{ strtoupper($catalog->name) }}'.includes(search.toUpperCase())"
-                                            class="flex items-center p-2 rounded-xl hover:bg-gray-50 cursor-pointer">
+                                            class="flex items-center p-2 rounded-xl hover:bg-gray-50 cursor-pointer transition-colors group">
                                             <input type="checkbox" name="catalogs[]" value="{{ $catalog->id }}"
-                                                class="rounded border-gray-300 text-indigo-600"
-                                                @if (in_array($catalog->id, $itemCatalogIds)) checked @endif
+                                                class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                                {{ in_array($catalog->id, $selectedCatalogIds) ? 'checked' : '' }}
                                                 x-on:change="count = $event.target.checked ? count + 1 : count - 1">
                                             <span
-                                                class="ml-3 text-[11px] font-black text-gray-700 uppercase">{{ $catalog->name }}</span>
+                                                class="ml-3 text-[11px] font-black text-gray-600 uppercase group-hover:text-gray-900 transition-colors">
+                                                {{ $catalog->name }}
+                                            </span>
                                         </label>
                                     @empty
                                         <p class="text-[9px] font-black text-gray-300 uppercase italic">
-                                            {{ __('No Catalogs Defined') }}</p>
+                                            {{ __('No Catalogs Defined') }}
+                                        </p>
                                     @endforelse
                                 </div>
                             </div>
+
                         </div>
                     </div>
 
@@ -166,6 +217,7 @@
                             </select>
                         </div>
 
+                        {{-- Interactive Media Card --}}
                         <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
                             x-data="{
                                 imagePreview: '{{ $item->image_path ? asset('storage/' . $item->image_path) : '' }}',
@@ -229,9 +281,10 @@
                             </div>
                         </div>
                     </div>
+
                 </div>
 
-                {{-- REFACTORED: Unit of Measure (UOM) Configurations container [CRUD FIX] --}}
+                {{-- UOM CONFIGURATIONS --}}
                 <div class="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm" x-data="{
                     uoms: {{ $item->uoms->map(
                             fn($u) => [
@@ -253,18 +306,18 @@
                     <div class="flex justify-between items-center mb-10">
                         <div>
                             <h3
-                                class="text-[10px] font-black uppercase text-gray-400 tracking-widest flex items-center gap-2">
-                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                                    stroke-width="2.5">
+                                class="text-[11px] font-black uppercase text-gray-500 tracking-widest flex items-center gap-2">
+                                <svg class="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24"
+                                    stroke="currentColor" stroke-width="2.5">
                                     <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                                 </svg>
                                 {{ __('Unit of Measure (UOM) Configurations') }}
                             </h3>
-                            <p class="text-[8px] font-bold text-gray-300 uppercase italic mt-1">
+                            <p class="text-[9px] font-bold text-gray-300 uppercase italic mt-1 ml-7">
                                 {{ __('Pricing source for all orders.') }} [Addendum 5.a]</p>
                         </div>
                         <button type="button" x-on:click="addUom()"
-                            class="bg-blue-50 text-blue-600 px-6 py-2 rounded-xl text-[9px] font-black uppercase hover:bg-blue-100 transition">
+                            class="bg-blue-50 text-blue-600 px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-wider hover:bg-blue-100 transition-all shadow-sm">
                             {{ __('+ Add UOM') }}
                         </button>
                     </div>
@@ -273,45 +326,56 @@
                         <table class="min-w-full divide-y divide-gray-50">
                             <thead>
                                 <tr class="text-[9px] font-black text-gray-400 uppercase tracking-tighter">
-                                    <th class="px-4 py-4 text-left">{{ __('Unit Name') }}</th>
-                                    <th class="px-4 py-4 text-center">{{ __('Rate (Base 1)') }}</th>
-                                    <th class="px-4 py-4 text-right">{{ __('Internal Price (RM)') }}</th>
-                                    <th class="px-4 py-4 text-center">{{ __('Status') }}</th>
-                                    <th class="px-4 py-4 text-right"></th>
+                                    <th
+                                        class="px-2 pb-6 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                        {{ __('Unit Name') }}</th>
+                                    <th
+                                        class="px-2 pb-6 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                        {{ __('Rate (Base 1)') }}</th>
+                                    <th
+                                        class="px-2 pb-6 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                        {{ __('Internal Price (RM)') }}</th>
+                                    <th
+                                        class="px-2 pb-6 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                        {{ __('Status') }}</th>
+                                    <th
+                                        class="px-2 pb-6 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-50">
                                 <template x-for="(uom, index) in uoms" :key="index">
                                     <tr class="group hover:bg-gray-50/50 transition-colors">
-                                        <td class="px-2 py-4">
+                                        <td class="px-2 py-6 align-top">
                                             <input type="hidden" :name="'uoms[' + index + '][id]'" x-model="uom.id">
                                             <input type="text" :name="'uoms[' + index + '][uom_name]'"
                                                 x-model="uom.uom_name" required
                                                 class="w-full border-gray-100 rounded-xl text-[11px] font-black uppercase focus:ring-blue-500">
                                         </td>
-                                        <td class="px-2 py-4">
+                                        <td class="px-2 py-6 align-top">
                                             <input type="number" :name="'uoms[' + index + '][rate_qty]'"
                                                 x-model="uom.rate_qty" min="1" required
                                                 class="w-24 mx-auto block border-gray-100 rounded-xl text-[11px] font-mono font-black text-blue-600 text-center">
                                         </td>
-                                        <td class="px-2 py-4">
+                                        <td class="px-2 py-6 align-top">
                                             <input type="number" :name="'uoms[' + index + '][price]'"
                                                 x-model="uom.price" step="0.01" min="0" required
                                                 class="w-32 ml-auto block border-gray-100 rounded-xl text-[11px] font-mono font-black text-right">
                                         </td>
-                                        <td class="px-2 py-4">
+                                        <td class="px-2 py-6 align-top">
                                             <select :name="'uoms[' + index + '][status]'" x-model="uom.status"
                                                 class="w-full border-gray-100 rounded-xl text-[9px] font-black uppercase focus:ring-blue-500">
                                                 <option value="active">{{ __('Active') }}</option>
                                                 <option value="inactive">{{ __('Inactive') }}</option>
                                             </select>
+
                                             {{-- ARCHITECTURE STANDARD: Visible validation feedback --}}
                                             @error('uoms.*.status')
                                                 <p class="text-[7px] text-red-500 mt-1 uppercase font-black">
                                                     {{ $message }}</p>
                                             @enderror
                                         </td>
-                                        <td class="px-2 py-4 text-right">
+                                        <td class="px-2 py-6 align-top text-right">
                                             <button type="button" x-on:click="removeUom(index)"
                                                 class="text-red-300 hover:text-red-500 transition-all p-2">
                                                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
@@ -336,11 +400,12 @@
                     </div>
                 </div>
 
+                {{-- ADD BAR --}}
                 <div class="flex items-center justify-end gap-6 pt-8">
                     <a href="{{ route('items.index') }}"
                         class="text-[10px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">{{ __('Discard Changes') }}</a>
                     <x-primary-button
-                        class="bg-gray-900 hover:bg-black py-5 px-16 rounded-[2rem] shadow-xl shadow-gray-100 transition-all uppercase text-[11px] font-black tracking-[0.1em]">
+                        class="w-full md:w-auto bg-gray-900 hover:bg-black text-white px-8 py-3 rounded-2xl text-[11px] font-black uppercase tracking-wider transition-all shadow-md whitespace-nowrap">
                         {{ __('Save Product Configuration') }}
                     </x-primary-button>
                 </div>

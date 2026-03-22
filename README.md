@@ -60,9 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v37)(zj)
+## Update Details (v38)(zj)
  ** Solve:
- * Done add the view button on Product Items
- * Done add "More Filter Functions" to let CS easier to find out more related items
- * Added the Back on top right to let CS run more smoothly.
- * Enhanced notification and overall UI on Product Items
+ * Done enhanced the design on create item.
+ * Done add filter search of category and catalog while create item.
+ * Let the edit and create page UI be the same.

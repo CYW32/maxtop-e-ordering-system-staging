@@ -13,26 +13,45 @@
 
             {{-- SUCCESS NOTIFICATION ALERT --}}
             @if (session('success'))
-                <div class="bg-green-50 border border-green-200 p-4 rounded-2xl flex items-center gap-3 shadow-sm">
-                    <svg class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                        stroke-width="2.5">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span
-                        class="text-xs font-black uppercase text-green-800 tracking-wide">{{ session('success') }}</span>
+                <div x-data="{ show: true }" x-show="show"
+                    class="bg-green-50 border border-green-200 p-4 rounded-2xl flex items-center justify-between gap-3 shadow-sm transition-all">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span
+                            class="text-xs font-black uppercase text-green-800 tracking-wide">{{ session('success') }}</span>
+                    </div>
+                    {{-- CLOSE BUTTON --}}
+                    <button @click="show = false" class="p-1 text-green-400 hover:text-green-600 transition-colors">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
                 </div>
             @endif
 
             {{-- ERROR NOTIFICATION ALERT --}}
             @if (session('error'))
-                <div class="bg-red-50 border border-red-200 p-4 rounded-2xl flex items-center gap-3 shadow-sm">
-                    <svg class="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                        stroke-width="2.5">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                            d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span class="text-xs font-black uppercase text-red-800 tracking-wide">{{ session('error') }}</span>
+                <div x-data="{ show: true }" x-show="show"
+                    class="bg-red-50 border border-red-200 p-4 rounded-2xl flex items-center justify-between gap-3 shadow-sm transition-all">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span
+                            class="text-xs font-black uppercase text-red-800 tracking-wide">{{ session('error') }}</span>
+                    </div>
+                    {{-- CLOSE BUTTON --}}
+                    <button @click="show = false" class="p-1 text-red-400 hover:text-red-600 transition-colors">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
                 </div>
             @endif
 

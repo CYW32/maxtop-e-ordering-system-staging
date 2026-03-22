@@ -7,6 +7,50 @@
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
+            {{-- SUCCESS NOTIFICATION ALERT --}}
+            @if (session('success'))
+                <div x-data="{ show: true }" x-show="show"
+                    class="bg-green-50 border border-green-200 p-4 rounded-2xl flex items-center justify-between gap-3 shadow-sm mb-6 transition-all">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span
+                            class="text-xs font-black uppercase text-green-800 tracking-wide">{{ session('success') }}</span>
+                    </div>
+                    {{-- CLOSE BUTTON --}}
+                    <button @click="show = false" class="text-green-400 hover:text-green-600 transition-colors">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            @endif
+
+            {{-- ERROR NOTIFICATION ALERT --}}
+            @if (session('error'))
+                <div x-data="{ show: true }" x-show="show"
+                    class="bg-red-50 border border-red-200 p-4 rounded-2xl flex items-center justify-between gap-3 shadow-sm mb-6 transition-all">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span
+                            class="text-xs font-black uppercase text-red-800 tracking-wide">{{ session('error') }}</span>
+                    </div>
+                    {{-- CLOSE BUTTON --}}
+                    <button @click="show = false" class="text-red-400 hover:text-red-600 transition-colors">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            @endif
+
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 @can('create_items')
                     <a href="{{ route('items.create') }}"
@@ -15,70 +59,6 @@
                     </a>
                 @endcan
             </div>
-
-            {{-- SUCCESS NOTIFICATION --}}
-            @if (session('success'))
-                <div x-data="{ show: true }" x-show="show" x-transition:leave="transition ease-in duration-300"
-                    x-transition:leave-start="opacity-100 translate-y-0"
-                    x-transition:leave-end="opacity-0 -translate-y-4"
-                    class="mb-6 p-4 sm:p-5 bg-green-50 border border-green-200 rounded-[2rem] shadow-sm flex items-center justify-between">
-
-                    <div class="flex items-center gap-4">
-                        <div
-                            class="w-10 h-10 bg-green-100 rounded-2xl flex items-center justify-center text-green-600 shrink-0">
-                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                                stroke-width="2.5">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                            </svg>
-                        </div>
-                        <span class="text-xs sm:text-sm font-black text-green-800 uppercase tracking-wide">
-                            {{ session('success') }}
-                        </span>
-                    </div>
-
-                    <button @click="show = false"
-                        class="p-2 text-green-400 hover:text-green-700 hover:bg-green-100 rounded-xl transition-colors">
-                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                            stroke-width="2.5">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-            @endif
-
-            {{-- ERROR NOTIFICATION WITH FADE-IN --}}
-            @if (session('error'))
-                <div x-data="{ show: true }" x-show="show" x-transition:enter="transition ease-out duration-500"
-                    x-transition:enter-start="opacity-0 -translate-y-4"
-                    x-transition:enter-end="opacity-100 translate-y-0"
-                    x-transition:leave="transition ease-in duration-300"
-                    x-transition:leave-start="opacity-100 translate-y-0"
-                    x-transition:leave-end="opacity-0 -translate-y-4"
-                    class="mb-6 p-4 sm:p-5 bg-red-50 border border-red-200 rounded-[2rem] shadow-sm flex items-center justify-between">
-
-                    <div class="flex items-center gap-4">
-                        <div
-                            class="w-10 h-10 bg-red-100 rounded-2xl flex items-center justify-center text-red-600 shrink-0">
-                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                                stroke-width="2.5">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                            </svg>
-                        </div>
-                        <span class="text-xs sm:text-sm font-black text-red-800 uppercase tracking-wide">
-                            {{ session('error') }}
-                        </span>
-                    </div>
-
-                    <button @click="show = false"
-                        class="p-2 text-red-400 hover:text-red-700 hover:bg-red-100 rounded-xl transition-colors">
-                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                            stroke-width="2.5">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-            @endif
 
             {{-- SEARCH TOOLBAR --}}
             <div class="bg-white p-4 md:p-6 rounded-[2rem] border border-gray-100 shadow-sm mb-6"

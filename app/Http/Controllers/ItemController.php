@@ -61,10 +61,12 @@ class ItemController extends Controller
     {
         Gate::authorize('create_items');
 
-        // ARCHITECTURE FIX: Fetch all catalogs to enable item-side whitelisting
-        $catalogs = Catalog::orderBy('name')->get();
+        // Fetch all active categories and catalogs for the search selection boxes
+        $categories = Category::where('status', 'active')->orderBy('name')->get();
+        $catalogs = Catalog::where('status', 'active')->orderBy('name')->get();
 
-        return view('admin.items.create', compact('catalogs'));
+        // Pass both variables to the view
+        return view('admin.items.create', compact('categories', 'catalogs'));
     }
 
     /**
