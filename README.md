@@ -60,9 +60,10 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v40)(zj)
+## Update Details (v41)(zj)
  ** Solve:
- * Done update the UI Dashboard and make it user friendly on Catalog Folders.
- * Add the view button and edit button on catalog dashboard
- * Fix deactivate bugs on Catalog folders.
- * Add more filter function on catalog folders.
+ Business Entities Dashboard
+ ----------------------------
+ * Done added and enhanced filters function
+ * Enhanced overall UI looks
+ * Fix inactive bugs while update configutation

@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Catalog;
 use App\Models\Company;
-use Illuminate\Http\Request; // FIXED: Added missing facade import
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 
 class CompanyController extends Controller
@@ -13,22 +13,53 @@ class CompanyController extends Controller
     {
         Gate::authorize('view_business_entities');
 
-        $companys = Company::with(['catalog', 'parent', 'branches'])
-            // 1. Use the Searchable trait's scope instead of manual where/orWhere
-            ->when(!$request->filled('search'), function ($query) {
-                $query->whereNull('parent_id');
-            })
+        $hqs = Company::whereNull('parent_id')->orderBy('company_name')->get();
 
-            ->when($request->filled('search'), function ($query) use ($request) {
-                $query->search($request->input('search'));
-            })
+        // 1. Determine if we need Flat View (Search active, or explicitly filtering branches)
+        $isFlatView = $request->filled('search') || $request->type === 'branch';
 
-            ->latest()
-            ->paginate(15)
-            // 2. CRITICAL: Add this so pagination links remember the ?search=... term
-            ->withQueryString();
+        // Eager load everything needed for both views
+        $query = Company::with(['catalog', 'parent', 'children.catalog', 'children.parent']);
 
-        return view('admin.companys.index', compact('companys'));
+        if ($isFlatView) {
+            // --- FLAT VIEW (Search Mode) ---
+            if ($request->filled('search')) {
+                $query->where(function ($q) use ($request) {
+                    $q->where('company_name', 'like', '%' . $request->search . '%')
+                        ->orWhere('company_code', 'like', '%' . $request->search . '%')
+                        ->orWhere('branch_code', 'like', '%' . $request->search . '%');
+                });
+            }
+            if ($request->filled('status')) {
+                $query->where('status', $request->status);
+            }
+            if ($request->filled('type')) {
+                if ($request->type === 'hq') {
+                    $query->whereNull('parent_id');
+                } elseif ($request->type === 'branch') {
+                    $query->whereNotNull('parent_id');
+                }
+            }
+            if ($request->filled('hq_id')) {
+                $query->where(function ($q) use ($request) {
+                    $q->where('id', $request->hq_id)->orWhere('parent_id', $request->hq_id);
+                });
+            }
+        } else {
+            // --- ACCORDION VIEW (Default Mode) ---
+            $query->whereNull('parent_id');
+
+            if ($request->filled('status')) {
+                $query->where('status', $request->status);
+            }
+            if ($request->filled('hq_id')) {
+                $query->where('id', $request->hq_id);
+            }
+        }
+
+        $companys = $query->latest()->paginate(15)->withQueryString();
+
+        return view('admin.companys.index', compact('companys', 'hqs', 'isFlatView'));
     }
 
     public function create(Request $request)
@@ -42,9 +73,6 @@ class CompanyController extends Controller
         return view('admin.companys.create', compact('catalogs', 'hqs', 'preselectedParent'));
     }
 
-    /**
-     * Fulfills Addendum 1.d: Register HQ or Branch with strict code requirements.
-     */
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -62,9 +90,26 @@ class CompanyController extends Controller
             'state' => 'nullable|string|max:100',
         ]);
 
-        Company::create($validated);
+        // 1. Create the company and store it in a variable
+        $company = Company::create($validated);
 
-        return redirect()->route('companys.index')->with('success', 'Business entity registered successfully.');
+        // 2. Check if it is an HQ or a Branch based on parent_id
+        $type = is_null($company->parent_id) ? 'HQ' : 'Branch';
+
+        // 3. Redirect to index with the custom dynamic message
+        return redirect()
+            ->route('companys.index')
+            ->with('success', "{$type} ({$company->company_name}) registered successfully.");
+    }
+
+    public function show(Company $company)
+    {
+        // Gate::authorize('view_business_entities');
+
+        // Load the related catalog, parent (if branch), and children (if HQ) to display
+        $company->load(['catalog', 'parent', 'children']);
+
+        return view('admin.companys.show', compact('company'));
     }
 
     public function edit(Company $company)
@@ -74,14 +119,11 @@ class CompanyController extends Controller
         return view('admin.companys.edit', compact('company', 'catalogs'));
     }
 
-    /**
-     * ARCHITECTURE FIX: Security Lockdown.
-     * Block the user from updating uneditable fields (Identity & Hierarchy).
-     */
     public function update(Request $request, Company $company)
     {
-        // 1. Validate ONLY the fields allowed to be changed [Addendum 3.c]
+        // 1. Validate all fields (Added company_name)
         $validated = $request->validate([
+            'company_name' => 'required|string|max:255', // <-- ADDED THIS
             'catalog_id' => 'nullable|exists:catalogs,id',
             'company_reg_no' => 'nullable|string|max:255',
             'pic_name' => 'nullable|string|max:255',
@@ -90,17 +132,50 @@ class CompanyController extends Controller
             'postal_code' => 'nullable|string|max:10',
             'city' => 'nullable|string|max:100',
             'state' => 'nullable|string|max:100',
+            'status' => 'required|in:active,inactive',
         ]);
 
-        // 2. SECURITY GUARD: Explicitly exclude identity fields from the request
-        // to prevent forged POST injections of 'company_name', 'company_code', or 'parent_id'.
-        $updateData = $request->only([
-            'catalog_id', 'company_reg_no', 'pic_name', 'pic_phone',
-            'delivery_address', 'postal_code', 'city', 'state',
+        // 2. FORCE the status assignment directly
+        $company->status = $validated['status'];
+
+        // 3. Update the rest of the normal fields (Added company_name)
+        $company->update([
+            'company_name' => $validated['company_name'], // <-- ADDED THIS
+            'catalog_id' => $validated['catalog_id'],
+            'company_reg_no' => $validated['company_reg_no'],
+            'pic_name' => $validated['pic_name'],
+            'pic_phone' => $validated['pic_phone'],
+            'delivery_address' => $validated['delivery_address'],
+            'postal_code' => $validated['postal_code'],
+            'city' => $validated['city'],
+            'state' => $validated['state'],
         ]);
 
-        $company->update($updateData);
+        // 4. Final forced save to the database
+        $company->save();
 
-        return redirect()->route('companys.index')->with('success', 'Business logistics and contact updated.');
+        return redirect()
+            ->route('companys.index')
+            ->with('success', "Business ({$company->company_name}) updated successfully.");
+    }
+
+    public function destroy(Company $company)
+    {
+        // Gate::authorize('edit_business_entities');
+
+        // 1. SAFEGUARD: Check if the company has associated orders
+        if (!$company->canBeDeleted()) {
+            return redirect()
+                ->route('companys.index')
+                ->with('error', "Cannot delete {$company->company_name} because it has existing order transactions tied to it.");
+        }
+
+        // 2. If safe, proceed with deletion
+        $name = $company->company_name;
+        $company->delete();
+
+        return redirect()
+            ->route('companys.index')
+            ->with('success', "Business ({$name}) deleted successfully.");
     }
 }
