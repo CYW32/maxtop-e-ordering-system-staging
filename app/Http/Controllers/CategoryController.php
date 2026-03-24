@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Category;
-use App\Models\Item; // IMPORTANT: Required to fetch the $items
+use App\Models\Item;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Http\RedirectResponse;
@@ -18,8 +18,14 @@ class CategoryController extends Controller
 
         $query = Category::query();
 
+        // 1. Filter by Name (Search)
         if ($request->filled('search')) {
             $query->where('name', 'like', "%{$request->search}%");
+        }
+
+        // 2. Filter by Operational Status (Added this logic)
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
         }
 
         $categories = $query->withCount('items')->latest()->paginate(15)->withQueryString();
@@ -31,7 +37,6 @@ class CategoryController extends Controller
     {
         Gate::authorize('create_items');
 
-        // FIX: Fetch all items to pass to the create view
         $items = Item::orderBy('name')->get();
 
         return view('admin.categories.create', compact('items'));
@@ -41,9 +46,10 @@ class CategoryController extends Controller
     {
         Gate::authorize('create_items');
 
+        // FIXED: Reverted to standard creation validation rules and updated 'inactive'
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255', 'unique:categories,name'],
-            'status' => ['required', 'in:active,deactive'],
+            'status' => ['required', 'in:active,inactive'],
             'items' => ['nullable', 'array'],
             'items.*' => ['exists:items,id'],
         ]);
@@ -53,12 +59,22 @@ class CategoryController extends Controller
             'status' => $validated['status'],
         ]);
 
-        // Sync items to the category
         $category->items()->sync($request->input('items', []));
 
         return redirect()
             ->route('categories.index')
             ->with('success', "Category ({$category->name}) been created successfully.");
+    }
+
+    public function show(Category $category): View
+    {
+        // Check if user has permission to view
+        Gate::authorize('view_items');
+
+        // Load the items assigned to this category so we can display them
+        $category->load('items');
+
+        return view('admin.categories.show', compact('category'));
     }
 
     public function edit(Category $category): View
@@ -72,7 +88,6 @@ class CategoryController extends Controller
             })
             ->exists();
 
-        // FIX: Fetch items and assigned IDs for the edit view
         $items = Item::orderBy('name')->get();
         $assignedItemIds = $category->items()->pluck('items.id')->toArray();
 
@@ -83,21 +98,22 @@ class CategoryController extends Controller
     {
         Gate::authorize('edit_items');
 
+        // FIXED: Changed 'deactive' to 'inactive' here
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255', Rule::unique('categories')->ignore($category->id)],
-            'status' => ['required', 'in:active,deactive'],
+            'status' => ['required', 'in:active,inactive'],
             'items' => ['nullable', 'array'],
             'items.*' => ['exists:items,id'],
         ]);
 
-        $isDeactivating = $category->status === 'active' && $validated['status'] === 'deactive';
+        // FIXED: Changed 'deactive' to 'inactive' here
+        $isDeactivating = $category->status === 'active' && $validated['status'] === 'inactive';
 
         $category->update([
             'name' => $validated['name'],
             'status' => $validated['status'],
         ]);
 
-        // Sync items to the category (updates existing, adds new, removes unchecked)
         $category->items()->sync($request->input('items', []));
 
         $message = $isDeactivating ? "Category ({$category->name}) deactivated successfully." : "Category ({$category->name}) updated successfully.";
