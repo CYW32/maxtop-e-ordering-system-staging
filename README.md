@@ -60,9 +60,9 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v39)(zj)
+## Update Details (v40)(zj)
  ** Solve:
- * Done enhanced the design on create item.
- * Done add filter search of active status
- * Added the view and trash functioning on categories 
- * Fix the bugs error of inactive the category,
+ * Done update the UI Dashboard and make it user friendly on Catalog Folders.
+ * Add the view button and edit button on catalog dashboard
+ * Fix deactivate bugs on Catalog folders.
+ * Add more filter function on catalog folders.
