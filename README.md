@@ -60,10 +60,11 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v41)(zj)
+## Update Details (v42)(zj)
  ** Solve:
- Business Entities Dashboard
- ----------------------------
- * Done added and enhanced filters function
- * Enhanced overall UI looks
- * Fix inactive bugs while update configutation
+
+Recheck
+-------
+- Add the back button on Product Categories > Create
+- Updated the title from catalogs to category
+- Amending the fill in blanking section of Create New Catalogs.

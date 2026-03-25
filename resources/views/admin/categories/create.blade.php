@@ -2,7 +2,7 @@
     <x-slot name="header">
         <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
-                {{ __('Initialize New Category') }}
+                {{ __('Create Category') }}: <span class="text-blue-600">{{ __('New') }}</span>
             </h2>
             <a href="{{ route('categories.index') }}"
                 class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
@@ -12,7 +12,14 @@
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8 space-y-8">
+
+            {{-- Back Link --}}
+            <a href="{{ route('categories.index') }}"
+                class="text-[11px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                &larr; {{ __('Back To Product Categories') }}
+            </a>
+
             <form method="POST" action="{{ route('categories.store') }}" class="space-y-8">
                 @csrf
 
@@ -22,9 +29,9 @@
                         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
                             stroke-width="2.5">
                             <path
-                                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
-                        {{ __('Category Definition') }}
+                        {{ __('Category Identity & Visibility') }}
                     </div>
 
                     <div class="space-y-8">
@@ -37,13 +44,15 @@
                         </div>
 
                         <div>
-                            <x-input-label for="status" :value="__('Initial Operational Status')"
+                            <x-input-label for="status" :value="__('Operational Status')"
                                 class="text-[10px] font-black uppercase text-gray-400 mb-2" />
                             <select name="status" id="status"
                                 class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-black uppercase">
                                 <option value="active" @selected(old('status') === 'active')>
-                                    {{ __('Active (Immediately Available for Catalogs)') }}</option>
-                                <option value="deactive" @selected(old('status') === 'deactive')>{{ __('Inactive (System Hold)') }}
+                                    {{ __('Active (Visible in System)') }}</option>
+                                {{-- CHANGED: Changed value from 'deactive' to 'inactive' to match Controller validation --}}
+                                <option value="inactive" @selected(old('status') === 'inactive')>
+                                    {{ __('Inactive (Hidden/Hold)') }}
                                 </option>
                             </select>
                             <x-input-error :messages="$errors->get('status')" class="mt-2" />
@@ -75,11 +84,15 @@
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar"
                                 id="itemsContainer">
                                 @foreach ($items as $item)
+                                    @php
+                                        // Keep item styling if validation fails and it was previously checked
+                                        $isChecked = in_array($item->id, old('items', []));
+                                    @endphp
                                     <label
-                                        class="searchable-item relative flex items-center p-4 border rounded-xl hover:bg-gray-50 transition shadow-sm cursor-pointer bg-white border-gray-100">
+                                        class="searchable-item relative flex items-center p-4 border rounded-xl hover:bg-gray-50 transition shadow-sm cursor-pointer {{ $isChecked ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100' }}">
                                         <input name="items[]" value="{{ $item->id }}" type="checkbox"
                                             class="focus:ring-blue-500 h-5 w-5 text-blue-600 border-gray-300 rounded-lg mr-4"
-                                            {{ in_array($item->id, old('items', [])) ? 'checked' : '' }}>
+                                            {{ $isChecked ? 'checked' : '' }}>
                                         <div class="flex-1">
                                             <div class="text-xs font-black text-blue-700 uppercase">{{ $item->sku }}
                                             </div>
@@ -93,17 +106,19 @@
                     </div>
                 </div>
 
-                <div class="flex items-center justify-end gap-4">
+                <div class="flex items-center justify-end gap-4 mt-8">
                     <a href="{{ route('categories.index') }}"
                         class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                         {{ __('Cancel') }}
                     </a>
                     <x-primary-button
-                        class="bg-blue-600 hover:bg-blue-700 py-4 px-12 rounded-2xl shadow-lg shadow-blue-100 transition-all uppercase text-[10px] font-black">
+                        class="bg-gray-900 hover:bg-black py-4 px-12 rounded-2xl shadow-lg transition-all uppercase text-[10px] font-black">
                         {{ __('Create Category') }}
                     </x-primary-button>
                 </div>
+
             </form>
+
         </div>
     </div>
 
