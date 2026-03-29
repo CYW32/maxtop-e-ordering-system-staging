@@ -217,68 +217,239 @@
                             </select>
                         </div>
 
-                        {{-- Interactive Media Card --}}
-                        <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
-                            x-data="{
-                                imagePreview: '{{ $item->image_path ? asset('storage/' . $item->image_path) : '' }}',
-                                fileChosen(event) {
-                                    const file = event.target.files[0];
-                                    if (file) {
-                                        const reader = new FileReader();
-                                        reader.onload = (e) => {
-                                            this.imagePreview = e.target.result;
-                                        };
-                                        reader.readAsDataURL(file);
+                        {{-- Interactive Media Gallery Manager (WITH DRAG & DROP + LIGHTBOX) --}}
+                        <div class="relative p-8 rounded-[2.5rem] border transition-all shadow-sm"
+                            :class="isDragging ? 'border-blue-400 bg-blue-50/50' : 'border-gray-100 bg-white'"
+                            @dragover.prevent="isDragging = true" @dragleave.prevent="isDragging = false"
+                            @drop.prevent="isDragging = false; handleDrop($event)"
+                            x-data='{
+                                existingImages: {!! json_encode(
+                                    collect((array) $item->image_path)->filter()->map(fn($path) => ['path' => $path, 'url' => asset('storage/' . $path)])->values()->all(),
+                                ) !!},
+                                newFiles: [],
+                                dt: new DataTransfer(),
+                                isDragging: false,
+                                
+                                // LIGHTBOX STATES
+                                lightboxOpen: false,
+                                lightboxIndex: 0,
+                                
+                                get allImages() {
+                                    return [
+                                        ...this.existingImages.map(img => img.url),
+                                        ...this.newFiles.map(file => file.url)
+                                    ];
+                                },
+
+                                openLightbox(index) {
+                                    this.lightboxIndex = index;
+                                    this.lightboxOpen = true;
+                                    document.body.style.overflow = "hidden"; // Disable background scroll
+                                },
+                                closeLightbox() {
+                                    this.lightboxOpen = false;
+                                    document.body.style.overflow = ""; // Enable background scroll
+                                },
+                                nextImage() {
+                                    if (this.lightboxIndex < this.allImages.length - 1) {
+                                        this.lightboxIndex++;
+                                    } else {
+                                        this.lightboxIndex = 0; // Loop to first
                                     }
+                                },
+                                prevImage() {
+                                    if (this.lightboxIndex > 0) {
+                                        this.lightboxIndex--;
+                                    } else {
+                                        this.lightboxIndex = this.allImages.length - 1; // Loop to last
+                                    }
+                                },
+                                
+                                removeExisting(index) {
+                                    this.existingImages.splice(index, 1);
+                                },
+                                
+                                removeNewFile(index) {
+                                    this.newFiles.splice(index, 1);
+                                    const newDt = new DataTransfer();
+                                    this.newFiles.forEach(nf => newDt.items.add(nf.file));
+                                    this.dt = newDt;
+                                    this.$refs.realFileInput.files = this.dt.files;
+                                },
+
+                                processFiles(files) {
+                                    if (files.length) {
+                                        Array.from(files).forEach(file => {
+                                            if (!file.type.startsWith("image/")) return;
+                                            this.newFiles.push({
+                                                file: file,
+                                                url: URL.createObjectURL(file),
+                                                id: Date.now() + Math.random()
+                                            });
+                                            this.dt.items.add(file);
+                                        });
+                                        this.$refs.realFileInput.files = this.dt.files;
+                                    }
+                                },
+
+                                fileChosen(event) {
+                                    this.processFiles(event.target.files);
+                                    event.target.value = ""; 
+                                },
+
+                                handleDrop(event) {
+                                    this.processFiles(event.dataTransfer.files);
                                 }
-                            }">
+                            }'>
+
+                            {{-- 拖拽时的炫酷遮罩层 --}}
+                            <div x-show="isDragging" x-transition:enter="transition ease-out duration-200"
+                                x-transition:enter-start="opacity-0 scale-95"
+                                x-transition:enter-end="opacity-100 scale-100"
+                                x-transition:leave="transition ease-in duration-100"
+                                x-transition:leave-start="opacity-100 scale-100"
+                                x-transition:leave-end="opacity-0 scale-95"
+                                class="absolute inset-0 z-50 flex items-center justify-center rounded-[2.5rem] bg-blue-500/10 backdrop-blur-[2px] border-4 border-dashed border-blue-400 pointer-events-none"
+                                style="display: none;">
+                                <div
+                                    class="bg-white text-blue-600 px-8 py-4 rounded-2xl shadow-xl flex items-center gap-3">
+                                    <svg class="w-8 h-8 animate-bounce" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2.5">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                    </svg>
+                                    <span
+                                        class="text-[13px] font-black uppercase tracking-widest">{{ __('Drop Images Here') }}</span>
+                                </div>
+                            </div>
 
                             <div
                                 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest flex justify-between items-center">
-                                <span>{{ __('Product Media') }}</span>
+                                <span>{{ __('Product Media Gallery') }}</span>
+                                <span
+                                    class="text-[8px] tracking-widest text-blue-400">{{ __('Click image to preview') }}</span>
                             </div>
 
-                            {{-- INTERACTIVE DROPZONE --}}
-                            <div class="relative w-full aspect-square border-2 border-dashed border-gray-200 rounded-[2rem] hover:border-blue-400 hover:bg-blue-50/50 transition-colors overflow-hidden group flex flex-col items-center justify-center cursor-pointer"
-                                @click="$refs.fileInput.click()">
+                            <input type="file" name="images[]" multiple x-ref="realFileInput" class="hidden">
+                            <template x-for="(img, index) in existingImages" :key="'existing-' + index">
+                                <input type="hidden" name="existing_images[]" :value="img.path">
+                            </template>
 
-                                <input type="file" name="image" x-ref="fileInput" @change="fileChosen"
-                                    class="hidden" accept="image/jpeg, image/png, image/webp">
+                            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 w-full">
 
-                                <div x-show="!imagePreview"
-                                    class="flex flex-col items-center justify-center p-6 text-center">
-                                    <div
-                                        class="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 mb-4 group-hover:bg-white group-hover:text-blue-500 transition-colors shadow-sm">
-                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24"
+                                {{-- 1. 已保存的旧图片 (Clickable) --}}
+                                <template x-for="(img, index) in existingImages" :key="'ex-' + index">
+                                    <div class="relative aspect-square rounded-[1.5rem] overflow-hidden shadow-sm border border-gray-100 bg-gray-50 group cursor-pointer hover:border-blue-300 transition-colors"
+                                        @click="openLightbox(index)">
+                                        <img :src="img.url"
+                                            class="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+                                        {{-- Delete Button (Stop Propagation to prevent opening Lightbox) --}}
+                                        <button type="button" @click.stop.prevent="removeExisting(index)"
+                                            class="absolute top-2 right-2 bg-white/90 text-red-500 p-2 rounded-xl hover:bg-red-50 hover:text-red-600 shadow-sm opacity-0 group-hover:opacity-100 transition-all">
+                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                stroke="currentColor" stroke-width="3">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                    d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                        </button>
+                                        <div
+                                            class="absolute bottom-2 left-2 bg-black/50 text-white text-[8px] font-bold px-2 py-1 rounded-md uppercase tracking-wider backdrop-blur-sm">
+                                            {{ __('Saved') }}</div>
+                                    </div>
+                                </template>
+
+                                {{-- 2. 新上传的图片 (Clickable) --}}
+                                <template x-for="(fileObj, index) in newFiles" :key="fileObj.id">
+                                    <div class="relative aspect-square rounded-[1.5rem] overflow-hidden shadow-sm border-2 border-blue-400 bg-gray-50 group cursor-pointer"
+                                        @click="openLightbox(existingImages.length + index)">
+                                        <img :src="fileObj.url"
+                                            class="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+                                        {{-- Delete Button --}}
+                                        <button type="button" @click.stop.prevent="removeNewFile(index)"
+                                            class="absolute top-2 right-2 bg-white/90 text-red-500 p-2 rounded-xl hover:bg-red-50 hover:text-red-600 shadow-sm opacity-0 group-hover:opacity-100 transition-all">
+                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                stroke="currentColor" stroke-width="3">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                    d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                        </button>
+                                        <div
+                                            class="absolute bottom-2 left-2 bg-blue-500 text-white text-[8px] font-bold px-2 py-1 rounded-md uppercase tracking-wider shadow-sm">
+                                            {{ __('New') }}</div>
+                                    </div>
+                                </template>
+
+                                {{-- 3. 添加更多图片的按钮 --}}
+                                <div @click="$refs.dummyFileInput.click()"
+                                    class="aspect-square rounded-[1.5rem] border-2 border-dashed border-gray-200 hover:border-blue-400 hover:bg-blue-50/50 transition-colors flex flex-col items-center justify-center cursor-pointer text-gray-400 hover:text-blue-500">
+                                    <input type="file" x-ref="dummyFileInput" @change="fileChosen" class="hidden"
+                                        accept="image/jpeg, image/png, image/webp" multiple>
+                                    <svg class="w-8 h-8 mb-2" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                                    </svg>
+                                    <span
+                                        class="text-[10px] font-black uppercase tracking-widest">{{ __('Add Image') }}</span>
+                                </div>
+                            </div>
+
+                            {{-- FULLSCREEN LIGHTBOX MODAL (TELEPORT TO BODY) --}}
+                            <template x-teleport="body">
+                                <div x-show="lightboxOpen" style="display: none;"
+                                    class="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center backdrop-blur-sm"
+                                    x-transition:enter="transition ease-out duration-300"
+                                    x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                                    x-transition:leave="transition ease-in duration-200"
+                                    x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                                    @keydown.escape.window="closeLightbox()" @keydown.right.window="nextImage()"
+                                    @keydown.left.window="prevImage()">
+
+                                    {{-- Close Button --}}
+                                    <button @click="closeLightbox()"
+                                        class="absolute top-6 right-6 text-white/50 hover:text-white transition-colors bg-white/10 hover:bg-red-500 rounded-full p-2 z-50">
+                                        <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24"
                                             stroke="currentColor" stroke-width="2.5">
                                             <path stroke-linecap="round" stroke-linejoin="round"
-                                                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                                d="M6 18L18 6M6 6l12 12" />
                                         </svg>
-                                    </div>
-                                    <span
-                                        class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload image') }}</span>
-                                    <span
-                                        class="text-[8px] font-bold text-gray-400 mt-2 uppercase tracking-widest">{{ __('PNG, JPG, WEBP') }}</span>
-                                </div>
+                                    </button>
 
-                                <div x-show="imagePreview" class="absolute inset-0 w-full h-full"
-                                    style="display: none;">
-                                    <img :src="imagePreview" class="w-full h-full object-cover">
+                                    {{-- Left Arrow --}}
+                                    <button @click="prevImage()" x-show="allImages.length > 1"
+                                        class="absolute left-4 md:left-10 text-white/50 hover:text-white transition-all bg-white/10 hover:bg-white/20 rounded-full p-4 z-50">
+                                        <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M15 19l-7-7 7-7" />
+                                        </svg>
+                                    </button>
 
+                                    {{-- Image Container --}}
                                     <div
-                                        class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center backdrop-blur-[2px]">
+                                        class="relative w-full max-w-6xl h-full flex flex-col items-center justify-center px-20">
+                                        <img :src="allImages[lightboxIndex]"
+                                            class="max-h-[85vh] max-w-full object-contain rounded-xl shadow-2xl transition-transform duration-300"
+                                            @click.stop="">
+
+                                        {{-- Image Counter Badge --}}
                                         <div
-                                            class="bg-white/90 text-gray-900 text-[10px] font-black uppercase tracking-widest px-6 py-3 rounded-xl shadow-lg flex items-center gap-2">
-                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
-                                                stroke="currentColor" stroke-width="2.5">
-                                                <path stroke-linecap="round" stroke-linejoin="round"
-                                                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                                            </svg>
-                                            {{ __('Replace Image') }}
+                                            class="absolute bottom-10 left-1/2 -translate-x-1/2 bg-black/50 text-white text-xs font-bold tracking-widest px-4 py-2 rounded-full backdrop-blur-md">
+                                            <span x-text="lightboxIndex + 1"></span> / <span
+                                                x-text="allImages.length"></span>
                                         </div>
                                     </div>
+
+                                    {{-- Right Arrow --}}
+                                    <button @click="nextImage()" x-show="allImages.length > 1"
+                                        class="absolute right-4 md:right-10 text-white/50 hover:text-white transition-all bg-white/10 hover:bg-white/20 rounded-full p-4 z-50">
+                                        <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                                        </svg>
+                                    </button>
                                 </div>
-                            </div>
+                            </template>
+
                         </div>
                     </div>
 

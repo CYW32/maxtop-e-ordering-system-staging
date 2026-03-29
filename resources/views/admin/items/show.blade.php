@@ -177,15 +177,43 @@
                         @endif
                     </div>
 
-                    {{-- Media Card --}}
-                    <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
-                        <div class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                            {{ __('Media') }}
+                    {{-- Media Gallery (WITH LIGHTBOX) --}}
+                    <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
+                        x-data='{ 
+                            lightboxOpen: false, 
+                            lightboxIndex: 0, 
+                            images: {!! json_encode(
+                                collect((array) $item->image_path)->filter()->map(fn($p) => asset('storage/' . $p))->values()->all(),
+                            ) !!} 
+                         }'>
+
+                        <div
+                            class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest flex justify-between">
+                            <span>{{ __('Media Gallery') }}</span>
+                            <span class="text-blue-500 text-[8px]">{{ __('Click to zoom') }}</span>
                         </div>
-                        <div class="flex flex-col items-center justify-center">
-                            @if ($item->image_path)
-                                <img src="{{ asset('storage/' . $item->image_path) }}"
-                                    class="w-full aspect-square rounded-[2rem] object-cover border border-gray-100 shadow-sm">
+
+                        <div class="flex flex-col items-center justify-center w-full">
+                            @php
+                                $itemImages = is_array($item->image_path)
+                                    ? array_filter($item->image_path)
+                                    : array_filter([$item->image_path]);
+                            @endphp
+
+                            @if (!empty($itemImages))
+                                <div
+                                    class="grid gap-4 w-full {{ count($itemImages) === 1 ? 'grid-cols-1' : 'grid-cols-2' }}">
+                                    @foreach ($itemImages as $index => $img)
+                                        <div class="relative w-full aspect-square overflow-hidden rounded-[2rem] border border-gray-100 shadow-sm bg-gray-50 cursor-pointer group"
+                                            @click="lightboxIndex = {{ $index }}; lightboxOpen = true">
+                                            <img src="{{ asset('storage/' . $img) }}"
+                                                class="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+                                            <div
+                                                class="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors">
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
                             @else
                                 <div
                                     class="w-full aspect-square bg-gray-50 border-2 border-dashed border-gray-200 rounded-[2rem] flex flex-col items-center justify-center text-gray-300">
@@ -199,6 +227,53 @@
                                 </div>
                             @endif
                         </div>
+
+                        {{-- 全屏画廊组件 --}}
+                        <template x-teleport="body">
+                            <div x-show="lightboxOpen"
+                                class="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center backdrop-blur-sm"
+                                @keydown.escape.window="lightboxOpen = false"
+                                @keydown.right.window="lightboxIndex = (lightboxIndex + 1) % images.length"
+                                @keydown.left.window="lightboxIndex = (lightboxIndex - 1 + images.length) % images.length"
+                                style="display: none;">
+
+                                <button @click="lightboxOpen = false"
+                                    class="absolute top-6 right-6 text-white hover:bg-red-500 rounded-full p-2 z-[100] transition-colors">
+                                    <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                        stroke-width="2.5">
+                                        <path d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+
+                                <button @click="lightboxIndex = (lightboxIndex - 1 + images.length) % images.length"
+                                    x-show="images.length > 1"
+                                    class="absolute left-6 text-white/50 hover:text-white bg-white/10 rounded-full p-4 transition-all z-[100]">
+                                    <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                        stroke-width="2.5">
+                                        <path d="M15 19l-7-7 7-7" />
+                                    </svg>
+                                </button>
+
+                                <div class="relative w-full h-full flex items-center justify-center p-20">
+                                    <img :src="images[lightboxIndex]"
+                                        class="max-h-full max-w-full object-contain rounded-xl shadow-2xl transition-all">
+                                    <div
+                                        class="absolute bottom-10 bg-black/50 text-white text-[10px] font-black px-6 py-2 rounded-full tracking-widest">
+                                        <span x-text="lightboxIndex + 1"></span> / <span
+                                            x-text="images.length"></span>
+                                    </div>
+                                </div>
+
+                                <button @click="lightboxIndex = (lightboxIndex + 1) % images.length"
+                                    x-show="images.length > 1"
+                                    class="absolute right-6 text-white/50 hover:text-white bg-white/10 rounded-full p-4 transition-all z-[100]">
+                                    <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                        stroke-width="2.5">
+                                        <path d="M9 5l7 7-7 7" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </template>
                     </div>
                 </div>
             </div>

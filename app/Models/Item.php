@@ -13,6 +13,10 @@ class Item extends Model
 
     protected $fillable = ['sku', 'name', 'description', 'image_path', 'status'];
 
+    protected $casts = [
+        'image_path' => 'array', // 核心改动：将 JSON 自动转为数组
+    ];
+
     public function catalogs()
     {
         return $this->belongsToMany(Catalog::class);
@@ -30,7 +34,7 @@ class Item extends Model
     public function canBeDeleted(): bool
     {
         // Fulfills Section 3.c.1 & 3.c.2: Lock if in ANY order status
-        return ! $this->orderItems()->exists();
+        return !$this->orderItems()->exists();
     }
 
     public function getActivitylogOptions(): LogOptions
@@ -49,9 +53,11 @@ class Item extends Model
      */
     public function isInDraft(): bool
     {
-        return $this->orderItems()->whereHas('order', function ($query) {
-            $query->where('status', 'draft');
-        })->exists();
+        return $this->orderItems()
+            ->whereHas('order', function ($query) {
+                $query->where('status', 'draft');
+            })
+            ->exists();
     }
 
     // ... inside Item class

@@ -190,8 +190,16 @@
                             <tr class="hover:bg-gray-50/50 transition-colors">
                                 <td class="px-8 py-5">
                                     <div class="flex items-center gap-4">
-                                        @if ($item->image_path)
-                                            <img src="{{ asset('storage/' . $item->image_path) }}"
+                                        @php
+                                            // Check if it's an array and get the first item, otherwise use it directly (fallback)
+                                            // 检查它是不是数组并拿第一张图，如果不是则直接使用（防止旧数据报错）
+                                            $firstImage = is_array($item->image_path)
+                                                ? $item->image_path[0] ?? null
+                                                : $item->image_path;
+                                        @endphp
+
+                                        @if ($firstImage)
+                                            <img src="{{ asset('storage/' . $firstImage) }}"
                                                 class="w-10 h-10 rounded-xl object-cover border border-gray-100">
                                         @else
                                             <div

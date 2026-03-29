@@ -84,7 +84,10 @@ class ItemController extends Controller
                 'sku' => ['required', 'string', 'unique:items,sku'],
                 'description' => ['nullable', 'string'],
                 'status' => ['required', 'in:active,inactive'],
-                'image' => ['nullable', 'image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
+
+                // MULTIPLE IMAGES VALIDATION
+                'images' => ['nullable', 'array'],
+                'images.*' => ['image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
 
                 // Whitelist Sync Arrays
                 'categories' => ['nullable', 'array'],
@@ -105,15 +108,17 @@ class ItemController extends Controller
         );
 
         // 2. ATOMIC TRANSACTION GUARD [Backbone 11.a]
-        // BUGFIX: Return the created $item from the transaction so we can use it in the success message below
         $item = DB::transaction(function () use ($request, $validated) {
             // Create Core Identity
             $newItem = Item::create($request->only(['name', 'sku', 'description', 'status']));
 
-            // Handle Media
-            if ($request->hasFile('image')) {
-                $path = $request->file('image')->store('items', 'public');
-                $newItem->update(['image_path' => $path]);
+            // Handle Multiple Media (UPDATED)
+            if ($request->hasFile('images')) {
+                $paths = [];
+                foreach ($request->file('images') as $image) {
+                    $paths[] = $image->store('items', 'public');
+                }
+                $newItem->update(['image_path' => $paths]);
             }
 
             // Sync Whitelist Assignments [Backbone 3.a.3]
@@ -159,36 +164,68 @@ class ItemController extends Controller
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            // SYSTEM SKU LOCK: 'sku' validation completely removed so it cannot be tampered with.
             'status' => ['required', 'in:active,inactive'],
             'categories' => ['nullable', 'array'],
             'catalogs' => ['nullable', 'array'],
 
-            // Nested UOM Validation
+            // 验证新上传的图片
+            'images' => ['nullable', 'array', 'max:6'],
+            'images.*' => ['image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
+
+            // 验证并追踪需要保留的旧图片
+            'existing_images' => ['nullable', 'array'],
+            'existing_images.*' => ['string'],
+
+            // 嵌套的 UOM 验证
             'uoms' => ['nullable', 'array'],
             'uoms.*.id' => ['nullable', 'exists:uoms,id'],
             'uoms.*.uom_name' => ['required_with:uoms', 'string', 'max:50'],
             'uoms.*.rate_qty' => ['required_with:uoms', 'numeric', 'min:1'],
             'uoms.*.price' => ['required_with:uoms', 'numeric', 'min:0'],
-            'uoms.*.status' => ['required_with:uoms', 'in:active,inactive'], // Accept both for transition
+            'uoms.*.status' => ['required_with:uoms', 'in:active,inactive'],
         ]);
 
         DB::transaction(function () use ($item, $request, $validated) {
-            // 1. Sync Core Attributes
-            // SYSTEM SKU LOCK: 'sku' removed from the update payload. It is permanently locked in DB.
+            // 1. 同步核心信息
             $item->update($request->only(['name', 'description', 'status']));
 
-            // 2. Whitelist Syncing [4.a.3]
+            // ==========================================
+            // 高级媒体画廊逻辑 (Advanced Media Gallery Logic)
+            // ==========================================
+            $currentImages = (array) ($item->image_path ?? []);
+            // 获取用户在前端选择保留的旧图片
+            $imagesToKeep = $request->input('existing_images', []);
+
+            // A. 从服务器删除被用户移除的旧图片
+            $imagesToDelete = array_diff($currentImages, $imagesToKeep);
+            foreach ($imagesToDelete as $oldPath) {
+                Storage::disk('public')->delete($oldPath);
+            }
+
+            $finalImagePaths = $imagesToKeep; // 以保留的图片作为基础
+
+            // B. 上传新图片并追加到数组中
+            if ($request->hasFile('images')) {
+                foreach ($request->file('images') as $imageFile) {
+                    $finalImagePaths[] = $imageFile->store('items', 'public');
+                }
+            }
+
+            // C. 将合并后的图片数组更新到数据库
+            // 如果数组为空，存入 null 以保持数据干净
+            $item->update(['image_path' => count($finalImagePaths) > 0 ? array_values($finalImagePaths) : null]);
+            // ==========================================
+
+            // 2. 分类与目录同步
             $item->categories()->sync($validated['categories'] ?? []);
             $item->catalogs()->sync($validated['catalogs'] ?? []);
 
-            // 3. Process UOM Lifecycle
+            // 3. 处理 UOM 生命周期
             $incomingUomIds = collect($validated['uoms'] ?? [])
                 ->pluck('id')
                 ->filter()
                 ->toArray();
 
-            // Deletion Guard: Preserve historical snapshots [6.b]
             $uomsToRemove = $item->uoms()->whereNotIn('id', $incomingUomIds)->get();
             foreach ($uomsToRemove as $oldUom) {
                 if ($oldUom->orderItems()->exists()) {
@@ -198,9 +235,8 @@ class ItemController extends Controller
                 }
             }
 
-            // 4. Persistence with Strict String Binding
+            // 4. 保存 UOM
             foreach ($validated['uoms'] ?? [] as $uomData) {
-                // MAPPER: Harmonize frontend 'deactive' to architectural 'inactive'
                 $statusValue = $uomData['status'] === 'active' ? 'active' : 'inactive';
 
                 $item->uoms()->updateOrCreate(
@@ -215,7 +251,6 @@ class ItemController extends Controller
             }
         });
 
-        // Redirect back to the Item Master List (index) after updating
         return redirect()
             ->route('items.index')
             ->with('success', "Product ({$item->name}) updated successfully !");
@@ -230,9 +265,11 @@ class ItemController extends Controller
                 ->with('error', "Product ({$item->name}) is linked to existing order transactions and cannot be deleted to maintain system integrity.");
         }
 
-        // 2. Remove associated media if it exists
+        // 2. Remove associated media arrays if they exist
         if ($item->image_path) {
-            Storage::disk('public')->delete($item->image_path);
+            foreach ((array) $item->image_path as $path) {
+                Storage::disk('public')->delete($path);
+            }
         }
 
         // 3. Save the name before deleting so we can use it in the success message

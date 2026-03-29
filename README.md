@@ -60,11 +60,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v42)(zj)
+## Update Details (v43)(zj)
  ** Solve:
 
-Recheck
--------
-- Add the back button on Product Categories > Create
-- Updated the title from catalogs to category
-- Amending the fill in blanking section of Create New Catalogs.
+- Done added the functioning of added multiple product images on internal staff dashboard.
+- Done enhanced overall UI of CS and client after added the product images.
