@@ -65,7 +65,7 @@
                         <div class="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <x-input-label for="name" :value="__('PRODUCT SKU')"
+                                    <x-input-label for="name" :value="__('PRODUCT NAME')"
                                         class="text-[10px] font-black uppercase text-gray-400 mb-2" />
                                     <x-text-input id="name" name="name" type="text"
                                         class="block w-full font-bold uppercase" :value="old('name', $item->name)" required />
