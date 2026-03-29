@@ -185,7 +185,7 @@
                         <div class="flex flex-col items-center justify-center">
                             @if ($item->image_path)
                                 <img src="{{ asset('storage/' . $item->image_path) }}"
-                                    class="w-full aspect-square rounded-[2rem] object-cover border border-gray-100 shadow-sm">
+                                    class="w-full aspect-square rounded-[2rem] object-contain p-2 bg-white border border-gray-100 shadow-sm">
                             @else
                                 <div
                                     class="w-full aspect-square bg-gray-50 border-2 border-dashed border-gray-200 rounded-[2rem] flex flex-col items-center justify-center text-gray-300">

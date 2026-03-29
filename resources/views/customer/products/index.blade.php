@@ -97,27 +97,83 @@
                         <div
                             class="bg-white rounded-3xl border border-gray-100 shadow-sm hover:shadow-2xl hover:shadow-brand-500/10 hover:border-brand-200 transition-all duration-300 flex flex-col overflow-hidden group">
 
-                            {{-- Edge-to-Edge Image Container --}}
-                            <div class="relative w-full h-72 bg-gray-50 overflow-hidden border-b border-gray-100">
-                                @if ($item->image_path)
-                                    <img src="{{ asset('storage/' . $item->image_path) }}"
-                                        class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out">
+                            {{-- Edge-to-Edge Image Container (终极版：完美居中排版 + 保证可点击) --}}
+                            @php
+                                $images = $item->images ?? [];
+                                if (empty($images) && $item->image_path) {
+                                    $images = [$item->image_path];
+                                }
+                                $images = array_values($images);
+                                $imgCount = count($images);
+                            @endphp
+
+                            <div class="relative w-full h-72 bg-white flex items-center justify-center p-4 overflow-hidden border-b border-gray-100 group"
+                                x-data="{ active: 0, total: {{ $imgCount }} }">
+
+                                @if ($imgCount > 0)
+                                    {{-- 图片展示区：使用 object-contain 和 p-4 保证绝对看全图 --}}
+                                    @foreach ($images as $index => $image)
+                                        <img src="{{ asset('storage/' . $image) }}"
+                                            x-show="active === {{ $index }}" x-transition.opacity.duration.300ms
+                                            class="absolute inset-0 m-auto max-w-full max-h-full p-4 object-contain transition-transform duration-700 ease-out group-hover:scale-105"
+                                            style="{{ $index !== 0 ? 'display: none;' : '' }}"
+                                            alt="{{ $item->name }}">
+                                    @endforeach
+
+                                    {{-- 只有超过 1 张照片时，才显示 < > 箭头 --}}
+                                    @if ($imgCount > 1)
+                                        {{-- 移除了阻挡点击的代码，使用 flex 绝对居中 --}}
+                                        <div
+                                            class="absolute inset-0 flex items-center justify-between px-3 z-40 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+
+                                            {{-- 左箭头 (<) --}}
+                                            <button type="button"
+                                                x-on:click.stop="active = active === 0 ? total - 1 : active - 1"
+                                                class="w-9 h-9 rounded-full bg-white border border-gray-200 text-gray-800 shadow-md flex items-center justify-center hover:bg-brand-50 hover:text-brand-600 transition-colors cursor-pointer">
+                                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
+                                                    stroke="currentColor" stroke-width="2.5">
+                                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                                        d="M15 19l-7-7 7-7" />
+                                                </svg>
+                                            </button>
+
+                                            {{-- 右箭头 (>) --}}
+                                            <button type="button"
+                                                x-on:click.stop="active = active === total - 1 ? 0 : active + 1"
+                                                class="w-9 h-9 rounded-full bg-white border border-gray-200 text-gray-800 shadow-md flex items-center justify-center hover:bg-brand-50 hover:text-brand-600 transition-colors cursor-pointer">
+                                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
+                                                    stroke="currentColor" stroke-width="2.5">
+                                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                                        d="M9 5l7 7-7 7" />
+                                                </svg>
+                                            </button>
+                                        </div>
+
+                                        {{-- 底部小圆点指示器 --}}
+                                        <div class="absolute bottom-3 left-0 right-0 flex justify-center gap-1.5 z-40">
+                                            @for ($i = 0; $i < $imgCount; $i++)
+                                                <div class="h-1.5 rounded-full transition-all duration-300"
+                                                    :class="active === {{ $i }} ? 'bg-brand-600 w-4' :
+                                                        'bg-gray-300 w-1.5'">
+                                                </div>
+                                            @endfor
+                                        </div>
+                                    @endif
                                 @else
-                                    <div
-                                        class="w-full h-full flex flex-col items-center justify-center bg-gray-50/80 group-hover:bg-gray-100/50 transition-colors duration-300">
+                                    {{-- 完全没照片时的 Placeholder --}}
+                                    <div class="w-full h-full flex flex-col items-center justify-center bg-gray-50/80">
                                         <svg class="w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor"
                                             viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                                                 d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z">
                                             </path>
                                         </svg>
-                                        <span
-                                            class="text-sm font-semibold text-gray-400 tracking-wide">{{ __('No Image') }}</span>
+                                        <span class="text-sm font-semibold text-gray-400">{{ __('No Image') }}</span>
                                     </div>
                                 @endif
 
-                                {{-- SKU Badge positioned on top of the image --}}
-                                <div class="absolute top-5 left-5 z-10">
+                                {{-- SKU 标签 --}}
+                                <div class="absolute top-5 left-5 z-50">
                                     <span
                                         class="px-3 py-1.5 bg-white/95 backdrop-blur-md shadow-sm rounded-lg text-xs font-bold text-brand-700 tracking-wider border border-white">
                                         {{ $item->sku }}

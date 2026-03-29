@@ -5,8 +5,8 @@ namespace Database\Seeders;
 use App\Models\Catalog;
 use App\Models\Company;
 use App\Models\Item;
-use App\Models\Uom; // Added for strict UOM generation
-use App\Models\User; // NEW
+use App\Models\Uom; 
+use App\Models\User; 
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -15,37 +15,73 @@ class DatabaseSeeder extends Seeder
     {
         $this->call(RoleSeeder::class);
 
-        // 1. Create Items with Mandatory UOMs [Addendum 5.a]
-        $items = Item::factory()->count(60)->create()->each(function ($item) {
-            // Fulfills Requirement: Random 1 to 5 UOMs
-            $uomCount = rand(1, 5);
-            $units = ['Box', 'Carton', 'Pack', 'Bundle', 'Pallet'];
+        // 1. Create Realistic Items with specific UOMs (替换掉原本的 random factory)
+        $realItemsData = [
+            [
+                'sku' => 'MT-TRAY-SEALER',
+                'name' => 'TRAY SEALER',
+                'description' => 'Packaging tray sealer machine.',
+                'uoms' => [
+                    ['uom_name' => 'Machine', 'rate_qty' => 1, 'price' => 1500.00], // 机器通常按单台卖
+                ]
+            ],
+            [
+                'sku' => 'MT-PP-TRAY',
+                'name' => 'SEALABLE PP PLASTIC TRAY',
+                'description' => 'Sealable PP plastic tray for food packaging.',
+                'uoms' => [
+                    ['uom_name' => 'Carton 500s', 'rate_qty' => 500, 'price' => 120.00], // 假设一箱500个
+                    ['uom_name' => 'Pack 50s', 'rate_qty' => 50, 'price' => 15.00],      // 假设一包50个
+                ]
+            ],
+            [
+                'sku' => 'MT-PAPER-TRAY',
+                'name' => 'PAPER TRAY',
+                'description' => 'Kraft paper tray available in various sizes.',
+                'uoms' => [
+                    ['uom_name' => 'Carton 1000s', 'rate_qty' => 1000, 'price' => 85.00],
+                    ['uom_name' => 'Pack 100s', 'rate_qty' => 100, 'price' => 10.00],
+                ]
+            ],
+            [
+                'sku' => 'MT-PAPER-LID',
+                'name' => 'CENTRE HOLE PAPER LID (80mm / 90mm)',
+                'description' => 'Centre hole paper lid suitable for cups.',
+                'uoms' => [
+                    ['uom_name' => 'Carton 1000s', 'rate_qty' => 1000, 'price' => 60.00],
+                    ['uom_name' => 'Sleeve 50s', 'rate_qty' => 50, 'price' => 4.00],
+                ]
+            ]
+        ];
 
-            // 1. Mandatory Base Unit (Rate Qty 1) - Already correct in your code [3]
-            Uom::create([
-                'item_id' => $item->id,
-                'uom_name' => 'Individual Unit',
-                'rate_qty' => 1,
-                'price' => rand(10, 100),
+        // 用一个集合来收集创建好的真实商品，方便下面 attach 给 Catalog
+        $items = collect();
+
+        foreach ($realItemsData as $data) {
+            $item = Item::create([
+                'sku' => $data['sku'],
+                'name' => $data['name'],
+                'description' => $data['description'],
                 'status' => 'active',
             ]);
 
-            // 2. ARCHITECTURE FIX: Randomized Secondary Packaging Units [1]
-            // Added 'price' field to satisfy NOT NULL constraint for Pure UOM model.
-            for ($i = 1; $i < $uomCount; $i++) {
+            foreach ($data['uoms'] as $uom) {
                 Uom::create([
                     'item_id' => $item->id,
-                    'uom_name' => $units[rand(0, 4)].' '.rand(10, 50).'s',
-                    'rate_qty' => rand(5, 100),
-                    'price' => rand(150, 1000), // FIXED: Mandatory price field
+                    'uom_name' => $uom['uom_name'],
+                    'rate_qty' => $uom['rate_qty'],
+                    'price' => $uom['price'],
                     'status' => 'active',
                 ]);
             }
-        });
+
+            $items->push($item);
+        }
 
         // 2. Create Catalogs and attach items
         $catalogs = Catalog::factory()->count(3)->create()->each(function ($catalog) use ($items) {
-            $catalog->items()->attach($items->random(rand(15, 30))->pluck('id')->toArray());
+            // 把刚才创建的所有真实商品都挂载到每个 Catalog 下，这样每个客户都能看到
+            $catalog->items()->attach($items->pluck('id')->toArray());
         });
 
         // 3. Create Internal Staff [Backbone 2.c]

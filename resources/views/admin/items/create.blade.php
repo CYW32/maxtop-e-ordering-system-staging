@@ -208,11 +208,13 @@
                                     </div>
                                     <span
                                         class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload') }}</span>
+                                    <span
+                                        class="text-[8px] font-bold text-gray-400 mt-2 uppercase tracking-widest leading-relaxed">{{ __('Recommended: 800x800px (1:1 Ratio)') }}<br>{{ __('PNG, JPG, WEBP') }}</span>
                                 </div>
 
-                                <div x-show="imagePreview" class="absolute inset-0 w-full h-full"
+                                <div x-show="imagePreview" class="absolute inset-0 w-full h-full p-2 bg-white"
                                     style="display: none;">
-                                    <img :src="imagePreview" class="w-full h-full object-cover">
+                                    <img :src="imagePreview" class="w-full h-full object-contain">
                                     <div
                                         class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
                                         <span
@@ -317,7 +319,7 @@
                 </div>
 
                 {{-- SUBMIT BAR --}}
-                <div class="flex items-center justify-end gap-6 pt-8"">
+                <div class="flex items-center justify-end gap-6 pt-8">
                     <a href="{{ route('items.index') }}"
                         class="text-[11px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">{{ __('Discard Changes') }}</a>
                     <x-primary-button

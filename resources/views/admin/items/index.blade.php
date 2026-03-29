@@ -125,7 +125,6 @@
                         x-transition:leave-end="opacity-0 -translate-y-2" style="display: none;"
                         class="pt-5 mt-2 border-t border-gray-100">
 
-                        {{-- Changed to Grid layout to prevent elements from crashing --}}
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
 
                             {{-- Category Filter --}}
@@ -176,7 +175,6 @@
                             <th
                                 class="px-6 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">
                                 {{ __('Linked Catalogs') }}</th>
-                            {{-- ARCHITECTURE FIX: Swapped Price for Status [Turn Context] --}}
                             <th
                                 class="px-6 py-5 text-center text-[10px] font-black text-gray-400 uppercase tracking-widest">
                                 {{ __('Listing Status') }}</th>
@@ -192,7 +190,7 @@
                                     <div class="flex items-center gap-4">
                                         @if ($item->image_path)
                                             <img src="{{ asset('storage/' . $item->image_path) }}"
-                                                class="w-10 h-10 rounded-xl object-cover border border-gray-100">
+                                                class="w-10 h-10 rounded-xl object-contain bg-white border border-gray-100 p-0.5">
                                         @else
                                             <div
                                                 class="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center text-[8px] font-black text-gray-300 uppercase">
@@ -219,7 +217,6 @@
                                         @endforelse
                                     </div>
                                 </td>
-                                {{-- STATUS BADGE: Fulfills UI Requirement [Turn Context] --}}
                                 <td class="px-6 py-5 text-center">
                                     @php
                                         $hasBaseUnit = $item->activeUoms->contains('rate_qty', 1);
@@ -243,7 +240,6 @@
                                 <td class="px-8 py-5 text-right">
                                     <div class="flex justify-end gap-2">
 
-                                        {{-- VIEW BUTTON (Eye Icon) --}}
                                         @can('view_items')
                                             <a href="{{ route('items.show', $item) }}"
                                                 class="p-2 bg-white border border-gray-200 rounded-xl text-gray-400 hover:text-green-600 hover:border-green-100 transition shadow-sm"
@@ -258,7 +254,6 @@
                                             </a>
                                         @endcan
 
-                                        {{-- EDIT BUTTON (Pencil Icon) --}}
                                         @can('edit_items')
                                             <a href="{{ route('items.edit', $item) }}"
                                                 class="p-2 bg-white border border-gray-200 rounded-xl text-gray-400 hover:text-blue-600 hover:border-blue-100 transition shadow-sm"
@@ -271,7 +266,6 @@
                                             </a>
                                         @endcan
 
-                                        {{-- DELETE BUTTON (Trash Icon) --}}
                                         @can('edit_items')
                                             <form action="{{ route('items.destroy', $item) }}" method="POST"
                                                 class="inline-block m-0 p-0"

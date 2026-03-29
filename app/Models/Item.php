@@ -11,7 +11,11 @@ class Item extends Model
 {
     use HasFactory, LogsActivity;
 
-    protected $fillable = ['sku', 'name', 'description', 'image_path', 'status'];
+    protected $fillable = ['sku', 'name', 'description', 'image_path', 'images', 'status'];
+    
+    protected $casts = [
+        'images' => 'array', // <--- 新加的：自动转换 JSON
+    ];
 
     public function catalogs()
     {
