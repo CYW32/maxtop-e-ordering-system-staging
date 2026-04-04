@@ -51,7 +51,7 @@ class ReservationController extends Controller
             ->causedBy($user)
             ->log('Customer submitted reservation for review');
 
-        return redirect()->route('dashboard')->with('success', 'Order submitted for CS review.');
+        return redirect()->route('dashboard')->with('success', "Order ({$draft->order_number}) submitted successfully");
     }
 
     /**

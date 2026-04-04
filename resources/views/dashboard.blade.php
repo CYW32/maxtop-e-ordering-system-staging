@@ -8,6 +8,37 @@
     <div class="py-12 bg-gray-50/50 min-h-screen">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
+            {{-- ✅ NOTIFICATION BLOCK --}}
+            @if (session('success'))
+                <div class="bg-brand-50 border border-brand-200 rounded-xl p-4 shadow-sm flex items-start mb-6">
+                    <div class="flex-shrink-0">
+                        <svg class="h-6 w-6 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </div>
+                    <div class="ml-3 pt-0.5 w-full">
+                        <p class="text-sm font-bold text-brand-800">
+                            {{ session('success') }}
+                        </p>
+                    </div>
+                    <div class="ml-auto pl-3">
+                        <div class="-mx-1.5 -my-1.5">
+                            <button type="button" onclick="this.parentElement.parentElement.parentElement.remove()"
+                                class="inline-flex rounded-lg p-1.5 text-brand-500 hover:bg-brand-100 focus:outline-none transition-colors">
+                                <span class="sr-only">Dismiss</span>
+                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd"
+                                        d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                                        clip-rule="evenodd" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            @endif
+            {{-- ✅ END NOTIFICATION BLOCK --}}
+
             <div class="relative bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
                 <div class="absolute top-0 right-0 w-64 h-64 bg-brand-50 rounded-bl-full opacity-50"></div>
 
@@ -32,7 +63,8 @@
                                 <svg class="w-5 h-5 mr-2 -ml-1 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
                                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
+                                        d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z">
+                                    </path>
                                 </svg>
                                 {{ __('New Order') }}
                             </span>

@@ -21,7 +21,7 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
                             d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
                     </svg>
-                    {{ __('Back to Orders') }}
+                    {{ __('Back to Order') }}
                 </a>
 
                 {{-- Professional Status Badge --}}
@@ -187,9 +187,24 @@
                                 </td>
                             </tr>
                         </tfoot>
+
                     </table>
                 </div>
             </div>
+
+            {{-- ✅ SUBMIT ORDER BUTTON --}}
+            <form action="{{ route('reservation.submit') }}" method="POST" class="m-0 flex w-full justify-end">
+                @csrf
+                <button type="submit"
+                    class="inline-flex items-center gap-2 px-6 py-2.5 bg-brand-600 text-white hover:bg-brand-700 rounded-xl shadow-md shadow-brand-500/20 transition-all group font-bold text-sm">
+                    {{ __('Submit Order Now') }}
+                    <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none"
+                        stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                    </svg>
+                </button>
+            </form>
 
         </div>
     </div>
