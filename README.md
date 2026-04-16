@@ -77,7 +77,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v44)(zj)
+## Update Details (v45)(zj)
 ** Solve:
-* Add the submitted order button on customer order (Draft).
-* Enhanced the preview under draft order
+* Replace the favicon ico
