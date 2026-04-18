@@ -189,15 +189,25 @@
                         @foreach ($items as $item)
                             <tr class="hover:bg-gray-50/50 transition-colors">
                                 <td class="px-8 py-5">
-                                    <div class="flex items-center gap-4">
-                                        @if ($item->image_path)
-                                            <img src="{{ asset('storage/' . $item->image_path) }}"
-                                                class="w-10 h-10 rounded-xl object-cover border border-gray-100">
+                                    <div class="flex flex-col gap-3">
+                                        @php
+                                            $images = is_array($item->image_path)
+                                                ? $item->image_path
+                                                : ($item->image_path
+                                                    ? [$item->image_path]
+                                                    : []);
+                                        @endphp
+
+                                        @if (count($images) > 0)
+                                            {{-- w-full makes it span the column, object-contain stops it from cropping --}}
+                                            <img src="{{ asset('storage/' . $images[0]) }}"
+                                                class="w-full h-auto max-h-32 rounded-xl object-contain border border-gray-100 bg-gray-50/50">
                                         @else
                                             <div
-                                                class="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center text-[8px] font-black text-gray-300 uppercase">
+                                                class="w-full h-24 bg-gray-50 rounded-xl flex items-center justify-center text-[10px] font-black text-gray-300 uppercase border border-gray-100">
                                                 {{ __('No img') }}</div>
                                         @endif
+
                                         <div class="flex flex-col">
                                             <span
                                                 class="text-sm font-black text-gray-800 uppercase leading-tight">{{ $item->name }}</span>

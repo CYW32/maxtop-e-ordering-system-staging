@@ -84,7 +84,8 @@ class ItemController extends Controller
                 'sku' => ['required', 'string', 'unique:items,sku'],
                 'description' => ['nullable', 'string'],
                 'status' => ['required', 'in:active,inactive'],
-                'image' => ['nullable', 'image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
+                'images' => ['nullable', 'array'],
+                'images.*' => ['image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
 
                 // Whitelist Sync Arrays
                 'categories' => ['nullable', 'array'],
@@ -111,9 +112,12 @@ class ItemController extends Controller
             $newItem = Item::create($request->only(['name', 'sku', 'description', 'status']));
 
             // Handle Media
-            if ($request->hasFile('image')) {
-                $path = $request->file('image')->store('items', 'public');
-                $newItem->update(['image_path' => $path]);
+            if ($request->hasFile('images')) {
+                $paths = [];
+                foreach ($request->file('images') as $image) {
+                    $paths[] = $image->store('items', 'public');
+                }
+                $newItem->update(['image_path' => $paths]);
             }
 
             // Sync Whitelist Assignments [Backbone 3.a.3]
@@ -164,6 +168,11 @@ class ItemController extends Controller
             'categories' => ['nullable', 'array'],
             'catalogs' => ['nullable', 'array'],
 
+            // ADD THE IMAGE VALIDATION HERE:
+            'existing_images' => ['nullable', 'array'],
+            'images' => ['nullable', 'array'],
+            'images.*' => ['image', 'mimes:jpeg,png,jpg,webp', 'max:2048'],
+
             // Nested UOM Validation
             'uoms' => ['nullable', 'array'],
             'uoms.*.id' => ['nullable', 'exists:uoms,id'],
@@ -177,6 +186,19 @@ class ItemController extends Controller
             // 1. Sync Core Attributes
             // SYSTEM SKU LOCK: 'sku' removed from the update payload. It is permanently locked in DB.
             $item->update($request->only(['name', 'description', 'status']));
+
+            // 1. Get the list of existing images the user decided to KEEP (sent from the hidden inputs)
+            $keptImages = $request->input('existing_images', []);
+
+            // 2. Add any NEWly uploaded images to that list
+            if ($request->hasFile('images')) {
+                foreach ($request->file('images') as $image) {
+                    $keptImages[] = $image->store('items', 'public');
+                }
+            }
+
+            // 3. Sync the final combined list to the database
+            $item->update(['image_path' => $keptImages]);
 
             // 2. Whitelist Syncing [4.a.3]
             $item->categories()->sync($validated['categories'] ?? []);

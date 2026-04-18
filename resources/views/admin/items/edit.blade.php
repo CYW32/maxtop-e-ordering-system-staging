@@ -220,18 +220,77 @@
                         {{-- Interactive Media Card --}}
                         <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
                             x-data="{
-                                imagePreview: '{{ $item->image_path ? asset('storage/' . $item->image_path) : '' }}',
-                                fileChosen(event) {
-                                    const file = event.target.files[0];
-                                    if (file) {
+                                existingImages: {{ json_encode(is_array($item->image_path) ? $item->image_path : ($item->image_path ? [$item->image_path] : [])) }},
+                                newPreviews: [],
+                                viewingImage: null, // Holds the image URL for the popup modal
+                            
+                                filesChosen(event) {
+                                    const files = event.target.files;
+                                    this.newPreviews = [];
+                                    Array.from(files).forEach(file => {
                                         const reader = new FileReader();
                                         reader.onload = (e) => {
-                                            this.imagePreview = e.target.result;
+                                            this.newPreviews.push(e.target.result);
                                         };
                                         reader.readAsDataURL(file);
+                                    });
+                                },
+                            
+                                removeExisting(index) {
+                                    this.existingImages.splice(index, 1);
+                                },
+                            
+                                removeNew(index) {
+                                    this.newPreviews.splice(index, 1);
+                                    // Remove the file from the actual hidden input so it doesn't upload
+                                    const dt = new DataTransfer();
+                                    const input = this.$refs.fileInput;
+                                    for (let i = 0; i < input.files.length; i++) {
+                                        if (i !== index) dt.items.add(input.files[i]);
                                     }
+                                    input.files = dt.files;
                                 }
                             }">
+
+                            {{-- FULL SCREEN IMAGE MODAL --}}
+                            <div x-show="viewingImage" style="display: none;"
+                                class="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/80 backdrop-blur-sm p-4 md:p-8"
+                                x-transition.opacity @click="viewingImage = null">
+
+                                {{-- Fixed Modal Box --}}
+                                <div class="relative w-full max-w-4xl bg-white rounded-[2rem] shadow-2xl overflow-hidden flex flex-col"
+                                    @click.stop>
+
+                                    {{-- Top Bar with Close Button --}}
+                                    <div class="flex justify-between items-center px-8 py-5 border-b border-gray-100">
+                                        <h3 class="text-[11px] font-black uppercase text-gray-500 tracking-widest">
+                                            {{ __('Image Preview') }}</h3>
+                                        <button type="button" @click="viewingImage = null"
+                                            class="text-gray-400 hover:text-red-500 hover:bg-red-50 p-2 rounded-xl transition-colors">
+                                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
+                                                stroke="currentColor" stroke-width="2.5">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                    d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                        </button>
+                                    </div>
+
+                                    {{-- Fixed Display Section --}}
+                                    <div
+                                        class="w-full h-[65vh] bg-gray-50/50 flex items-center justify-center p-6 relative checkerboard-bg">
+                                        <img :src="viewingImage"
+                                            class="max-w-full max-h-full object-contain drop-shadow-lg rounded-xl">
+                                    </div>
+
+                                    {{-- Bottom Bar --}}
+                                    <div class="bg-gray-50 px-8 py-4 border-t border-gray-100 flex justify-end">
+                                        <button type="button" @click="viewingImage = null"
+                                            class="bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all shadow-sm">
+                                            {{ __('Close Preview') }}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
 
                             <div
                                 class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest flex justify-between items-center">
@@ -239,14 +298,15 @@
                             </div>
 
                             {{-- INTERACTIVE DROPZONE --}}
-                            <div class="relative w-full aspect-square border-2 border-dashed border-gray-200 rounded-[2rem] hover:border-blue-400 hover:bg-blue-50/50 transition-colors overflow-hidden group flex flex-col items-center justify-center cursor-pointer"
+                            <div class="relative w-full border-2 border-dashed border-gray-200 rounded-[2rem] hover:border-blue-400 hover:bg-blue-50/50 transition-colors overflow-hidden flex flex-col items-center justify-center cursor-pointer p-4 min-h-[200px]"
                                 @click="$refs.fileInput.click()">
 
-                                <input type="file" name="image" x-ref="fileInput" @change="fileChosen"
-                                    class="hidden" accept="image/jpeg, image/png, image/webp">
+                                <input type="file" name="images[]" multiple x-ref="fileInput"
+                                    @change="filesChosen" class="hidden" accept="image/jpeg, image/png, image/webp">
 
-                                <div x-show="!imagePreview"
-                                    class="flex flex-col items-center justify-center p-6 text-center">
+                                {{-- Default State (No Images) --}}
+                                <div x-show="existingImages.length === 0 && newPreviews.length === 0"
+                                    class="flex flex-col items-center justify-center p-6 text-center group">
                                     <div
                                         class="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 mb-4 group-hover:bg-white group-hover:text-blue-500 transition-colors shadow-sm">
                                         <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24"
@@ -256,27 +316,75 @@
                                         </svg>
                                     </div>
                                     <span
-                                        class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload image') }}</span>
-                                    <span
-                                        class="text-[8px] font-bold text-gray-400 mt-2 uppercase tracking-widest">{{ __('PNG, JPG, WEBP') }}</span>
+                                        class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload images') }}</span>
                                 </div>
 
-                                <div x-show="imagePreview" class="absolute inset-0 w-full h-full"
-                                    style="display: none;">
-                                    <img :src="imagePreview" class="w-full h-full object-cover">
+                                {{-- Grid for Multiple Images --}}
+                                <div class="grid grid-cols-3 gap-4 w-full">
 
-                                    <div
-                                        class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center backdrop-blur-[2px]">
-                                        <div
-                                            class="bg-white/90 text-gray-900 text-[10px] font-black uppercase tracking-widest px-6 py-3 rounded-xl shadow-lg flex items-center gap-2">
-                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
-                                                stroke="currentColor" stroke-width="2.5">
-                                                <path stroke-linecap="round" stroke-linejoin="round"
-                                                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                                            </svg>
-                                            {{ __('Replace Image') }}
+                                    {{-- Existing Images from Database --}}
+                                    <template x-for="(img, index) in existingImages" :key="'exist-' + index">
+                                        <div class="relative aspect-square rounded-xl overflow-hidden shadow-sm group">
+                                            {{-- HIDDEN INPUT: Tells backend to KEEP this image --}}
+                                            <input type="hidden" name="existing_images[]" :value="img">
+
+                                            <img :src="'/storage/' + img" class="w-full h-full object-cover">
+
+                                            {{-- Hover Actions (View & Delete) --}}
+                                            <div
+                                                class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
+                                                <button type="button" @click.stop="viewingImage = '/storage/' + img"
+                                                    class="p-2 bg-white/90 text-gray-800 rounded-full hover:text-blue-600 transition shadow-sm">
+                                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                        stroke="currentColor" stroke-width="2">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                    </svg>
+                                                </button>
+                                                <button type="button" @click.stop="removeExisting(index)"
+                                                    class="p-2 bg-white/90 text-red-500 rounded-full hover:bg-red-500 hover:text-white transition shadow-sm">
+                                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                        stroke="currentColor" stroke-width="2.5">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
+                                            </div>
                                         </div>
-                                    </div>
+                                    </template>
+
+                                    {{-- New Selected Previews --}}
+                                    <template x-for="(preview, index) in newPreviews" :key="'new-' + index">
+                                        <div
+                                            class="relative aspect-square rounded-xl overflow-hidden shadow-sm border-2 border-blue-400 group">
+                                            <img :src="preview" class="w-full h-full object-cover">
+
+                                            {{-- Hover Actions (View & Delete) --}}
+                                            <div
+                                                class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[2px]">
+                                                <button type="button" @click.stop="viewingImage = preview"
+                                                    class="p-2 bg-white/90 text-gray-800 rounded-full hover:text-blue-600 transition shadow-sm">
+                                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                        stroke="currentColor" stroke-width="2">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                    </svg>
+                                                </button>
+                                                <button type="button" @click.stop="removeNew(index)"
+                                                    class="p-2 bg-white/90 text-red-500 rounded-full hover:bg-red-500 hover:text-white transition shadow-sm">
+                                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                        stroke="currentColor" stroke-width="2.5">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </template>
                                 </div>
                             </div>
                         </div>

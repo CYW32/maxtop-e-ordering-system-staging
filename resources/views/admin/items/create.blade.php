@@ -174,50 +174,81 @@
                             </select>
                         </div>
 
-                        {{-- Interactive Media Card --}}
+                        {{-- Interactive Media Card (CREATE PAGE) --}}
                         <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm"
                             x-data="{
-                                imagePreview: '',
-                                fileChosen(event) {
-                                    const file = event.target.files[0];
-                                    if (file) {
+                                newPreviews: [],
+                                viewingImage: null,
+                            
+                                filesChosen(event) {
+                                    const files = event.target.files;
+                                    this.newPreviews = [];
+                                    Array.from(files).forEach(file => {
                                         const reader = new FileReader();
-                                        reader.onload = (e) => { this.imagePreview = e.target.result; };
+                                        reader.onload = (e) => {
+                                            this.newPreviews.push(e.target.result);
+                                        };
                                         reader.readAsDataURL(file);
+                                    });
+                                },
+                            
+                                removeNew(index) {
+                                    this.newPreviews.splice(index, 1);
+                                    const dt = new DataTransfer();
+                                    const input = this.$refs.fileInput;
+                                    for (let i = 0; i < input.files.length; i++) {
+                                        if (i !== index) dt.items.add(input.files[i]);
                                     }
+                                    input.files = dt.files;
                                 }
                             }">
 
-                            <div class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest">
-                                {{ __('Product Media') }}</div>
+                            <div
+                                class="text-[10px] font-black uppercase text-gray-400 mb-6 tracking-widest flex justify-between items-center">
+                                <span>{{ __('Product Media') }}</span>
+                            </div>
 
-                            <div class="relative w-full aspect-square border-2 border-dashed border-gray-200 rounded-[2.5rem] hover:border-blue-400 hover:bg-blue-50/50 transition-all overflow-hidden group flex flex-col items-center justify-center cursor-pointer shadow-sm"
+                            {{-- INTERACTIVE DROPZONE --}}
+                            <div class="relative w-full border-2 border-dashed border-gray-200 rounded-[2rem] hover:border-blue-400 hover:bg-blue-50/50 transition-colors overflow-hidden flex flex-col items-center justify-center cursor-pointer p-4 min-h-[200px]"
                                 @click="$refs.fileInput.click()">
 
-                                <input type="file" name="image" x-ref="fileInput" @change="fileChosen"
-                                    class="hidden" accept="image/jpeg, image/png, image/webp">
+                                {{-- CRITICAL: Array name images[] and multiple flag --}}
+                                <input type="file" name="images[]" multiple x-ref="fileInput"
+                                    @change="filesChosen" class="hidden" accept="image/jpeg, image/png, image/webp">
 
-                                <div x-show="!imagePreview"
-                                    class="flex flex-col items-center justify-center p-6 text-center">
+                                <div x-show="newPreviews.length === 0"
+                                    class="flex flex-col items-center justify-center p-6 text-center group">
                                     <div
-                                        class="w-14 h-14 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 mb-4 group-hover:bg-white group-hover:text-blue-500 transition-all shadow-sm">
-                                        <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24"
+                                        class="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 mb-4 group-hover:bg-white group-hover:text-blue-500 transition-colors shadow-sm">
+                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24"
                                             stroke="currentColor" stroke-width="2.5">
-                                            <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                                         </svg>
                                     </div>
                                     <span
-                                        class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload') }}</span>
+                                        class="text-[11px] font-black text-gray-600 uppercase">{{ __('Click to upload images') }}</span>
                                 </div>
 
-                                <div x-show="imagePreview" class="absolute inset-0 w-full h-full"
-                                    style="display: none;">
-                                    <img :src="imagePreview" class="w-full h-full object-cover">
-                                    <div
-                                        class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
-                                        <span
-                                            class="bg-white text-gray-900 text-[10px] font-black uppercase tracking-widest px-6 py-3 rounded-xl shadow-lg">{{ __('Change Image') }}</span>
-                                    </div>
+                                <div class="grid grid-cols-3 gap-4 w-full">
+                                    <template x-for="(preview, index) in newPreviews" :key="index">
+                                        <div
+                                            class="relative aspect-square rounded-xl overflow-hidden shadow-sm border-2 border-blue-400 group">
+                                            <img :src="preview" class="w-full h-full object-cover">
+
+                                            <div
+                                                class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
+                                                <button type="button" @click.stop="removeNew(index)"
+                                                    class="p-2 bg-white/90 text-red-500 rounded-full hover:bg-red-500 hover:text-white transition shadow-sm">
+                                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24"
+                                                        stroke="currentColor" stroke-width="2.5">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </template>
                                 </div>
                             </div>
                         </div>
@@ -280,21 +311,21 @@
                                         <td class="px-2 py-6 align-top">
                                             <input type="text" :name="'uoms[' + index + '][uom_name]'"
                                                 x-model="uom.uom_name" required placeholder="E.G. PCS"
-                                                class="w-full border-gray-100 bg-white rounded-2xl py-3 text-xs font-black uppercase text-gray-800 shadow-sm focus:ring-blue-500">
+                                                class="w-full border-gray-100 rounded-xl text-[11px] font-black uppercase focus:ring-blue-500">
                                         </td>
                                         <td class="px-2 py-6 align-top">
                                             <input type="number" :name="'uoms[' + index + '][rate_qty]'"
                                                 x-model="uom.rate_qty" min="1" required
-                                                class="w-24 mx-auto block border-gray-100 bg-white rounded-2xl py-3 text-xs font-black text-blue-600 text-center shadow-sm">
+                                                class="w-24 mx-auto block border-gray-100 rounded-xl text-[11px] font-mono font-black text-blue-600 text-center">
                                         </td>
                                         <td class="px-2 py-6 align-top">
                                             <input type="number" :name="'uoms[' + index + '][price]'"
                                                 x-model="uom.price" step="0.01" min="0" required
-                                                class="w-32 ml-auto block border-gray-100 bg-white rounded-2xl py-3 text-xs font-black font-mono text-gray-800 text-right shadow-sm">
+                                                class="w-32 ml-auto block border-gray-100 rounded-xl text-[11px] font-mono font-black text-right">
                                         </td>
-                                        <td class="px-2 py-6 align-top text-center">
+                                        <td class="px-2 py-6 align-top">
                                             <select :name="'uoms[' + index + '][status]'" x-model="uom.status"
-                                                class="w-full border-gray-100 bg-white rounded-2xl py-3 text-[10px] font-black uppercase text-gray-700 shadow-sm cursor-pointer">
+                                                class="w-full border-gray-100 rounded-xl text-[9px] font-black uppercase focus:ring-blue-500">
                                                 <option value="active">Active</option>
                                                 <option value="inactive">Inactive</option>
                                             </select>

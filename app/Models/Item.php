@@ -13,6 +13,14 @@ class Item extends Model
 
     protected $fillable = ['sku', 'name', 'description', 'image_path', 'status'];
 
+    // ADD THIS CAST:
+    protected function casts(): array
+    {
+        return [
+            'image_path' => 'array',
+        ];
+    }
+
     public function catalogs()
     {
         return $this->belongsToMany(Catalog::class);

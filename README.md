@@ -77,6 +77,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v45)(zj)
+## Update Details (v46)(zj)
 ** Solve:
-* Replace the favicon ico
+* Can add the picture while create item and edit item.
+
