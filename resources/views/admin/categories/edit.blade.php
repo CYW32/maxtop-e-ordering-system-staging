@@ -47,14 +47,20 @@
                         <div>
                             <x-input-label for="status" :value="__('Operational Status')"
                                 class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+
+                            {{-- Ensure name="status" is spelled exactly like this --}}
                             <select name="status" id="status"
                                 class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-black uppercase">
+
                                 <option value="active" @selected(old('status', $category->status) === 'active')>
-                                    {{ __('Active (Visible in Catalogs)') }}</option>
-                                {{-- CHANGED 'deactive' to 'inactive' below --}}
+                                    {{ __('Active (Visible in Catalogs)') }}
+                                </option>
+
+                                {{-- Ensure value="inactive" is spelled exactly like this and is NOT empty --}}
                                 <option value="inactive" @selected(old('status', $category->status) === 'inactive' || $category->status === 'deactive')>
                                     {{ __('Inactive (Hidden/Hold)') }}
                                 </option>
+
                             </select>
                             <x-input-error :messages="$errors->get('status')" class="mt-2" />
                         </div>
@@ -103,17 +109,35 @@
                     </div>
                 </div>
 
-                <div class="flex items-center justify-end gap-4 mt-8">
-                    <a href="{{ route('categories.index') }}"
-                        class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
-                        {{ __('Cancel') }}
-                    </a>
-                    <x-primary-button
-                        class="bg-gray-900 hover:bg-black py-4 px-12 rounded-2xl shadow-lg transition-all uppercase text-[10px] font-black">
-                        {{ __('Save Changes') }}
-                    </x-primary-button>
-                </div>
+                <div class="flex items-center justify-between mt-8">
+                    @if ($canBeDeleted)
+                        <button type="button"
+                            onclick="if(confirm('{{ __('WARNING: This will permanently purge this category. This action is irreversible. Proceed?') }}')) document.getElementById('delete-category-form').submit();"
+                            class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition tracking-tighter">
+                            {{ __('Hard Delete') }}
+                        </button>
+                    @else
+                        <span class="text-[9px] font-black uppercase text-gray-300 italic flex items-center gap-2">
+                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="3">
+                                <path
+                                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                            </svg>
+                            {{ __('Deletion Locked: Transaction Records Exist') }} [9.c.1]
+                        </span>
+                    @endif
 
+                    <div class="flex items-center gap-4">
+                        <a href="{{ route('categories.index') }}"
+                            class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                            {{ __('Cancel') }}
+                        </a>
+                        <x-primary-button
+                            class="bg-gray-900 hover:bg-black py-4 px-12 rounded-2xl shadow-lg transition-all uppercase text-[10px] font-black">
+                            {{ __('Save Changes') }}
+                        </x-primary-button>
+                    </div>
+                </div>
             </form>
 
             @if ($canBeDeleted)

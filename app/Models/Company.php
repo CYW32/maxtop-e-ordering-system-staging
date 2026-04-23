@@ -15,9 +15,9 @@ class Company extends Model
 
     protected $fillable = [
         'company_code', // HQ Code [1.d]
-        'branch_code',  // Branch Code [1.d]
-        'parent_id',    // Links Branch to HQ [3.c]
-        'catalog_id',   // Whitelist control [1.b]
+        'branch_code', // Branch Code [1.d]
+        'parent_id', // Links Branch to HQ [3.c]
+        'catalog_id', // Whitelist control [1.b]
         'company_name',
         'company_reg_no',
         'pic_name',
@@ -29,12 +29,7 @@ class Company extends Model
     ];
 
     // Define what the search bar can look for
-    protected $searchable = [
-        'company_code',
-        'company_name',
-        'company_reg_no',
-        'pic_name',
-    ];
+    protected $searchable = ['company_code', 'company_name', 'company_reg_no', 'pic_name'];
 
     public function catalog()
     {
@@ -59,5 +54,31 @@ class Company extends Model
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()->logFillable()->logOnlyDirty();
+    }
+    public function children()
+    {
+        return $this->hasMany(Company::class, 'parent_id');
+    }
+
+    /**
+     * Check if this company or any of its branches have associated order transactions
+     */
+    public function hasOrders(): bool
+    {
+        // Get this company's ID, plus the IDs of any branches under it
+        $companyIds = array_merge([$this->id], $this->children()->pluck('id')->toArray());
+
+        // Check the Orders table to see if any user from these companies has placed an order
+        return \App\Models\Order::whereHas('user', function ($query) use ($companyIds) {
+            $query->whereIn('company_id', $companyIds);
+        })->exists();
+    }
+
+    /**
+     * Determine if the company is safe to delete
+     */
+    public function canBeDeleted(): bool
+    {
+        return !$this->hasOrders();
     }
 }

@@ -15,23 +15,36 @@ class CatalogController extends Controller
 
         $query = Catalog::query();
 
+        // 1. Filter by Name (Search)
         if ($request->filled('search')) {
-            $query->search($request->search); // Uses Searchable trait [1]
+            $query->search($request->search);
         }
 
-        $catalogs = $query->withCount('items')->latest()->paginate(10)->withQueryString();
+        // 2. Filter by Operational Status
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        $catalogs = $query->withCount('items')->latest()->paginate(15)->withQueryString();
 
         return view('admin.catalogs.index', compact('catalogs'));
     }
 
-public function create()
+    public function show(Catalog $catalog)
     {
-        // Requirement: Needs View + Create
+        Gate::authorize('view_catalogs');
+
+        $catalog->load('items');
+
+        return view('admin.catalogs.show', compact('catalog'));
+    }
+
+    public function create()
+    {
         if (! auth()->user()->can('view_catalogs') || ! auth()->user()->can('create_catalogs')) {
             abort(403);
         }
 
-        // Fetch all items to populate the Whitelist Interface during creation
         $items = Item::orderBy('name')->get();
 
         return view('admin.catalogs.create', compact('items'));
@@ -39,7 +52,6 @@ public function create()
 
     public function store(Request $request)
     {
-        // Requirement: Needs View + Create + Edit
         if (! auth()->user()->can('view_catalogs') ||
             ! auth()->user()->can('create_catalogs') ||
             ! auth()->user()->can('edit_catalogs')) {
@@ -56,27 +68,25 @@ public function create()
             'name' => $validated['name']
         ]);
 
-        // Sync items if the whitelist data is present in the request
         if ($request->has('items')) {
             $catalog->items()->sync($request->input('items', []));
         }
 
-        return redirect()->route('catalogs.index')->with('success', 'Catalog created successfully.');
+        // DYNAMIC NOTIFICATION ADDED
+        return redirect()
+            ->route('catalogs.index')
+            ->with('success', "Catalog ({$catalog->name}) created successfully.");
     }
 
     public function edit(Catalog $catalog)
     {
-        // Requirement: Needs View + Create + Edit
         if (! auth()->user()->can('view_catalogs') ||
             ! auth()->user()->can('create_catalogs') ||
             ! auth()->user()->can('edit_catalogs')) {
             abort(403);
         }
 
-        // Fetch all items to populate the Whitelist Interface [2]
         $items = Item::orderBy('name')->get();
-
-        // Get IDs of items already in this catalog for checkbox states
         $assignedItemIds = $catalog->items()->pluck('items.id')->toArray();
 
         return view('admin.catalogs.edit', compact('catalog', 'items', 'assignedItemIds'));
@@ -92,7 +102,7 @@ public function create()
             'name' => 'required|string|max:255|unique:catalogs,name,'.$catalog->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
-            'status' => 'sometimes|in:active,deactive',
+            'status' => 'sometimes|in:active,inactive', // SQL ERROR FIXED HERE
         ]);
 
         $catalog->update([
@@ -100,12 +110,14 @@ public function create()
             'status' => $validated['status'] ?? $catalog->status,
         ]);
 
-        // FIX: Only sync items if the whitelist data is present in the request
         if ($request->has('items')) {
             $catalog->items()->sync($request->input('items', []));
         }
 
-        return redirect()->route('catalogs.index')->with('success', 'Catalog updated successfully.');
+        // DYNAMIC NOTIFICATION ADDED
+        return redirect()
+            ->route('catalogs.index')
+            ->with('success', "Catalog ({$catalog->name}) updated successfully.");
     }
 
     public function destroy(Catalog $catalog)
@@ -113,11 +125,17 @@ public function create()
         Gate::authorize('edit_catalogs');
 
         if (! $catalog->canBeDeleted()) {
-            return redirect()->back()->with('error', 'Cannot delete catalog while customers are assigned to it.');
+            return redirect()->back()->with('error', "Cannot delete Catalog ({$catalog->name}) while customers are assigned to it.");
         }
 
+        // Store the name before deleting so we can use it in the success message
+        $catalogName = $catalog->name;
+        
         $catalog->delete();
 
-        return redirect()->route('catalogs.index')->with('success', 'Catalog removed.');
+        // DYNAMIC NOTIFICATION ADDED
+        return redirect()
+            ->route('catalogs.index')
+            ->with('success', "Catalog ({$catalogName}) deleted successfully.");
     }
 }

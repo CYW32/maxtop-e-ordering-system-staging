@@ -62,7 +62,7 @@
                 </a>
             @endcan
 
-            {{-- SEARCH TOOLBAR --}}
+
             {{-- SEARCH TOOLBAR --}}
             <div class="bg-white p-4 md:p-6 rounded-[2rem] border border-gray-100 shadow-sm mb-6"
                 x-data="{ showFilters: {{ request()->hasAny(['status']) ? 'true' : 'false' }} }">

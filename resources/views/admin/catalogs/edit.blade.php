@@ -1,33 +1,76 @@
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
-            {{ __('📂 Edit Folder: ') . $catalog->name }}
-        </h2>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <h2 class="font-black text-xl text-gray-800 leading-tight uppercase tracking-tight">
+                {{ __('Edit Catalog') }}: <span class="text-blue-600">{{ $catalog->name }}</span>
+            </h2>
+            <a href="{{ route('catalogs.index') }}"
+                class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                &larr; {{ __('Back to Catalog Folders') }}
+            </a>
+        </div>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white p-8 shadow-xl sm:rounded-2xl border border-gray-100">
+        <div class="max-w-4xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
-                <form action="{{ route('catalogs.update', $catalog) }}" method="POST" class="space-y-8">
-                    @csrf
-                    @method('PUT')
+            {{-- Back Link --}}
+            <a href="{{ route('catalogs.index') }}"
+                class="text-[11px] font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                &larr; {{ __('Back To Catalog Folders') }}
+            </a>
 
-                    <div>
-                        <x-input-label for="name" :value="__('Catalog Folder Name')" />
-                        <x-text-input id="name" name="name" type="text" class="mt-1 block w-full"
-                            :value="old('name', $catalog->name)" required />
-                        <p class="text-[10px] text-gray-500 mt-2 italic uppercase font-bold">
-                            {{ __('Changing this name affects all linked customers [Section 3.a.1].') }}</p>
+            <form method="POST" action="{{ route('catalogs.update', $catalog) }}" class="space-y-8">
+                @csrf
+                @method('PUT')
+
+                <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100 p-10">
+                    <div
+                        class="text-[10px] font-black uppercase text-gray-400 mb-8 tracking-widest flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                        </svg>
+                        {{ __('Catalog Identity & Visibility') }}
                     </div>
 
-                    <div class="pt-6 border-t border-gray-100">
+                    <div class="space-y-8">
+                        <div>
+                            <x-input-label for="name" :value="__('Catalog Folder Name (Display Name)')"
+                                class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                            <x-text-input id="name" name="name" type="text"
+                                class="mt-1 block w-full font-bold uppercase" :value="old('name', $catalog->name)" required />
+                            <x-input-error :messages="$errors->get('name')" class="mt-2" />
+                            <p class="text-[9px] text-gray-400 mt-2 uppercase font-bold tracking-wider">
+                                {{ __('Changing this name affects all linked customers.') }}</p>
+                        </div>
+
+                        <div>
+                            <x-input-label for="status" :value="__('Operational Status')"
+                                class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                            <select name="status" id="status"
+                                class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-black uppercase">
+                                <option value="active" @selected(old('status', $catalog->status) === 'active')>
+                                    {{ __('Active (Visible to Customers)') }}</option>
+
+                                {{-- CHANGED: deactive to inactive here --}}
+                                <option value="inactive" @selected(old('status', $catalog->status) === 'inactive')>
+                                    {{ __('Inactive (Hidden from Customers)') }}
+                                </option>
+                            </select>
+                            <x-input-error :messages="$errors->get('status')" class="mt-2" />
+                        </div>
+                    </div>
+
+                    {{-- Item Whitelist Section --}}
+                    <div class="pt-8 mt-8 border-t border-gray-100">
                         <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                             <div>
                                 <h3 class="text-sm font-black text-gray-800 uppercase tracking-widest mb-1">
                                     {{ __('Item Whitelist Selection') }}</h3>
                                 <p class="text-xs text-gray-500">
-                                    {{ __('Checked items will be visible to customers assigned to this folder.') }}</p>
+                                    {{ __('Checked products will be visible to customers assigned to this catalog.') }}
+                                </p>
                             </div>
 
                             <div class="w-full md:w-1/2">
@@ -51,70 +94,51 @@
                                             class="focus:ring-blue-500 h-5 w-5 text-blue-600 border-gray-300 rounded-lg mr-4"
                                             {{ in_array($item->id, $assignedItemIds) ? 'checked' : '' }}>
                                         <div class="flex-1">
-                                            <div class="text-xs font-black text-blue-700 uppercase">{{ $item->sku }}
+                                            <div class="flex justify-between items-start">
+                                                <div class="text-xs font-black text-blue-700 uppercase">
+                                                    {{ $item->sku }}</div>
+                                                <div
+                                                    class="text-[10px] font-mono text-gray-500 font-bold bg-white px-2 py-0.5 rounded shadow-sm border border-gray-100">
+                                                    RM {{ number_format($item->price, 2) }}</div>
                                             </div>
-                                            <div class="text-sm font-bold text-gray-800 leading-tight">
+                                            <div class="text-sm font-bold text-gray-800 leading-tight mt-1">
                                                 {{ $item->name }}</div>
-                                            <div class="text-[10px] font-mono text-gray-500 mt-1">RM
-                                                {{ number_format($item->price, 2) }}</div>
                                         </div>
                                     </label>
                                 @endforeach
                             </div>
                         @endif
                     </div>
-
-                    <div class="flex items-center justify-end pt-8 border-t border-gray-100">
-                        <a href="{{ route('catalogs.index') }}"
-                            class="text-sm text-gray-600 hover:text-gray-900 underline mr-6">{{ __('Cancel') }}</a>
-                        <x-primary-button
-                            class="bg-blue-700 hover:bg-blue-800">{{ __('Save Folder & Whitelist') }}</x-primary-button>
-                    </div>
-                </form>
-
-                {{-- Lifecycle Section --}}
-                <div
-                    class="mt-16 bg-gray-800 p-8 rounded-3xl text-white flex flex-col md:flex-row justify-between items-center gap-8 shadow-2xl">
-                    <div>
-                        <h4 class="font-black uppercase text-sm tracking-widest text-amber-400">
-                            {{ __('Catalog Lifecycle') }}</h4>
-                        <p class="text-[10px] text-gray-400 mt-2">
-                            {{ __('Deactivating a folder hides ALL assigned products from linked customers immediately.') }}
-                        </p>
-                    </div>
-                    <div class="flex gap-3">
-                        <form action="{{ route('catalogs.update', $catalog) }}" method="POST">
-                            @csrf @method('PUT')
-                            <input type="hidden" name="name" value="{{ $catalog->name }}">
-
-                            @if ($catalog->status === 'active')
-                                <input type="hidden" name="status" value="deactive">
-                                <button type="submit"
-                                    class="px-6 py-2 bg-amber-500 hover:bg-amber-600 rounded-xl text-xs font-black uppercase transition shadow-md">
-                                    {{ __('⛔ Deactivate Folder') }}
-                                </button>
-                            @else
-                                <input type="hidden" name="status" value="active">
-                                <button type="submit"
-                                    class="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-xl text-xs font-black uppercase transition shadow-md">
-                                    {{ __('✅ Reactivate Folder') }}
-                                </button>
-                            @endif
-                        </form>
-
-                        @if ($catalog->canBeDeleted())
-                            <form action="{{ route('catalogs.destroy', $catalog) }}" method="POST">
-                                @csrf @method('DELETE')
-                                <button type="submit"
-                                    class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl text-xs font-black uppercase transition shadow-md">
-                                    {{ __('🔥 Hard Delete') }}
-                                </button>
-                            </form>
-                        @endif
-                    </div>
                 </div>
 
-            </div>
+                <div class="flex items-center justify-end gap-4 mt-8">
+                    <a href="{{ route('catalogs.index') }}"
+                        class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                        {{ __('Cancel') }}
+                    </a>
+                    <x-primary-button
+                        class="bg-gray-900 hover:bg-black py-4 px-12 rounded-2xl shadow-lg transition-all uppercase text-[10px] font-black">
+                        {{ __('Save Folder & Whitelist') }}
+                    </x-primary-button>
+                </div>
+
+            </form>
+
+            {{-- Danger Zone: Hard Delete --}}
+            @if ($catalog->canBeDeleted())
+                <div class="mt-12 flex justify-center">
+                    <form action="{{ route('catalogs.destroy', $catalog) }}" method="POST"
+                        onsubmit="return confirm('{{ __('Are you sure you want to permanently delete this catalog? This action cannot be undone.') }}');">
+                        @csrf
+                        @method('DELETE')
+                        <button type="submit"
+                            class="text-[10px] font-black uppercase text-red-400 hover:text-red-600 transition tracking-widest border-b border-transparent hover:border-red-600 pb-0.5">
+                            {{ __('Delete Catalog Permanently') }}
+                        </button>
+                    </form>
+                </div>
+            @endif
+
         </div>
     </div>
 
@@ -126,15 +150,9 @@
             if (searchInput) {
                 searchInput.addEventListener('input', function(e) {
                     const searchTerm = e.target.value.toLowerCase();
-
                     items.forEach(item => {
-                        // Searches through all text inside the label (including SKU and Name)
                         const textContent = item.textContent.toLowerCase();
-                        if (textContent.includes(searchTerm)) {
-                            item.style.display = ''; // Restores default flex display
-                        } else {
-                            item.style.display = 'none'; // Hides the item
-                        }
+                        item.style.display = textContent.includes(searchTerm) ? '' : 'none';
                     });
                 });
             }
