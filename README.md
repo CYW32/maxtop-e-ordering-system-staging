@@ -81,4 +81,5 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 ** Solve:
 * Can add the picture while create item and edit item.
 * Rebase back the catalog, business entity
+* Adjust the overall mobile preview of client 
 

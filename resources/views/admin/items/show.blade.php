@@ -183,9 +183,25 @@
                             {{ __('Media') }}
                         </div>
                         <div class="flex flex-col items-center justify-center">
-                            @if ($item->image_path)
-                                <img src="{{ asset('storage/' . $item->image_path) }}"
-                                    class="w-full aspect-square rounded-[2rem] object-cover border border-gray-100 shadow-sm">
+                            @php
+                                // Safely handle both the new `images` JSON array and the old `image_path`
+                                $images = $item->images ?? [];
+                                if (empty($images) && !empty($item->image_path)) {
+                                    $images = is_array($item->image_path) ? $item->image_path : [$item->image_path];
+                                }
+                                // Ensure it's a valid clean array for the loop
+                                $images = is_string($images) ? json_decode($images, true) ?? [] : (array) $images;
+                                $images = array_values(array_filter($images));
+                                $imgCount = count($images);
+                            @endphp
+
+                            @if ($imgCount > 0)
+                                <div class="{{ $imgCount > 1 ? 'grid grid-cols-2 gap-4' : 'w-full' }}">
+                                    @foreach ($images as $img)
+                                        <img src="{{ asset('storage/' . $img) }}"
+                                            class="w-full aspect-square rounded-[2rem] object-contain p-2 bg-white border border-gray-100 shadow-sm transition-transform hover:scale-105">
+                                    @endforeach
+                                </div>
                             @else
                                 <div
                                     class="w-full aspect-square bg-gray-50 border-2 border-dashed border-gray-200 rounded-[2rem] flex flex-col items-center justify-center text-gray-300">

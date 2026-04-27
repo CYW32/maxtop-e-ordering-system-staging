@@ -226,7 +226,8 @@
             ],
         ],
     ),
-)
+),
+                                                qty: 1
                                             }" class="flex flex-col">
                                             @csrf
                                             <input type="hidden" name="item_id" value="{{ $item->id }}">
@@ -262,19 +263,56 @@
                                             </div>
 
                                             {{-- Qty & Submit --}}
-                                            <div class="flex gap-3">
-                                                <x-text-input name="quantity" type="number" value="1"
-                                                    min="1" max="999"
-                                                    class="w-24 rounded-xl border-gray-200 text-base font-bold text-center focus:ring-brand-500 focus:border-brand-500 shadow-sm py-3" />
+                                            <div class="flex gap-2 lg:gap-3 h-[48px] lg:h-[52px]">
 
+                                                {{-- Premium Stacked Quantity Selector (^ and v) --}}
+                                                <div
+                                                    class="relative flex items-center border border-gray-200 rounded-xl bg-white shadow-sm w-[90px] lg:w-[105px] shrink-0 overflow-hidden">
+
+                                                    {{-- Input Field --}}
+                                                    <input name="quantity" type="number" min="1"
+                                                        max="999" x-model="qty"
+                                                        @change="qty = Math.max(1, parseInt(qty) || 1)"
+                                                        class="flex-1 h-full w-full border-none pl-2 pr-8 text-center text-sm lg:text-base font-black text-gray-800 focus:ring-0 bg-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+
+                                                    {{-- Stacked Up/Down Buttons Container --}}
+                                                    <div
+                                                        class="absolute right-0 top-0 bottom-0 w-8 flex flex-col border-l border-gray-200 bg-gray-50">
+
+                                                        {{-- Up Button (^) --}}
+                                                        <button type="button" @click="qty = qty + 1"
+                                                            class="flex-1 flex justify-center items-center text-gray-500 hover:bg-brand-50 hover:text-brand-600 transition-colors border-b border-gray-200 cursor-pointer outline-none group">
+                                                            <svg class="w-3.5 h-3.5 transform group-active:scale-90 transition-transform"
+                                                                fill="none" stroke="currentColor"
+                                                                viewBox="0 0 24 24">
+                                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                                    stroke-width="3" d="M5 15l7-7 7 7"></path>
+                                                            </svg>
+                                                        </button>
+
+                                                        {{-- Down Button (v) --}}
+                                                        <button type="button" @click="qty = qty > 1 ? qty - 1 : 1"
+                                                            class="flex-1 flex justify-center items-center text-gray-500 hover:bg-brand-50 hover:text-brand-600 transition-colors cursor-pointer outline-none group">
+                                                            <svg class="w-3.5 h-3.5 transform group-active:scale-90 transition-transform"
+                                                                fill="none" stroke="currentColor"
+                                                                viewBox="0 0 24 24">
+                                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                                    stroke-width="3" d="M19 9l-7 7-7-7"></path>
+                                                            </svg>
+                                                        </button>
+
+                                                    </div>
+                                                </div>
+
+                                                {{-- Add to Draft Button --}}
                                                 <button type="submit"
-                                                    class="flex-1 inline-flex justify-center items-center px-4 py-3 bg-brand-600 border border-transparent rounded-xl font-bold text-sm text-white tracking-wide hover:bg-brand-700 focus:bg-brand-700 active:bg-brand-800 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 transition-all shadow-md shadow-brand-500/20">
-                                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor"
-                                                        viewBox="0 0 24 24">
+                                                    class="flex-1 inline-flex justify-center items-center h-full px-2 lg:px-4 bg-brand-600 border border-transparent rounded-xl font-bold text-[13px] lg:text-sm text-white tracking-wide hover:bg-brand-700 focus:bg-brand-700 active:bg-brand-800 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 transition-all shadow-md shadow-brand-500/20">
+                                                    <svg class="w-4 h-4 lg:w-5 lg:h-5 mr-1.5 shrink-0" fill="none"
+                                                        stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round"
                                                             stroke-width="2.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
                                                     </svg>
-                                                    {{ __('Add to Draft') }}
+                                                    <span class="whitespace-nowrap">{{ __('Add to Draft') }}</span>
                                                 </button>
                                             </div>
                                         </form>
