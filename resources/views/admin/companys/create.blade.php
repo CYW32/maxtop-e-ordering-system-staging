@@ -141,6 +141,18 @@
                                 <x-text-input id="company_reg_no" name="company_reg_no" type="text"
                                     class="w-full font-bold text-gray-800 uppercase" :value="old('company_reg_no')" />
                             </div>
+                            {{-- ADDED STATUS DROPDOWN HERE --}}
+                            <div>
+                                <x-input-label for="status" :value="__('Operational Status')"
+                                    class="text-[10px] font-black uppercase text-gray-400 mb-2" />
+                                <select name="status" id="status"
+                                    class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-black uppercase cursor-pointer">
+                                    <option value="active" @selected(old('status') === 'active')>
+                                        {{ __('Active (Operational)') }}</option>
+                                    <option value="inactive" @selected(old('status') === 'inactive')>
+                                        {{ __('Inactive (Suspended)') }}</option>
+                                </select>
+                            </div>
                             <div class="md:col-span-2">
                                 <x-input-label for="catalog_id" :value="__('Assign Product Whitelist Catalog')"
                                     class="text-[10px] font-black uppercase text-gray-400 mb-2" />

@@ -20,7 +20,9 @@
                 &larr; {{ __('Back To Business Directory') }}
             </a>
 
-            <form method="POST" action="{{ route('companys.update', $company) }}" class="space-y-8">
+            {{-- ADDED: onsubmit check for HQ deactivation --}}
+            <form method="POST" action="{{ route('companys.update', $company) }}" class="space-y-8"
+                @if (is_null($company->parent_id)) onsubmit="return confirmHqDeactivation()" @endif>
                 @csrf
                 @method('PUT')
 
@@ -182,4 +184,22 @@
             </form>
         </div>
     </div>
+
+    {{-- ADDED: JavaScript to trigger the double verification alert for HQs --}}
+    @if (is_null($company->parent_id))
+        <script>
+            function confirmHqDeactivation() {
+                const statusDropdown = document.getElementById('status');
+                const originalStatus = '{{ $company->status ?? 'active' }}';
+
+                // Only trigger if they are changing from Active -> Inactive
+                if (statusDropdown.value === 'inactive' && originalStatus !== 'inactive') {
+                    return confirm(
+                        '⚠️ WARNING: You are about to set this Headquarters to INACTIVE.\n\nThis action will also automatically set all associated Branch Offices to INACTIVE.\n\nAre you sure you want to proceed?'
+                        );
+                }
+                return true; // Allow form submission if no warning is needed
+            }
+        </script>
+    @endif
 </x-app-layout>

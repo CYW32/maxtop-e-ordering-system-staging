@@ -93,12 +93,94 @@
                 </div>
             </div>
 
-            {{-- 2. PASSWORD MANAGEMENT: EDITABLE [v1.4 Security Policy] --}}
+            {{-- NEW: BUSINESS ENTITY DETAILS (Location & Status) --}}
+            @if ($user->company)
+                @php $company = $user->company; @endphp
+                <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100 p-10">
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8">
+                        <div>
+                            <h3 class="text-xl font-black text-gray-900">{{ __('Location & Operations') }}</h3>
+                            <p class="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-1">
+                                {{ __('Assigned fulfillment details and entity status') }}
+                            </p>
+                        </div>
+
+                        {{-- Operational Status Badge --}}
+                        <div>
+                            @if ($company->status === 'active')
+                                <span
+                                    class="inline-flex items-center px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-green-50 text-green-600 border border-green-100">
+                                    <span class="flex w-2 h-2 rounded-full bg-green-500 mr-2"></span>
+                                    {{ __('Active (Operational)') }}
+                                </span>
+                            @else
+                                <span
+                                    class="inline-flex items-center px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-red-50 text-red-600 border border-red-100">
+                                    <span class="flex w-2 h-2 rounded-full bg-red-500 mr-2 animate-pulse"></span>
+                                    {{ __('Inactive (Suspended)') }}
+                                </span>
+                            @endif
+                        </div>
+                    </div>
+
+                    <div
+                        class="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 bg-gray-50/50 p-8 rounded-3xl border border-gray-100">
+                        <div class="space-y-6">
+                            {{-- HQ or Branch Tag --}}
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Organization Level') }}</label>
+                                <div class="flex items-center">
+                                    @if (is_null($company->parent_id))
+                                        <span
+                                            class="bg-blue-100 text-blue-800 text-[10px] font-black px-3 py-1 rounded-lg uppercase tracking-wider border border-blue-200">{{ __('Headquarters') }}</span>
+                                    @else
+                                        <span
+                                            class="bg-purple-100 text-purple-800 text-[10px] font-black px-3 py-1 rounded-lg uppercase tracking-wider border border-purple-200">{{ __('Branch Office') }}</span>
+                                    @endif
+                                </div>
+                            </div>
+
+                            {{-- PIC Data --}}
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Location Contact (PIC)') }}</label>
+                                <div class="text-sm font-bold text-gray-700">
+                                    {{ $company->pic_name ?? __('Not Assigned') }}
+                                    @if ($company->pic_phone)
+                                        <span
+                                            class="block text-xs text-gray-500 font-mono mt-0.5">{{ $company->pic_phone }}</span>
+                                    @endif
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6">
+                            {{-- Specific Delivery Address --}}
+                            <div>
+                                <label
+                                    class="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-2">{{ __('Fulfillment Address') }}</label>
+                                <div
+                                    class="text-sm font-bold text-gray-700 leading-relaxed bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+                                    {{ $company->delivery_address }}<br>
+                                    @if ($company->postal_code || $company->city)
+                                        {{ $company->postal_code }} {{ $company->city }}<br>
+                                    @endif
+                                    {{ $company->state }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            @endif
+
+            {{-- 3. PASSWORD MANAGEMENT: EDITABLE [v1.4 Security Policy] --}}
             <div class="p-8 bg-white shadow-sm sm:rounded-[2.5rem] border border-gray-100">
                 <div class="max-w-xl">
                     @include('profile.partials.update-password-form')
                 </div>
             </div>
+
         </div>
     </div>
 </x-app-layout>

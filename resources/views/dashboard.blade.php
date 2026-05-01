@@ -10,7 +10,7 @@
 
             {{-- ✅ NOTIFICATION BLOCK --}}
             @if (session('success'))
-                <div class="bg-brand-50 border border-brand-200 rounded-xl p-4 shadow-sm flex items-start mb-6">
+                <div class="bg-brand-50 border border-brand-200 rounded-xl p-4 shadow-sm flex items-start">
                     <div class="flex-shrink-0">
                         <svg class="h-6 w-6 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -38,6 +38,32 @@
                 </div>
             @endif
             {{-- ✅ END NOTIFICATION BLOCK --}}
+
+            {{-- 🚨 PERMANENT SUSPENSION BANNER FOR CUSTOMERS --}}
+            @if (auth()->user()->hasRole('customer') && auth()->user()->company && !auth()->user()->company->isAllowedToOrder())
+                <div class="bg-red-50 border-l-4 border-red-600 p-5 rounded-r-xl shadow-sm">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <svg class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-black text-red-800 uppercase tracking-widest">
+                                {{ __('Ordering Suspended') }}
+                            </h3>
+                            <div class="mt-2 text-sm text-red-700 font-medium">
+                                <p>
+                                    {{ __('We apologize, but your business entity or Headquarters is currently marked as inactive. You are not able to place new orders at this time. Please contact customer support for further assistance.') }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            @endif
+            {{-- 🚨 END SUSPENSION BANNER --}}
 
             <div class="relative bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
                 <div class="absolute top-0 right-0 w-64 h-64 bg-brand-50 rounded-bl-full opacity-50"></div>

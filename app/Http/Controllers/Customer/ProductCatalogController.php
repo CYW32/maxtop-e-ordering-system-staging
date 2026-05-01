@@ -16,6 +16,17 @@ class ProductCatalogController extends Controller
     public function index(Request $request)
     {
         $user = auth()->user();
+
+        // ====================================================================
+        // NEW SECURITY CHECK: Block ordering if Company or HQ is deactivated
+        // ====================================================================
+        if ($user->company && !$user->company->isAllowedToOrder()) {
+            return redirect()
+                ->route('dashboard')
+                ->with('error', 'Ordering is suspended. Your business entity or Headquarters is currently inactive.');
+        }
+        // ====================================================================
+
         $catalogId = $user->getEffectiveCatalogId();
         $catalog = \App\Models\Catalog::find($catalogId);
 

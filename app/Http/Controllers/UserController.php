@@ -188,24 +188,19 @@ class UserController extends Controller
      */
     public function destroy(User $user)
     {
-        // Now resolves correctly to Illuminate\Support\Facades\Gate
-        Gate::authorize('edit_users');
-
-        // Refined Section 3.c.1 Check:
-        // Verification happens in the Model to ensure clusters are clean.
+        // 1. SAFEGUARD: Check if the user has associated orders
         if (!$user->canBeDeleted()) {
-            return redirect()->back()->with('error', 'This user or its branches have existing order records and cannot be deleted to protect data integrity.');
+            return redirect()
+                ->route('users.index') // or back()
+                ->with('error', "Cannot delete {$user->name} because they have existing order transactions.");
         }
 
-        DB::transaction(function () use ($user) {
-            // Fulfills Request: If HQ is deleted, delete all branches first
-            if (is_null($user->parent_id)) {
-                $user->branches()->delete();
-            }
+        // 2. Proceed with deletion
+        $name = $user->name;
+        $user->delete();
 
-            $user->delete();
-        });
-
-        return redirect()->route('users.index')->with('success', 'User account and associated branches removed successfully.');
+        return redirect()
+            ->route('users.index')
+            ->with('success', "User ({$name}) deleted successfully.");
     }
 }

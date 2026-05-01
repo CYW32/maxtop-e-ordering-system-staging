@@ -26,6 +26,7 @@ class Company extends Model
         'postal_code',
         'city',
         'state',
+        'status',
     ];
 
     // Define what the search bar can look for
@@ -80,5 +81,27 @@ class Company extends Model
     public function canBeDeleted(): bool
     {
         return !$this->hasOrders();
+    }
+
+    /**
+     * Check if the company is allowed to make orders based on HQ and Branch status.
+     */
+    public function isAllowedToOrder()
+    {
+        // Rule 2: If this specific company (HQ or Branch) is inactive, block them.
+        if ($this->status === 'inactive') {
+            return false;
+        }
+
+        // Rule 1: If this is a branch (it has a parent), check if its HQ is inactive.
+        if (!is_null($this->parent_id)) {
+            $hq = \App\Models\Company::find($this->parent_id);
+            if ($hq && $hq->status === 'inactive') {
+                return false; // Block branch because HQ is inactive
+            }
+        }
+
+        // If neither is inactive, they are allowed to order.
+        return true;
     }
 }

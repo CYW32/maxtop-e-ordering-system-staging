@@ -82,6 +82,7 @@ class CompanyController extends Controller
             'branch_code' => ['nullable', 'required_with:parent_id', 'unique:companys,branch_code'],
             'catalog_id' => 'nullable|exists:catalogs,id',
             'company_reg_no' => 'nullable|string|max:255',
+            'status' => 'required|in:active,inactive',
             'pic_name' => 'nullable|string|max:255',
             'pic_phone' => 'nullable|string|max:255',
             'delivery_address' => 'required|string',
@@ -121,9 +122,12 @@ class CompanyController extends Controller
 
     public function update(Request $request, Company $company)
     {
-        // 1. Validate all fields (Added company_name)
+        // 1. CAPTURE ORIGINAL STATUS FIRST: Remember it before we change anything
+        $originalStatus = $company->status;
+
+        // 2. Validate all fields
         $validated = $request->validate([
-            'company_name' => 'required|string|max:255', // <-- ADDED THIS
+            'company_name' => 'required|string|max:255',
             'catalog_id' => 'nullable|exists:catalogs,id',
             'company_reg_no' => 'nullable|string|max:255',
             'pic_name' => 'nullable|string|max:255',
@@ -135,28 +139,19 @@ class CompanyController extends Controller
             'status' => 'required|in:active,inactive',
         ]);
 
-        // 2. FORCE the status assignment directly
-        $company->status = $validated['status'];
+        // 3. Update the company with the validated data
+        $company->update($validated);
 
-        // 3. Update the rest of the normal fields (Added company_name)
-        $company->update([
-            'company_name' => $validated['company_name'], // <-- ADDED THIS
-            'catalog_id' => $validated['catalog_id'],
-            'company_reg_no' => $validated['company_reg_no'],
-            'pic_name' => $validated['pic_name'],
-            'pic_phone' => $validated['pic_phone'],
-            'delivery_address' => $validated['delivery_address'],
-            'postal_code' => $validated['postal_code'],
-            'city' => $validated['city'],
-            'state' => $validated['state'],
-        ]);
-
-        // 4. Final forced save to the database
-        $company->save();
+        // 4. CASCADE LOGIC: If an HQ was changed to inactive, turn off all its branches.
+        // We check is_null(parent_id) to ensure it's an HQ, and compare the old status vs new status.
+        if (is_null($company->parent_id) && $originalStatus !== 'inactive' && $company->status === 'inactive') {
+            // This instantly updates all associated branches in the database
+            $company->children()->update(['status' => 'inactive']);
+        }
 
         return redirect()
             ->route('companys.index')
-            ->with('success', "Business ({$company->company_name}) updated successfully.");
+            ->with('success', "Business Entity ({$company->company_name}) updated successfully.");
     }
 
     public function destroy(Company $company)
