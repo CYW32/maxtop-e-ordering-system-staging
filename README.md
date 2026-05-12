@@ -77,12 +77,7 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v47)(zj)
+## Update Details (v48)(zj)
 ** Solve:
-* DatabseSeeder only add roles and allow for admin only for client use easily. DatabaseSeeder_copy be previous code
-* Added back the active or inactive on Business Entities.
-* Handling the issues of client not able to add orders if the company (HQ and Branch) been diactivated
-* Added the function of the current HQ if disabled, branch will disabled at the same time. Client will be not able to continue order
-* On client dashboard, added the Ordering Suspended 
-* On client profile, added the address info and active status.
-
+* Added the Delivered and Cancelled on All Order Status
+* Fixed CS that's only to add the user that's under Customer and only under the current user only.

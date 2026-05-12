@@ -7,8 +7,16 @@
 
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
+
+            {{-- FIX: Define restrictions and default role BEFORE the form starts --}}
+            @php
+                $isRestricted = auth()->user()->hasRole('cs_staff') || $parent;
+                $defaultRole = $isRestricted ? 'customer' : '';
+            @endphp
+
+            {{-- Set the Alpine.js default role dynamically --}}
             <div x-data="{
-                role: '{{ old('role', $parent ? 'customer' : '') }}'
+                role: '{{ old('role', $defaultRole) }}'
             }"
                 class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
 
@@ -19,18 +27,25 @@
                         {{-- System Role Selection --}}
                         <div>
                             <x-input-label for="role" :value="__('System Access Role')" class="text-[10px] uppercase font-black" />
-                            @php $isRestricted = auth()->user()->hasRole('cs_staff') || $parent; @endphp
+
                             <select name="role" id="role" x-model="role"
-                                class="block mt-1 w-full border-gray-300 rounded-xl shadow-sm @if ($isRestricted) bg-gray-50 cursor-not-allowed @endif"
-                                @if ($isRestricted) readonly @endif required>
+                                class="block mt-1 w-full border-gray-300 rounded-xl shadow-sm @if ($isRestricted) bg-gray-50 pointer-events-none @endif"
+                                @if ($isRestricted) tabindex="-1" @endif required>
+
                                 <option value="">{{ __('-- Select Account Type --') }}</option>
+
                                 @foreach ($roles as $roleOption)
+                                    @if (auth()->user()->hasRole('cs_staff') && in_array($roleOption->name, ['admin', 'cs_leader']))
+                                        @continue
+                                    @endif
+
                                     <option value="{{ $roleOption->name }}"
                                         {{ old('role') == $roleOption->name || ($parent && $roleOption->name == 'customer') ? 'selected' : '' }}>
                                         {{ ucfirst(str_replace('_', ' ', $roleOption->name)) }}
                                     </option>
                                 @endforeach
                             </select>
+
                             @if ($isRestricted)
                                 <input type="hidden" name="role" x-model="role">
                             @endif
@@ -89,10 +104,22 @@
                             <div>
                                 <x-input-label for="assigned_cs_id" :value="__('Designated Customer Service Representative')"
                                     class="text-[10px] uppercase font-black" />
+
                                 <select name="assigned_cs_id" id="assigned_cs_id"
-                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm">
-                                    <option value="">{{ __('-- Auto-Assign / Unassigned --') }}</option>
+                                    class="mt-1 block w-full border-gray-300 rounded-xl shadow-sm text-sm @if ($isRestricted) bg-gray-50 pointer-events-none @endif"
+                                    @if ($isRestricted) tabindex="-1" @endif>
+
+                                    {{-- Only Admins/Leaders are allowed to leave this Unassigned --}}
+                                    @if (!$isRestricted)
+                                        <option value="">{{ __('-- Auto-Assign / Unassigned --') }}</option>
+                                    @endif
+
                                     @foreach ($csStaffMembers as $cs)
+                                        {{-- SECURITY FIX: If the user is a restricted CS Staff, hide all other CS reps from the list --}}
+                                        @if ($isRestricted && $cs->id !== auth()->id())
+                                            @continue
+                                        @endif
+
                                         <option value="{{ $cs->id }}"
                                             {{ old('assigned_cs_id') == $cs->id || (!old('assigned_cs_id') && auth()->id() == $cs->id) ? 'selected' : '' }}>
                                             {{ $cs->name }} ({{ $cs->login_id }})
@@ -132,4 +159,27 @@
             </div>
         </div>
     </div>
+
+    <!-- TomSelect Library and Searchable Dropdown Initialization -->
+    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Target the specific company_id select element
+            if (document.getElementById('company_id')) {
+                new TomSelect('#company_id', {
+                    create: false,
+                    sortField: {
+                        field: "text",
+                        direction: "asc"
+                    },
+                    placeholder: "-- Search and Select Business Entity --",
+
+                    // Set to null to remove the limit and let the user scroll all items
+                    maxOptions: null
+                });
+            }
+        });
+    </script>
 </x-app-layout>

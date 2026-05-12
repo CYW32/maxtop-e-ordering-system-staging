@@ -19,7 +19,7 @@ class OrderManagementController extends Controller
         $user = auth()->user();
 
         // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade
-        $status = ['pending', 'approved', 'in_transit'];
+        $status = ['pending', 'approved', 'in_transit', 'delivered', 'cancelled'];
 
         $query = Order::whereIn('status', $status)->where(function ($query) use ($user) {
             $query->where('handler_id', $user->id)->orWhere(function ($sub) use ($user) {
