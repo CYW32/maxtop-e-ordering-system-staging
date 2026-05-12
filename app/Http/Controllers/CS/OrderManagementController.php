@@ -64,8 +64,7 @@ class OrderManagementController extends Controller
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term)
-                    ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
+                $q->search($term)->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
@@ -133,13 +132,20 @@ class OrderManagementController extends Controller
             'new_handler_id' => 'required|exists:users,id',
         ]);
 
+        // NEW RULE: Prevent handover if order is already shipped or delivered
+        if (in_array($order->status, ['in_transit', 'delivered', 'cancelled'])) {
+            return redirect()->back()->with('error', 'Orders that are already In Transit or Delivered cannot be transferred.');
+        }
+
         $oldHandlerName = $order->handler->name ?? 'Unassigned';
         $newHandler = User::findOrFail($request->new_handler_id);
 
         // Security: Only the current handler or a Leader/Admin can initiate handover
         if (
             $order->handler_id !== auth()->id() &&
-            !auth()->user()->hasAnyRole(['admin', 'cs_leader'])
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
         ) {
             abort(403, 'Unauthorized handover attempt.');
         }
@@ -151,7 +157,9 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log("Order handed over from {$oldHandlerName} to {$newHandler->name}");
 
-        return redirect()->back()->with('success', "Order handed over to {$newHandler->name}.");
+        return redirect()
+            ->back()
+            ->with('success', "Order handed over to {$newHandler->name}.");
     }
 
     /**
@@ -241,6 +249,11 @@ class OrderManagementController extends Controller
         $user = auth()->user();
         $this->authorizeAction($order);
 
+        // NEW SECURITY RULE: Block cancellation for Shipped or Delivered orders
+        if (in_array($order->status, ['in_transit', 'delivered'])) {
+            return redirect()->back()->with('error', 'Operation Denied: Orders that are already in transit or delivered cannot be cancelled.');
+        }
+
         // LOGIC FIX: Handle Approved Order -> Request Transition
         if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
             $order->update([
@@ -274,13 +287,15 @@ class OrderManagementController extends Controller
     {
         if (
             $order->handler_id !== auth()->id() &&
-            !auth()->user()->hasAnyRole(['admin', 'cs_leader'])
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
         ) {
             abort(403);
         }
 
         $validated = $request->validate([
-            'status' => 'required|in:pending,approved,in_transit,completed',
+            'status' => 'required|in:pending,approved,in_transit,delivered',
             'internal_notes' => 'nullable|string',
             'tracking_number' => 'required_if:status,in_transit|nullable|string',
             'logistics_carrier' => 'required_if:status,in_transit|nullable|string',
@@ -302,15 +317,14 @@ class OrderManagementController extends Controller
     public function history(Request $request)
     {
         $user = auth()->user();
-        $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled'];
+        $status = ['draft', 'pending', 'approved', 'in_transit', 'delivered', 'cancelled'];
 
         $query = Order::where('handler_id', $user->id);
 
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term)
-                    ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
+                $q->search($term)->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"));
             });
         }
 
@@ -344,20 +358,22 @@ class OrderManagementController extends Controller
      */
     public function allOrders(Request $request)
     {
-        if (!auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
+        if (
+            !auth()
+                ->user()
+                ->hasAnyRole(['admin', 'cs_leader'])
+        ) {
             abort(403, 'Unauthorized: Master oversight restricted to Leadership.');
         }
 
-        $status = ['draft', 'pending', 'approved', 'in_transit', 'completed', 'cancelled', 'cancellation_requested'];
+        $status = ['draft', 'pending', 'approved', 'in_transit', 'delivered', 'cancelled', 'cancellation_requested'];
 
         $query = Order::with(['user.company', 'handler']);
 
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
-                $q->search($term)
-                    ->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"))
-                    ->orWhereHas('handler', fn($h) => $h->where('name', 'like', "%{$term}%"));
+                $q->search($term)->orWhereHas('user', fn($u) => $u->where('name', 'like', "%{$term}%"))->orWhereHas('handler', fn($h) => $h->where('name', 'like', "%{$term}%"));
             });
         }
 

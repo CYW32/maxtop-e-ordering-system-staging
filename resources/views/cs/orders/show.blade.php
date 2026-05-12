@@ -12,7 +12,8 @@
                 </h2>
 
                 <div class="flex items-center gap-2 mt-1">
-                    <span class="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{{ __('Place Order Date') }}:</span>
+                    <span
+                        class="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{{ __('Place Order Date') }}:</span>
                     <span class="text-[10px] font-bold text-gray-700 uppercase italic">
                         {{ $placeOrderDate ? $placeOrderDate->format('d M Y | H:i') : __('Not Submitted') }}
                     </span>
@@ -24,7 +25,7 @@
                         {{ $order->status === 'pending' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : '' }}
                         {{ $order->status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : '' }}
                         {{ $order->status === 'in_transit' ? 'bg-blue-100 text-blue-800 border-blue-300' : '' }}
-                        {{ $order->status === 'completed' ? 'bg-gray-100 text-gray-800 border-gray-300' : '' }}
+                        {{ $order->status === 'delivered' ? 'bg-gray-100 text-gray-800 border-gray-300' : '' }}
                         {{ $order->status === 'cancelled' ? 'bg-red-100 text-red-800 border-red-300' : '' }}
                         {{ $order->status === 'draft' ? 'bg-gray-50 text-gray-500 border-gray-200' : '' }}
                         {{ $order->status === 'cancellation_requested' ? 'bg-purple-100 text-purple-800 border-purple-300' : '' }}">
@@ -34,7 +35,7 @@
 
             </div>
             <a href="{{ route('office.orders.index') }}"
-               class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
+                class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                 &larr; {{ __('Back to Workspace') }}
             </a>
         </div>
@@ -82,64 +83,69 @@
                         </div>
                         <table class="min-w-full divide-y divide-gray-50">
                             <thead class="bg-gray-50/50">
-                            <tr class="text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                                <th class="px-10 py-6 text-left">{{ __('Product Entity') }}</th>
-                                {{-- ARCHITECTURE FIX: Correct Packaging Unit Data Header --}}
-                                <th class="px-6 py-6 text-center">{{ __('Packaging Unit (UOM)') }}</th>
-                                <th class="px-10 py-6 text-right">{{ __('Ordered Qty') }}</th>
-                                {{-- REMOVED: Unit Price column as requested --}}
-                            </tr>
+                                <tr class="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                                    <th class="px-10 py-6 text-left">{{ __('Product Entity') }}</th>
+                                    {{-- ARCHITECTURE FIX: Correct Packaging Unit Data Header --}}
+                                    <th class="px-6 py-6 text-center">{{ __('Packaging Unit (UOM)') }}</th>
+                                    <th class="px-10 py-6 text-right">{{ __('Ordered Qty') }}</th>
+                                    {{-- REMOVED: Unit Price column as requested --}}
+                                </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-50">
-                            @forelse($order->items as $item)
-                                <tr class="hover:bg-gray-50/30 transition-colors">
-                                    <td class="px-10 py-6">
-                                        <div class="flex flex-col">
-                                            {{-- Backbone 6.b: Prioritizing Snapshot Name --}}
-                                            <span class="text-[11px] font-black text-gray-800 uppercase tracking-tight">
-                                            {{ $item->snapshot_name ?? $item->item->name }}
-                                        </span>
-                                            <span class="text-[9px] font-mono font-bold text-blue-500 uppercase italic">
-                                            SKU: {{ $item->item->sku }}
-                                        </span>
-                                        </div>
-                                    </td>
-                                    <td class="px-6 py-6 text-center">
-                                        {{-- ARCHITECTURE FIX: Fetch Snapshot Packaging Unit [Backbone 6.b, 67] --}}
-                                        <span class="px-4 py-2 bg-gray-50 rounded-xl text-[10px] font-black text-gray-600 uppercase border border-gray-100">
-                                        {{ $item->snapshot_uom_name ?? ($item->uom->uom_name ?? __('UNIT')) }}
-                                    </span>
-                                    </td>
-                                    <td class="px-10 py-6 text-right">
-                                    <span class="text-sm font-mono font-black text-gray-900">
-                                        {{ number_format($item->quantity, 0) }}
-                                    </span>
-                                    </td>
-                                </tr>
-                            @empty
-                                {{-- ARCHITECTURE STANDARD: Professional Empty State --}}
-                                <tr>
-                                    <td colspan="3" class="px-10 py-20 text-center">
-                                        <p class="text-[10px] font-black text-gray-300 uppercase italic tracking-widest">
-                                            {{ __('No item records found for this order ID.') }}
-                                        </p>
-                                    </td>
-                                </tr>
-                            @endforelse
+                                @forelse($order->items as $item)
+                                    <tr class="hover:bg-gray-50/30 transition-colors">
+                                        <td class="px-10 py-6">
+                                            <div class="flex flex-col">
+                                                {{-- Backbone 6.b: Prioritizing Snapshot Name --}}
+                                                <span
+                                                    class="text-[11px] font-black text-gray-800 uppercase tracking-tight">
+                                                    {{ $item->snapshot_name ?? $item->item->name }}
+                                                </span>
+                                                <span
+                                                    class="text-[9px] font-mono font-bold text-blue-500 uppercase italic">
+                                                    SKU: {{ $item->item->sku }}
+                                                </span>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-6 text-center">
+                                            {{-- ARCHITECTURE FIX: Fetch Snapshot Packaging Unit [Backbone 6.b, 67] --}}
+                                            <span
+                                                class="px-4 py-2 bg-gray-50 rounded-xl text-[10px] font-black text-gray-600 uppercase border border-gray-100">
+                                                {{ $item->snapshot_uom_name ?? ($item->uom->uom_name ?? __('UNIT')) }}
+                                            </span>
+                                        </td>
+                                        <td class="px-10 py-6 text-right">
+                                            <span class="text-sm font-mono font-black text-gray-900">
+                                                {{ number_format($item->quantity, 0) }}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                @empty
+                                    {{-- ARCHITECTURE STANDARD: Professional Empty State --}}
+                                    <tr>
+                                        <td colspan="3" class="px-10 py-20 text-center">
+                                            <p
+                                                class="text-[10px] font-black text-gray-300 uppercase italic tracking-widest">
+                                                {{ __('No item records found for this order ID.') }}
+                                            </p>
+                                        </td>
+                                    </tr>
+                                @endforelse
                             </tbody>
 
                             {{-- ARCHITECTURE FIX: Logistical Summary Footer --}}
                             <tfoot class="bg-gray-50/30">
-                            <tr class="border-t-2 border-gray-100">
-                                <td colspan="2" class="px-10 py-8 text-right">
-                                    <span class="text-[10px] font-black uppercase text-gray-400 tracking-widest">{{ __('Aggregated Sum Qty') }}</span>
-                                </td>
-                                <td class="px-10 py-8 text-right">
-                                <span class="text-xl font-mono font-black text-blue-600">
-                                    {{ number_format($order->items->sum('quantity'), 0) }}
-                                </span>
-                                </td>
-                            </tr>
+                                <tr class="border-t-2 border-gray-100">
+                                    <td colspan="2" class="px-10 py-8 text-right">
+                                        <span
+                                            class="text-[10px] font-black uppercase text-gray-400 tracking-widest">{{ __('Aggregated Sum Qty') }}</span>
+                                    </td>
+                                    <td class="px-10 py-8 text-right">
+                                        <span class="text-xl font-mono font-black text-blue-600">
+                                            {{ number_format($order->items->sum('quantity'), 0) }}
+                                        </span>
+                                    </td>
+                                </tr>
                             </tfoot>
                         </table>
                     </div>
@@ -159,7 +165,8 @@
 
                         <hr class="border-gray-100 mb-6">
 
-                        <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST" class="space-y-4">
+                        <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST"
+                            class="space-y-4">
                             @csrf
                             @method('PUT')
 
@@ -169,12 +176,9 @@
                                 <label class="block text-[10px] font-bold text-gray-400 uppercase mb-2 ml-2">
                                     {{ __('Update Log') }}
                                 </label>
-                                <textarea
-                                    name="internal_notes"
-                                    rows="3"
+                                <textarea name="internal_notes" rows="3"
                                     class="w-full border-gray-200 rounded-[1.5rem] text-sm focus:ring-blue-500 placeholder-gray-300 transition-all focus:border-blue-400"
-                                    placeholder="{{ __('Type instructions or verification notes here...') }}"
-                                >{{ old('internal_notes') }}</textarea>
+                                    placeholder="{{ __('Type instructions or verification notes here...') }}">{{ old('internal_notes') }}</textarea>
                             </div>
 
                             <div class="flex justify-end">
@@ -189,45 +193,61 @@
                     {{-- 4. PRIVILEGED AUDIT TRAIL [Internal Order Audit Protocol] --}}
                     {{-- 5. REFACTORED: PRIVILEGED AUDIT TRAIL [Backbone 33.a, 31.f.2] --}}
                     @hasanyrole('admin|cs_leader')
-                    <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100">
-                        <div class="p-8 border-b border-gray-50 flex items-center gap-2">
-                            <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-                            <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest">{{ __('Internal Audit Trail: Status Transitions') }}</h3>
-                        </div>
-                        <div class="p-8 space-y-4">
-                            @forelse ($order->statusHistory as $history)
-                                <div class="flex flex-col p-5 bg-gray-50 rounded-2xl border border-gray-100">
-                                    <div class="flex items-center justify-between mb-2">
-                                        <div class="flex items-center gap-4">
-                                            <span class="px-2.5 py-1 bg-white border border-gray-200 rounded-lg text-[9px] font-black uppercase text-gray-600 shadow-sm">{{ str_replace('_', ' ', $history->status) }}</span>
-                                            <div class="flex flex-col">
-                                                <span class="text-[10px] font-black text-gray-900 uppercase">{{ $history->changer->name }}</span>
-                                                <span class="text-[8px] font-bold text-blue-500 uppercase">{{ $history->changer->roles->first()->name }}</span>
+                        <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100">
+                            <div class="p-8 border-b border-gray-50 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <path
+                                        d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                </svg>
+                                <h3 class="text-[10px] font-black uppercase text-gray-400 tracking-widest">
+                                    {{ __('Internal Audit Trail: Status Transitions') }}</h3>
+                            </div>
+                            <div class="p-8 space-y-4">
+                                @forelse ($order->statusHistory as $history)
+                                    <div class="flex flex-col p-5 bg-gray-50 rounded-2xl border border-gray-100">
+                                        <div class="flex items-center justify-between mb-2">
+                                            <div class="flex items-center gap-4">
+                                                <span
+                                                    class="px-2.5 py-1 bg-white border border-gray-200 rounded-lg text-[9px] font-black uppercase text-gray-600 shadow-sm">{{ str_replace('_', ' ', $history->status) }}</span>
+                                                <div class="flex flex-col">
+                                                    <span
+                                                        class="text-[10px] font-black text-gray-900 uppercase">{{ $history->changer->name }}</span>
+                                                    <span
+                                                        class="text-[8px] font-bold text-blue-500 uppercase">{{ $history->changer->roles->first()->name }}</span>
+                                                </div>
                                             </div>
+                                            <span
+                                                class="text-[9px] font-black text-gray-400 uppercase">{{ $history->created_at->format('d M Y, H:i') }}</span>
                                         </div>
-                                        <span class="text-[9px] font-black text-gray-400 uppercase">{{ $history->created_at->format('d M Y, H:i') }}</span>
+
+                                        {{-- ARCHITECTURE FIX: Cancellation Reason Injection in Audit Trail --}}
+                                        @if ($history->status === 'cancellation_requested' && $order->cancellation_request_reason)
+                                            <div class="mt-2 p-3 bg-purple-100/50 rounded-xl border border-purple-100">
+                                                <p
+                                                    class="text-[8px] font-black text-purple-400 uppercase mb-1 tracking-widest">
+                                                    {{ __('Cancel Reason') }}</p>
+                                                <p class="text-[11px] font-bold text-purple-700 italic">
+                                                    "{{ $order->cancellation_request_reason }}"</p>
+                                            </div>
+                                        @endif
+
+                                        @if ($history->status === 'cancelled' && $order->cancellation_reason)
+                                            <div class="mt-2 p-3 bg-red-100/50 rounded-xl border border-red-100">
+                                                <p
+                                                    class="text-[8px] font-black text-red-400 uppercase mb-1 tracking-widest">
+                                                    {{ __('Manager Approval Note') }}</p>
+                                                <p class="text-[11px] font-bold text-red-700 italic">
+                                                    "{{ $order->cancellation_reason }}"</p>
+                                            </div>
+                                        @endif
                                     </div>
-
-                                    {{-- ARCHITECTURE FIX: Cancellation Reason Injection in Audit Trail --}}
-                                    @if($history->status === 'cancellation_requested' && $order->cancellation_request_reason)
-                                        <div class="mt-2 p-3 bg-purple-100/50 rounded-xl border border-purple-100">
-                                            <p class="text-[8px] font-black text-purple-400 uppercase mb-1 tracking-widest">{{ __('Cancel Reason') }}</p>
-                                            <p class="text-[11px] font-bold text-purple-700 italic">"{{ $order->cancellation_request_reason }}"</p>
-                                        </div>
-                                    @endif
-
-                                    @if($history->status === 'cancelled' && $order->cancellation_reason)
-                                        <div class="mt-2 p-3 bg-red-100/50 rounded-xl border border-red-100">
-                                            <p class="text-[8px] font-black text-red-400 uppercase mb-1 tracking-widest">{{ __('Manager Approval Note') }}</p>
-                                            <p class="text-[11px] font-bold text-red-700 italic">"{{ $order->cancellation_reason }}"</p>
-                                        </div>
-                                    @endif
-                                </div>
-                            @empty
-                                <p class="text-[10px] text-gray-400 italic uppercase text-center py-4">{{ __('No status records found.') }}</p>
-                            @endforelse
+                                @empty
+                                    <p class="text-[10px] text-gray-400 italic uppercase text-center py-4">
+                                        {{ __('No status records found.') }}</p>
+                                @endforelse
+                            </div>
                         </div>
-                    </div>
                     @endhasanyrole
                 </div>
 
@@ -277,7 +297,7 @@
                     </div>
 
                     {{-- 6. FULFILLMENT ACTIONS [Backbone 4, Addendum 4] --}}
-                    @if (!in_array($order->status, ['completed', 'cancelled']))
+                    @if (!in_array($order->status, ['delivered', 'cancelled']))
                         <div class="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm space-y-6">
                             <h3
                                 class="text-[10px] font-black uppercase text-gray-400 tracking-widest border-b border-gray-50 pb-2">
@@ -309,10 +329,12 @@
                             {{-- DISPATCH [Backbone 4.d] --}}
                             @if ($order->status === 'approved' && $order->handler_id === auth()->id())
                                 <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST"
-                                    class="space-y-4">
+                                    class="space-y-4"
+                                    onsubmit="return confirm('{{ __('Are you sure you want to mark this order as IN TRANSIT? Please double check the tracking number.') }}');">
                                     @csrf
                                     @method('PUT')
                                     <input type="hidden" name="status" value="in_transit">
+
                                     <div>
                                         <label
                                             class="text-[9px] font-black text-gray-500 uppercase block mb-2">{{ __('Logistics Provider') }}</label>
@@ -327,79 +349,121 @@
                                             class="w-full bg-gray-50 border-gray-200 rounded-xl text-sm"
                                             placeholder="e.g. TRK990122">
                                     </div>
+
                                     <button type="submit"
-                                        class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-blue-100">
-                                        {{ __('Mark In Transit') }}
+                                        class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-3">
+                                        {{-- Truck Icon to match your image --}}
+                                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M8.25 18.75a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 0 1-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124l-.333-5.264a2.25 2.25 0 0 0-1.031-1.613l-3.322-2.14a2.25 2.25 0 0 0-1.233-.368h-2.25v10.5m-11.25-10.5h12m-12 0v1.125m12 0V14.25m-12 0h12" />
+                                        </svg>
+                                        <span>{{ __('Mark In Transit') }}</span>
+                                    </button>
+                                </form>
+                            @endif
+
+                            {{-- DELIVER ORDER BUTTON --}}
+                            @if ($order->status === 'in_transit' && $order->handler_id === auth()->id())
+                                <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST"
+                                    class="mt-6"
+                                    onsubmit="return confirm('{{ __('Are you sure this order has been successfully DELIVERED to the customer? This action cannot be undone.') }}');">
+                                    @csrf
+                                    @method('PUT')
+                                    <input type="hidden" name="status" value="delivered">
+
+                                    <button type="submit"
+                                        class="w-full bg-gray-800 hover:bg-black text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-gray-200 flex items-center justify-center gap-3">
+                                        {{-- Delivery Completion Icon --}}
+                                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <span>{{ __('Mark as Delivered') }}</span>
                                     </button>
                                 </form>
                             @endif
 
                             {{-- DANGER ZONE: CANCELLATION --}}
-                            <div class="pt-6 border-t border-red-50 space-y-4">
-                                @if ($order->hasPendingCancellationRequest())
-                                    <div class="bg-purple-50 p-4 rounded-2xl border border-purple-100">
-                                        <h4 class="text-[10px] font-black text-purple-700 uppercase mb-2">
-                                            {{ __('Cancellation Pending Approval') }}</h4>
-                                        <p class="text-[10px] text-purple-600 italic mb-4">
-                                            "{{ $order->cancellation_request_reason }}"</p>
+                            {{-- NEW RULE: Only show cancellation options if NOT in_transit or delivered --}}
+                            @if (!in_array($order->status, ['in_transit', 'delivered']))
+                                <div class="pt-6 border-t border-red-50 space-y-4">
+                                    @if ($order->hasPendingCancellationRequest())
+                                        <div class="bg-purple-50 p-4 rounded-2xl border border-purple-100">
+                                            <h4 class="text-[10px] font-black text-purple-700 uppercase mb-2">
+                                                {{ __('Cancellation Pending Approval') }}</h4>
+                                            <p class="text-[10px] text-purple-600 italic mb-4">
+                                                "{{ $order->cancellation_request_reason }}"</p>
 
-                                        @hasanyrole('admin|cs_leader')
-                                            <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
-                                                class="space-y-3">
-                                                @csrf
-                                                <input type="text" name="cancellation_reason"
-                                                    class="w-full bg-white border-purple-200 rounded-xl text-xs"
-                                                    placeholder="{{ __('Final manager approval note...') }}" />
-                                                <button type="submit"
-                                                    class="w-full bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-xl text-[10px] font-black uppercase transition shadow-md">
-                                                    {{ __('Confirm Cancellation') }}
-                                                </button>
-                                            </form>
-                                        @else
-                                            <div
-                                                class="py-2 px-4 bg-purple-100 rounded-xl text-[9px] font-black text-purple-400 uppercase text-center italic tracking-widest">
-                                                {{ __('Awaiting Manager Review') }}
-                                            </div>
-                                        @endhasanyrole
-                                    </div>
-                                @elseif(
-                                    $order->handler_id === auth()->id() ||
-                                        auth()->user()->hasAnyRole(['admin', 'cs_leader']))
-                                    <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
-                                        class="space-y-3">
-                                        @csrf
-                                        <div>
-                                            <input type="text" name="cancellation_reason" required
-                                                class="w-full bg-gray-50 border-gray-200 rounded-xl text-sm"
-                                                placeholder="{{ __('Reason for cancellation (min 5 chars)...') }}" />
-                                            <x-input-error :messages="$errors->get('cancellation_reason')" class="mt-1" />
-                                        </div>
-                                        <button type="submit"
-                                            class="w-full border-2 border-red-100 text-red-500 hover:bg-red-50 py-3 rounded-2xl text-[10px] font-black uppercase transition-all">
-                                            @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
-                                                {{ __('Request Order Cancellation') }}
+                                            @hasanyrole('admin|cs_leader')
+                                                <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                                    class="space-y-3">
+                                                    @csrf
+                                                    <input type="text" name="cancellation_reason"
+                                                        class="w-full bg-white border-purple-200 rounded-xl text-xs"
+                                                        placeholder="{{ __('Final manager approval note...') }}" />
+                                                    <button type="submit"
+                                                        class="w-full bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-xl text-[10px] font-black uppercase transition shadow-md">
+                                                        {{ __('Confirm Cancellation') }}
+                                                    </button>
+                                                </form>
                                             @else
-                                                {{ __('Cancel Order') }}
-                                            @endif
-                                        </button>
-                                    </form>
-                                @endif
-                            </div>
+                                                <div
+                                                    class="py-2 px-4 bg-purple-100 rounded-xl text-[9px] font-black text-purple-400 uppercase text-center italic tracking-widest">
+                                                    {{ __('Awaiting Manager Review') }}
+                                                </div>
+                                            @endhasanyrole
+                                        </div>
+                                    @elseif(
+                                        $order->handler_id === auth()->id() ||
+                                            auth()->user()->hasAnyRole(['admin', 'cs_leader']))
+                                        <form action="{{ route('office.orders.cancel', $order) }}" method="POST"
+                                            class="space-y-3"
+                                            onsubmit="return confirm('{{ __('Are you sure you want to cancel this order? This action is permanent.') }}');">
+                                            @csrf
+                                            <div>
+                                                <input type="text" name="cancellation_reason" required
+                                                    class="w-full bg-gray-50 border-gray-200 rounded-xl text-sm"
+                                                    placeholder="{{ __('Reason for cancellation (min 5 chars)...') }}" />
+                                                <x-input-error :messages="$errors->get('cancellation_reason')" class="mt-1" />
+                                            </div>
+                                            <button type="submit"
+                                                class="w-full border-2 border-red-100 text-red-500 hover:bg-red-50 py-3 rounded-2xl text-[10px] font-black uppercase transition-all">
+                                                @if ($order->status === 'approved' && auth()->user()->hasRole('cs_staff'))
+                                                    {{ __('Request Order Cancellation') }}
+                                                @else
+                                                    {{ __('Cancel Order') }}
+                                                @endif
+                                            </button>
+                                        </form>
+                                    @endif
+                                </div>
+                            @endif
                         </div>
                     @endif
 
                     {{-- 7. HANDOVER PROTOCOL [Backbone 5.d] --}}
-                    @if (auth()->user()->hasAnyRole(['admin', 'cs_leader']) || $order->handler_id === auth()->id())
+                    {{-- Updated Logic: Only show if NOT in_transit, delivered, or cancelled --}}
+                    @if (
+                        !in_array($order->status, ['in_transit', 'delivered', 'cancelled']) &&
+                            (auth()->user()->hasAnyRole(['admin', 'cs_leader']) ||
+                                $order->handler_id === auth()->id()))
+
                         <div class="bg-orange-50 p-8 rounded-[2.5rem] border border-orange-100 shadow-sm space-y-4">
                             <h3
                                 class="text-[10px] font-black uppercase text-orange-700 tracking-widest border-b border-orange-200/50 pb-2">
-                                {{ __('Handler Assignment') }}</h3>
+                                {{ __('Case Escalation / Handover') }}
+                            </h3>
+
+                            {{-- Double Confirmation Added to onsubmit --}}
                             <form action="{{ route('office.orders.handover', $order) }}" method="POST"
-                                class="space-y-4">
+                                class="space-y-4"
+                                onsubmit="return confirm('{{ __('Are you sure you want to TRANSFER this case? Once transferred, you will no longer be the assigned handler.') }}');">
                                 @csrf
                                 <select name="new_handler_id"
                                     class="w-full border-orange-200 rounded-xl text-xs font-bold focus:ring-orange-500 bg-white">
-                                    <option value="">{{ __('-- Transfer to Staff --') }}</option>
+                                    <option value="">{{ __('-- Select Leader or Staff --') }}</option>
                                     @foreach ($eligibleStaff as $staff)
                                         <option value="{{ $staff->id }}">{{ $staff->name }}
                                             ({{ str_replace('_', ' ', $staff->roles->first()->name) }})

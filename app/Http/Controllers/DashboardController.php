@@ -39,7 +39,7 @@ class DashboardController extends Controller
                 'Pending' => (clone $baseQuery)->where('status', 'pending')->count(),
                 'Approved' => (clone $baseQuery)->where('status', 'approved')->count(),
                 'In Transit' => (clone $baseQuery)->where('status', 'in_transit')->count(),
-                'Delivered' => (clone $baseQuery)->where('status', 'completed')->count(),
+                'Delivered' => (clone $baseQuery)->where('status', 'delivered')->count(),
                 'Cancelled' => (clone $baseQuery)->where('status', 'cancelled')->count(),
             ];
 

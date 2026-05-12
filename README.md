@@ -79,5 +79,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ## Update Details (v48)(zj)
 ** Solve:
-* Added the Delivered and Cancelled on All Order Status
-* Fixed CS that's only to add the user that's under Customer and only under the current user only.
+* Change the completed to delivered due to completed not detected the order status on order dashboard
+* Set double verify action to let user prevent mistake while order been update from in transit to delivered and approved to in_transit
+* Before in_transit, staff able to transfer ticket. After transit that's not able to transfer

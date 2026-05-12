@@ -33,7 +33,7 @@
                             'Pending' => 'pending',
                             'Approved' => 'approved',
                             'In Transit' => 'in_transit',
-                            'Delivered' => 'completed',
+                            'Delivered' => 'delivered',
                             'Cancelled' => 'cancelled',
                             default => '',
                         };
