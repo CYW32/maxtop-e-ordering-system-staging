@@ -77,8 +77,8 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v49)(zj)
+## Update Details (v50)(zj)
 ** Solve:
-* Change the completed to delivered due to completed not detected the order status on order dashboard
-* Set double verify action to let user prevent mistake while order been update from in transit to delivered and approved to in_transit
-* Before in_transit, staff able to transfer ticket. After transit that's not able to transfer
+* Added the Product category filter need add on catalog filters.
+* Added the notification alert on claiming queue.
+* Order claim notification added

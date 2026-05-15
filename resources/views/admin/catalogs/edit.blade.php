@@ -71,11 +71,31 @@
                                 <p class="text-xs text-gray-500">
                                     {{ __('Checked products will be visible to customers assigned to this catalog.') }}
                                 </p>
+
+                                <div class="flex items-center gap-2 mt-3">
+                                    <button type="button" id="tickAllBtn"
+                                        class="text-[10px] font-bold uppercase bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 transition shadow-sm">
+                                        {{ __('Tick All Visible') }}
+                                    </button>
+                                    <button type="button" id="untickAllBtn"
+                                        class="text-[10px] font-bold uppercase bg-gray-50 text-gray-600 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100 transition shadow-sm">
+                                        {{ __('Untick All Visible') }}
+                                    </button>
+                                </div>
                             </div>
 
-                            <div class="w-full md:w-1/2">
+                            <div class="w-full md:w-1/2 flex flex-col gap-2">
                                 <x-text-input id="itemSearch" type="text" class="w-full text-sm block"
                                     placeholder="🔍 Search SKU or Name..." />
+
+                                {{-- ADDED: Category Dropdown Filter --}}
+                                <select id="categoryFilter"
+                                    class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm font-bold uppercase">
+                                    <option value="">{{ __('All Categories') }}</option>
+                                    @foreach ($categories as $category)
+                                        <option value="{{ $category->id }}">{{ $category->name }}</option>
+                                    @endforeach
+                                </select>
                             </div>
                         </div>
 
@@ -88,7 +108,8 @@
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar"
                                 id="itemsContainer">
                                 @foreach ($items as $item)
-                                    <label
+                                    {{-- ADDED: data-category-id --}}
+                                    <label data-category-ids="{{ $item->categories->pluck('id')->implode(',') }}"
                                         class="searchable-item relative flex items-center p-4 border rounded-xl hover:bg-gray-50 transition shadow-sm cursor-pointer {{ in_array($item->id, $assignedItemIds) ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100' }}">
                                         <input name="items[]" value="{{ $item->id }}" type="checkbox"
                                             class="focus:ring-blue-500 h-5 w-5 text-blue-600 border-gray-300 rounded-lg mr-4"
@@ -97,8 +118,10 @@
                                             <div class="flex justify-between items-start">
                                                 <div class="text-xs font-black text-blue-700 uppercase">
                                                     {{ $item->sku }}</div>
+
+                                                {{-- AMEND HERE: Added 'hidden' class to hide the price --}}
                                                 <div
-                                                    class="text-[10px] font-mono text-gray-500 font-bold bg-white px-2 py-0.5 rounded shadow-sm border border-gray-100">
+                                                    class="hidden text-[10px] font-mono text-gray-500 font-bold bg-white px-2 py-0.5 rounded shadow-sm border border-gray-100">
                                                     RM {{ number_format($item->price, 2) }}</div>
                                             </div>
                                             <div class="text-sm font-bold text-gray-800 leading-tight mt-1">
@@ -145,14 +168,105 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const searchInput = document.getElementById('itemSearch');
+            const categoryFilter = document.getElementById('categoryFilter');
+            const tickAllBtn = document.getElementById('tickAllBtn');
+            const untickAllBtn = document.getElementById('untickAllBtn');
             const items = document.querySelectorAll('.searchable-item');
 
+            // 1. Filter Logic
+            function filterItems() {
+                const searchTerm = searchInput ? searchInput.value.toLowerCase() : '';
+                const selectedCategory = categoryFilter ? categoryFilter.value : '';
+
+                items.forEach(item => {
+                    const textContent = item.textContent.toLowerCase();
+                    // Split the comma separated string into an array
+                    const itemCategoryIds = item.getAttribute('data-category-ids').split(',');
+
+                    const matchesSearch = textContent.includes(searchTerm);
+                    // Check if the array includes the selected category
+                    const matchesCategory = selectedCategory === '' || itemCategoryIds.includes(
+                        selectedCategory);
+
+                    item.style.display = (matchesSearch && matchesCategory) ? '' : 'none';
+                });
+            }
+
             if (searchInput) {
-                searchInput.addEventListener('input', function(e) {
-                    const searchTerm = e.target.value.toLowerCase();
+                searchInput.addEventListener('input', filterItems);
+            }
+            if (categoryFilter) {
+                categoryFilter.addEventListener('change', filterItems);
+            }
+
+            // 2. Auto-Tick All Logic when Category is Selected
+            if (categoryFilter) {
+                categoryFilter.addEventListener('change', function() {
+                    const selectedCategory = this.value;
+
+                    if (selectedCategory !== '') {
+                        items.forEach(item => {
+                            // Split the comma separated string into an array
+                            const itemCategoryIds = item.getAttribute('data-category-ids').split(
+                                ',');
+                            const checkbox = item.querySelector('input[type="checkbox"]');
+
+                            // Check if the array includes the selected category
+                            if (itemCategoryIds.includes(selectedCategory) && checkbox) {
+                                checkbox.checked = true;
+                                item.classList.add('bg-blue-50', 'border-blue-200');
+                                item.classList.remove('bg-white', 'border-gray-100');
+                            }
+                        });
+                    }
+                });
+            }
+
+            // 3. Keep visual styling updated if user manually clicks a checkbox
+            items.forEach(item => {
+                const checkbox = item.querySelector('input[type="checkbox"]');
+                if (checkbox) {
+                    checkbox.addEventListener('change', function() {
+                        if (this.checked) {
+                            item.classList.add('bg-blue-50', 'border-blue-200');
+                            item.classList.remove('bg-white', 'border-gray-100');
+                        } else {
+                            item.classList.remove('bg-blue-50', 'border-blue-200');
+                            item.classList.add('bg-white', 'border-gray-100');
+                        }
+                    });
+                }
+            });
+
+            // 4. Tick / Untick All Visible Logic
+            if (tickAllBtn) {
+                tickAllBtn.addEventListener('click', function() {
                     items.forEach(item => {
-                        const textContent = item.textContent.toLowerCase();
-                        item.style.display = textContent.includes(searchTerm) ? '' : 'none';
+                        // Only interact with items that are currently visible (filtered)
+                        if (item.style.display !== 'none') {
+                            const checkbox = item.querySelector('input[type="checkbox"]');
+                            if (checkbox && !checkbox.checked) {
+                                checkbox.checked = true;
+                                item.classList.add('bg-blue-50', 'border-blue-200');
+                                item.classList.remove('bg-white', 'border-gray-100');
+                            }
+                        }
+                    });
+                });
+            }
+
+            if (untickAllBtn) {
+                untickAllBtn.addEventListener('click', function() {
+                    items.forEach(item => {
+                        // Only interact with items that are currently visible (filtered)
+                        if (item.style.display !== 'none') {
+                            const checkbox = item.querySelector('input[type="checkbox"]');
+                            if (checkbox && checkbox.checked) {
+                                checkbox.checked = false;
+                                item.classList.remove('bg-blue-50', 'border-blue-200');
+                                item.classList.add('bg-white', 'border-gray-100');
+                            }
+                        }
                     });
                 });
             }

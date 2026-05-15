@@ -8,6 +8,45 @@
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
 
+            {{-- Flash Messages --}}
+            @if (session('success'))
+                <div x-data="{ show: true }" x-show="show"
+                    class="mb-6 bg-green-50 border border-green-200 text-green-700 px-6 py-4 rounded-2xl shadow-sm flex items-center justify-between transition-all">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-6 h-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span class="text-sm font-bold">{{ session('success') }}</span>
+                    </div>
+                    <button @click="show = false" class="text-green-500 hover:text-green-700 transition">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            @endif
+
+            @if (session('error'))
+                <div x-data="{ show: true }" x-show="show"
+                    class="mb-6 bg-red-50 border border-red-200 text-red-700 px-6 py-4 rounded-2xl shadow-sm flex items-center justify-between transition-all">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span class="text-sm font-bold">{{ session('error') }}</span>
+                    </div>
+                    <button @click="show = false" class="text-red-500 hover:text-red-700 transition">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            @endif
+
             @hasanyrole('admin|cs_leader')
                 {{-- Dashboard View Toggle for Leadership --}}
                 <div class="mb-6 flex justify-end">
@@ -78,13 +117,30 @@
 
                         {{-- Claiming Queue: Fulfills Section 5.b --}}
                         <a href="{{ route('office.orders.queue') }}"
-                            class="flex items-center justify-center bg-orange-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 transition shadow-sm">
+                            class="relative flex items-center justify-center bg-orange-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 transition shadow-lg shadow-orange-900/20">
                             {{ __('Claiming Queue') }}
+
+                            @php
+                                $queueCount = \App\Models\Order::where('status', 'pending')
+                                    ->whereNull('handler_id')
+                                    ->whereHas('user', function ($q) {
+                                        $q->whereNull('assigned_cs_id');
+                                    })
+                                    ->count();
+                            @endphp
+
+                            {{-- AMENDED: Added @if check so it ONLY shows if count is greater than 0 --}}
+                            @if ($queueCount > 0)
+                                <span
+                                    class="absolute -top-2 -right-2 bg-white text-orange-600 w-5 h-5 rounded-full flex items-center justify-center text-[9px] border-2 border-orange-600 shadow-sm animate-bounce">
+                                    {{ $queueCount }}
+                                </span>
+                            @endif
                         </a>
 
                         {{-- My Claimed Orders: Fulfills Section 5.c --}}
                         <a href="{{ route('office.orders.history') }}"
-                            class="flex items-center justify-center bg-gray-800 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-gray-900 transition shadow-sm">
+                            class="flex items-center justify-center bg-gray-800 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-gray-900 transition shadow-lg shadow-gray-900/20">
                             {{ __('My Claimed Orders') }}
                         </a>
 

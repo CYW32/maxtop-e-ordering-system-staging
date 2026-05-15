@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Catalog;
 use App\Models\Item;
+use App\Models\Category;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 
@@ -41,7 +42,7 @@ class CatalogController extends Controller
 
     public function create()
     {
-        if (! auth()->user()->can('view_catalogs') || ! auth()->user()->can('create_catalogs')) {
+        if (!auth()->user()->can('view_catalogs') || !auth()->user()->can('create_catalogs')) {
             abort(403);
         }
 
@@ -52,9 +53,7 @@ class CatalogController extends Controller
 
     public function store(Request $request)
     {
-        if (! auth()->user()->can('view_catalogs') ||
-            ! auth()->user()->can('create_catalogs') ||
-            ! auth()->user()->can('edit_catalogs')) {
+        if (!auth()->user()->can('view_catalogs') || !auth()->user()->can('create_catalogs') || !auth()->user()->can('edit_catalogs')) {
             abort(403);
         }
 
@@ -65,7 +64,7 @@ class CatalogController extends Controller
         ]);
 
         $catalog = Catalog::create([
-            'name' => $validated['name']
+            'name' => $validated['name'],
         ]);
 
         if ($request->has('items')) {
@@ -80,26 +79,27 @@ class CatalogController extends Controller
 
     public function edit(Catalog $catalog)
     {
-        if (! auth()->user()->can('view_catalogs') ||
-            ! auth()->user()->can('create_catalogs') ||
-            ! auth()->user()->can('edit_catalogs')) {
+        if (!auth()->user()->can('view_catalogs') || !auth()->user()->can('create_catalogs') || !auth()->user()->can('edit_catalogs')) {
             abort(403);
         }
 
-        $items = Item::orderBy('name')->get();
+        // AMEND HERE: Load item categories and fetch all categories
+        $items = Item::with('categories')->orderBy('name')->get();
+        $categories = Category::orderBy('name')->get();
         $assignedItemIds = $catalog->items()->pluck('items.id')->toArray();
 
-        return view('admin.catalogs.edit', compact('catalog', 'items', 'assignedItemIds'));
+        // AMEND HERE: Pass $categories to the view
+        return view('admin.catalogs.edit', compact('catalog', 'items', 'categories', 'assignedItemIds'));
     }
 
     public function update(Request $request, Catalog $catalog)
     {
-        if (! auth()->user()->can('view_catalogs') || ! auth()->user()->can('create_catalogs') || ! auth()->user()->can('edit_catalogs')) {
+        if (!auth()->user()->can('view_catalogs') || !auth()->user()->can('create_catalogs') || !auth()->user()->can('edit_catalogs')) {
             abort(403);
         }
 
         $validated = $request->validate([
-            'name' => 'required|string|max:255|unique:catalogs,name,'.$catalog->id,
+            'name' => 'required|string|max:255|unique:catalogs,name,' . $catalog->id,
             'items' => 'nullable|array',
             'items.*' => 'exists:items,id',
             'status' => 'sometimes|in:active,inactive', // SQL ERROR FIXED HERE
@@ -124,13 +124,15 @@ class CatalogController extends Controller
     {
         Gate::authorize('edit_catalogs');
 
-        if (! $catalog->canBeDeleted()) {
-            return redirect()->back()->with('error', "Cannot delete Catalog ({$catalog->name}) while customers are assigned to it.");
+        if (!$catalog->canBeDeleted()) {
+            return redirect()
+                ->back()
+                ->with('error', "Cannot delete Catalog ({$catalog->name}) while customers are assigned to it.");
         }
 
         // Store the name before deleting so we can use it in the success message
         $catalogName = $catalog->name;
-        
+
         $catalog->delete();
 
         // DYNAMIC NOTIFICATION ADDED

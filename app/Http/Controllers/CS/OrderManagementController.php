@@ -177,16 +177,34 @@ class OrderManagementController extends Controller
 
             // 2. Fulfills Section 5.a Cluster Logic:
             $customer = $order->user;
-            $hq = $customer->parent_id ? $customer->parent : $customer;
 
-            if (is_null($hq->assigned_cs_id)) {
-                $hq->update(['assigned_cs_id' => auth()->id()]);
-                $hq->branches()->update(['assigned_cs_id' => auth()->id()]);
+            // Assign the individual customer who made the order
+            if (is_null($customer->assigned_cs_id)) {
+                $customer->update(['assigned_cs_id' => auth()->id()]);
+            }
+
+            // If the customer belongs to a company, assign the CS to ALL users in that HQ's cluster
+            if ($customer->company) {
+                $company = $customer->company;
+                $hq = $company->parent_id ? $company->parent : $company;
+
+                // Get all company IDs in this cluster (HQ + Branches)
+                $clusterCompanyIds = array_merge([$hq->id], $hq->branches()->pluck('id')->toArray());
+
+                // Update all users who belong to any company in this cluster and don't have an assigned CS yet
+                \App\Models\User::whereIn('company_id', $clusterCompanyIds)
+                    ->whereNull('assigned_cs_id')
+                    ->update(['assigned_cs_id' => auth()->id()]);
 
                 activity('user_assignment')
                     ->performedOn($hq)
                     ->causedBy(auth()->user())
-                    ->log("Entire HQ Cluster ({$hq->name} and branches) assigned to CS: " . auth()->user()->name);
+                    ->log("Entire HQ Cluster ({$hq->company_name} and branches) users assigned to CS: " . auth()->user()->name);
+            } else {
+                activity('user_assignment')
+                    ->performedOn($customer)
+                    ->causedBy(auth()->user())
+                    ->log("Customer ({$customer->name}) assigned to CS: " . auth()->user()->name);
             }
         });
 
@@ -195,7 +213,10 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        return redirect()->back()->with('success', 'Order claimed. You are now the assigned representative for this entire customer hierarchy.');
+        // Redirects to dashboard with the specific order number notification
+        return redirect()
+            ->route('dashboard')
+            ->with('success', "Order ({$order->order_number}) has been claimed.");
     }
 
     /**
