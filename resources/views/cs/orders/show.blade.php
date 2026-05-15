@@ -85,10 +85,8 @@
                             <thead class="bg-gray-50/50">
                                 <tr class="text-[9px] font-black text-gray-400 uppercase tracking-widest">
                                     <th class="px-10 py-6 text-left">{{ __('Product Entity') }}</th>
-                                    {{-- ARCHITECTURE FIX: Correct Packaging Unit Data Header --}}
                                     <th class="px-6 py-6 text-center">{{ __('Packaging Unit (UOM)') }}</th>
                                     <th class="px-10 py-6 text-right">{{ __('Ordered Qty') }}</th>
-                                    {{-- REMOVED: Unit Price column as requested --}}
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-50">
@@ -96,7 +94,6 @@
                                     <tr class="hover:bg-gray-50/30 transition-colors">
                                         <td class="px-10 py-6">
                                             <div class="flex flex-col">
-                                                {{-- Backbone 6.b: Prioritizing Snapshot Name --}}
                                                 <span
                                                     class="text-[11px] font-black text-gray-800 uppercase tracking-tight">
                                                     {{ $item->snapshot_name ?? $item->item->name }}
@@ -108,7 +105,6 @@
                                             </div>
                                         </td>
                                         <td class="px-6 py-6 text-center">
-                                            {{-- ARCHITECTURE FIX: Fetch Snapshot Packaging Unit [Backbone 6.b, 67] --}}
                                             <span
                                                 class="px-4 py-2 bg-gray-50 rounded-xl text-[10px] font-black text-gray-600 uppercase border border-gray-100">
                                                 {{ $item->snapshot_uom_name ?? ($item->uom->uom_name ?? __('UNIT')) }}
@@ -121,7 +117,6 @@
                                         </td>
                                     </tr>
                                 @empty
-                                    {{-- ARCHITECTURE STANDARD: Professional Empty State --}}
                                     <tr>
                                         <td colspan="3" class="px-10 py-20 text-center">
                                             <p
@@ -132,8 +127,6 @@
                                     </tr>
                                 @endforelse
                             </tbody>
-
-                            {{-- ARCHITECTURE FIX: Logistical Summary Footer --}}
                             <tfoot class="bg-gray-50/30">
                                 <tr class="border-t-2 border-gray-100">
                                     <td colspan="2" class="px-10 py-8 text-right">
@@ -191,7 +184,6 @@
                     </div>
 
                     {{-- 4. PRIVILEGED AUDIT TRAIL [Internal Order Audit Protocol] --}}
-                    {{-- 5. REFACTORED: PRIVILEGED AUDIT TRAIL [Backbone 33.a, 31.f.2] --}}
                     @hasanyrole('admin|cs_leader')
                         <div class="bg-white overflow-hidden shadow-sm sm:rounded-[2.5rem] border border-gray-100">
                             <div class="p-8 border-b border-gray-50 flex items-center gap-2">
@@ -221,7 +213,6 @@
                                                 class="text-[9px] font-black text-gray-400 uppercase">{{ $history->created_at->format('d M Y, H:i') }}</span>
                                         </div>
 
-                                        {{-- ARCHITECTURE FIX: Cancellation Reason Injection in Audit Trail --}}
                                         @if ($history->status === 'cancellation_requested' && $order->cancellation_request_reason)
                                             <div class="mt-2 p-3 bg-purple-100/50 rounded-xl border border-purple-100">
                                                 <p
@@ -314,19 +305,19 @@
                                 </form>
                             @endif
 
-                            {{-- APPROVAL [Backbone 4.c] --}}
+                            {{-- APPROVAL & SNAPSHOT [Backbone 4.c] --}}
                             @if ($order->status === 'pending' && $order->handler_id === auth()->id())
                                 <form action="{{ route('office.orders.approve', $order) }}" method="POST"
                                     onsubmit="return confirm('{{ __('Are you sure? This will freeze item names and packaging rates for B2B historical accuracy.') }}');">
                                     @csrf
                                     <button type="submit"
-                                        class="w-full bg-green-600 hover:bg-green-700 text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-green-900/40">
-                                        {{ __('Approve & Snapshot') }}
+                                        class="w-full bg-green-600 hover:bg-green-700 text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-green-900/40 flex items-center justify-center gap-2">
+                                        <span>{{ __('Approve & Snapshot') }}</span>
                                     </button>
                                 </form>
                             @endif
 
-                            {{-- DISPATCH [Backbone 4.d] --}}
+                            {{-- DISPATCH / MARK IN TRANSIT [Backbone 4.d] --}}
                             @if ($order->status === 'approved' && $order->handler_id === auth()->id())
                                 <form action="{{ route('office.orders.updateStatus', $order) }}" method="POST"
                                     class="space-y-4"
@@ -334,7 +325,6 @@
                                     @csrf
                                     @method('PUT')
                                     <input type="hidden" name="status" value="in_transit">
-
                                     <div>
                                         <label
                                             class="text-[9px] font-black text-gray-500 uppercase block mb-2">{{ __('Logistics Provider') }}</label>
@@ -349,10 +339,8 @@
                                             class="w-full bg-gray-50 border-gray-200 rounded-xl text-sm"
                                             placeholder="e.g. TRK990122">
                                     </div>
-
                                     <button type="submit"
                                         class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-3">
-                                        {{-- Truck Icon to match your image --}}
                                         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
                                             stroke="currentColor" stroke-width="2.5">
                                             <path stroke-linecap="round" stroke-linejoin="round"
@@ -374,7 +362,6 @@
 
                                     <button type="submit"
                                         class="w-full bg-gray-800 hover:bg-black text-white py-4 rounded-2xl text-xs font-black uppercase transition-all shadow-lg shadow-gray-200 flex items-center justify-center gap-3">
-                                        {{-- Delivery Completion Icon --}}
                                         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24"
                                             stroke="currentColor" stroke-width="2.5">
                                             <path stroke-linecap="round" stroke-linejoin="round"
@@ -456,7 +443,6 @@
                                 {{ __('Case Escalation / Handover') }}
                             </h3>
 
-                            {{-- Double Confirmation Added to onsubmit --}}
                             <form action="{{ route('office.orders.handover', $order) }}" method="POST"
                                 class="space-y-4"
                                 onsubmit="return confirm('{{ __('Are you sure you want to TRANSFER this case? Once transferred, you will no longer be the assigned handler.') }}');">
