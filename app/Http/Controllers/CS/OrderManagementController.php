@@ -10,15 +10,9 @@ use Illuminate\Support\Facades\DB;
 
 class OrderManagementController extends Controller
 {
-    /**
-     * Fulfills Section 5.a: On-going Orders
-     * Displays orders assigned to me or currently handled by me that are in active transit states.
-     */
     public function index(Request $request)
     {
         $user = auth()->user();
-
-        // ARCHITECTURE FIX: Define statuses for the dropdown requested by Blade
         $status = ['pending', 'approved', 'in_transit', 'delivered', 'cancelled'];
 
         $query = Order::whereIn('status', $status)->where(function ($query) use ($user) {
@@ -29,7 +23,6 @@ class OrderManagementController extends Controller
             });
         });
 
-        // Apply Dynamic Search
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
@@ -37,21 +30,15 @@ class OrderManagementController extends Controller
             });
         }
 
-        // ARCHITECTURE FIX: Apply the Status Filter from the dynamic dropdown
         if ($request->filled('status') && in_array($request->status, $status)) {
             $query->where('status', $request->status);
         }
 
-        // Finalize with Pagination and Query String Persistence
         $myOrders = $query->latest()->paginate(15)->withQueryString();
 
         return view('cs.orders.index', compact('myOrders', 'status'));
     }
 
-    /**
-     * Fulfills Section 5.b: Claiming Queue (Unassigned Orders)
-     * Displays orders from customers who have NO assigned CS Staff.
-     */
     public function queue(Request $request)
     {
         $query = Order::where('status', 'pending')
@@ -60,7 +47,6 @@ class OrderManagementController extends Controller
                 $q->whereNull('assigned_cs_id');
             });
 
-        // ARCHITECTURE FIX: Enable search by Order # or Customer Name
         if ($request->filled('search')) {
             $term = $request->search;
             $query->where(function ($q) use ($term) {
@@ -73,74 +59,47 @@ class OrderManagementController extends Controller
         return view('cs.orders.queue', compact('unassigned'));
     }
 
-    /**
-     * Fulfills Section 5: Handler Visibility & Handover Context
-     */
     public function show(Order $order)
     {
-        /**
-         * ARCHITECTURE FIX: Eager load relationships.
-         * Added 'statusHistory.changer' to support the view's audit trail without N+1 queries [2].
-         */
         $order->load(['items.item', 'items.uom', 'user.company', 'handler', 'statusHistory.changer']);
-
-        /**
-         * PRAGMATIC FIX: Resolve 'Undefined variable $placeOrderDate' Error.
-         * As requested, mapping this to the record's creation timestamp [1].
-         */
         $placeOrderDate = $order->created_at;
-
         $currentUser = auth()->user();
 
-        // 1. DEFINE TARGET ROLES FOR HANDOVER [Backbone 25]
-        // Default: Admins and Leaders can transfer authority to any CS role.
         $targetRoles = ['admin', 'cs_leader', 'cs_staff'];
 
-        /**
-         * 2. RESTRICTION: CS Staff Escalation Path [Backbone 32.d.2]
-         * If the user is strictly CS Staff, they can ONLY hand over to a CS Leader.
-         */
         if ($currentUser->hasRole('cs_staff') && !$currentUser->hasAnyRole(['admin', 'cs_leader'])) {
             $targetRoles = ['cs_leader'];
         }
 
         $staffQuery = User::role($targetRoles)->where('status', 'active');
 
-        /**
-         * 3. OWNERSHIP GUARD [Backbone 32.c]
-         * Exclude the *current handler* from the list to prevent lateral assignment loops.
-         */
         if ($order->handler_id) {
             $staffQuery->where('id', '!=', $order->handler_id);
         }
 
         $eligibleStaff = $staffQuery->orderBy('name')->get();
 
-        /**
-         * 4. PASS DATA TO VIEW
-         * Including $placeOrderDate ensures the header template can render without failure [3].
-         */
         return view('cs.orders.show', compact('order', 'eligibleStaff', 'placeOrderDate'));
     }
 
-    /**
-     * Fulfills Section 5: Handover Protocol (CS A to CS B)
-     */
     public function handover(Request $request, Order $order)
     {
         $request->validate([
             'new_handler_id' => 'required|exists:users,id',
+            'handover_reason' => 'required|string|max:500',
         ]);
 
-        // NEW RULE: Prevent handover if order is already shipped or delivered
         if (in_array($order->status, ['in_transit', 'delivered', 'cancelled'])) {
             return redirect()->back()->with('error', 'Orders that are already In Transit or Delivered cannot be transferred.');
+        }
+
+        if ($order->handler_id == $request->new_handler_id) {
+            return redirect()->back()->with('error', 'Action Denied: You cannot transfer this order to the staff member who is already currently handling it.');
         }
 
         $oldHandlerName = $order->handler->name ?? 'Unassigned';
         $newHandler = User::findOrFail($request->new_handler_id);
 
-        // Security: Only the current handler or a Leader/Admin can initiate handover
         if (
             $order->handler_id !== auth()->id() &&
             !auth()
@@ -150,21 +109,20 @@ class OrderManagementController extends Controller
             abort(403, 'Unauthorized handover attempt.');
         }
 
+        $order->status_change_reason = "Transferred to {$newHandler->name}. Reason: " . $request->handover_reason;
+
         $order->update(['handler_id' => $newHandler->id]);
 
         activity('order')
             ->performedOn($order)
             ->causedBy(auth()->user())
-            ->log("Order handed over from {$oldHandlerName} to {$newHandler->name}");
+            ->log("Order handed over from {$oldHandlerName} to {$newHandler->name}. Reason: {$request->handover_reason}");
 
         return redirect()
             ->back()
             ->with('success', "Order handed over to {$newHandler->name}.");
     }
 
-    /**
-     * Fulfills Ownership Logic and Section 5.a Permanent Cluster Assignment
-     */
     public function claim(Order $order)
     {
         if ($order->handler_id) {
@@ -172,27 +130,19 @@ class OrderManagementController extends Controller
         }
 
         DB::transaction(function () use ($order) {
-            // 1. Claim the specific order
             $order->update(['handler_id' => auth()->id()]);
-
-            // 2. Fulfills Section 5.a Cluster Logic:
             $customer = $order->user;
 
-            // Assign the individual customer who made the order
             if (is_null($customer->assigned_cs_id)) {
                 $customer->update(['assigned_cs_id' => auth()->id()]);
             }
 
-            // If the customer belongs to a company, assign the CS to ALL users in that HQ's cluster
             if ($customer->company) {
                 $company = $customer->company;
                 $hq = $company->parent_id ? $company->parent : $company;
-
-                // Get all company IDs in this cluster (HQ + Branches)
                 $clusterCompanyIds = array_merge([$hq->id], $hq->branches()->pluck('id')->toArray());
 
-                // Update all users who belong to any company in this cluster and don't have an assigned CS yet
-                \App\Models\User::whereIn('company_id', $clusterCompanyIds)
+                User::whereIn('company_id', $clusterCompanyIds)
                     ->whereNull('assigned_cs_id')
                     ->update(['assigned_cs_id' => auth()->id()]);
 
@@ -213,15 +163,11 @@ class OrderManagementController extends Controller
             ->causedBy(auth()->user())
             ->log('Order claimed by CS Staff');
 
-        // Redirects to dashboard with the specific order number notification
         return redirect()
             ->route('dashboard')
             ->with('success', "Order ({$order->order_number}) has been claimed.");
     }
 
-    /**
-     * Fulfills Addendum 5.a: UOM Snapshot during Approval
-     */
     public function approve(Order $order)
     {
         $this->authorizeAction($order);
@@ -243,9 +189,6 @@ class OrderManagementController extends Controller
         return redirect()->back()->with('success', 'Order approved and Pure UOM prices snapshotted.');
     }
 
-    /**
-     * Fulfills Addendum 4.b: Filtered list for Leaders to approve cancellations.
-     */
     public function cancellationRequests(Request $request)
     {
         $query = Order::where('status', 'cancellation_requested')->with(['user.company', 'handler', 'cancellationRequester']);
@@ -262,21 +205,20 @@ class OrderManagementController extends Controller
         return view('cs.orders.cancellations', compact('requests'));
     }
 
-    /**
-     * Fulfills Addendum 4.a & 4.b: Strict Role-Based Cancellation.
-     */
+    // 🚀 这里就是之前重复了的 cancel 方法，现在只有一个了！
     public function cancel(\App\Http\Requests\CS\CancelOrderRequest $request, Order $order)
     {
         $user = auth()->user();
         $this->authorizeAction($order);
 
-        // NEW SECURITY RULE: Block cancellation for Shipped or Delivered orders
         if (in_array($order->status, ['in_transit', 'delivered'])) {
             return redirect()->back()->with('error', 'Operation Denied: Orders that are already in transit or delivered cannot be cancelled.');
         }
 
-        // LOGIC FIX: Handle Approved Order -> Request Transition
+        // 1. CS Staff 请求取消
         if ($order->status === 'approved' && $user->hasRole('cs_staff')) {
+            $order->status_change_reason = $request->cancellation_reason;
+
             $order->update([
                 'status' => 'cancellation_requested',
                 'cancellation_requested_by' => $user->id,
@@ -286,12 +228,29 @@ class OrderManagementController extends Controller
             return redirect()->route('office.orders.show', $order)->with('success', 'Cancellation request submitted for manager approval.');
         }
 
-        // SECURITY FIX: Explicitly block CS Staff from finalizing cancellations
         if ($order->status === 'cancellation_requested' && $user->hasRole('cs_staff')) {
             abort(403, 'Unauthorized: CS Staff cannot finalize cancellation requests.');
         }
 
-        // Only Admin/Leader reaches here to finalize
+        // 智能拼接原因：如果没写原因就不显示 Note 前缀
+        $managerNote = $request->filled('cancellation_reason') ? ' Note: ' . $request->cancellation_reason : '';
+
+        // 2. 经理驳回 (Reject)
+        if ($request->input('action') === 'reject') {
+            $order->status_change_reason = 'Cancellation Denied.' . $managerNote;
+
+            $order->update([
+                'status' => 'approved',
+                'cancellation_requested_by' => null,
+                'cancellation_request_reason' => null,
+            ]);
+
+            return redirect()->route('office.orders.show', $order)->with('success', 'Request rejected. Order reverted back to Approved status.');
+        }
+
+        // 3. 经理批准 (Approve)
+        $order->status_change_reason = 'Cancellation Approved.' . $managerNote;
+
         $order->update([
             'status' => 'cancelled',
             'cancellation_reason' => $request->cancellation_reason ?? $order->cancellation_request_reason,
@@ -301,9 +260,6 @@ class OrderManagementController extends Controller
         return redirect()->route('office.orders.index')->with('success', 'Order has been permanently cancelled.');
     }
 
-    /**
-     * Fulfills Section 4.4 & 6: In Transit Status & Internal Notes
-     */
     public function updateStatus(Request $request, Order $order)
     {
         if (
@@ -322,19 +278,79 @@ class OrderManagementController extends Controller
             'logistics_carrier' => 'required_if:status,in_transit|nullable|string',
         ]);
 
-        $order->update($validated);
+        $updateData = ['status' => $request->status];
+
+        if ($request->has('tracking_number')) {
+            $updateData['tracking_number'] = $request->tracking_number;
+        }
+        if ($request->has('logistics_carrier')) {
+            $updateData['logistics_carrier'] = $request->logistics_carrier;
+        }
+
+        if ($request->filled('internal_notes')) {
+            if (!in_array($order->status, ['pending', 'approved'])) {
+                return redirect()->back()->with('error', 'Cannot add remarks once the order has passed the approved stage.');
+            }
+
+            $rawNotes = $order->internal_notes;
+            $currentNotes = [];
+
+            if (!empty($rawNotes)) {
+                $decoded = json_decode($rawNotes, true);
+                if (is_string($decoded)) {
+                    $decoded = json_decode($decoded, true);
+                }
+
+                if (is_array($decoded)) {
+                    $currentNotes = $decoded;
+                } else {
+                    $currentNotes = [
+                        [
+                            'user' => 'Legacy Record',
+                            'role' => 'System',
+                            'note' => $rawNotes,
+                            'time' => $order->updated_at->format('d M Y | H:i'),
+                        ],
+                    ];
+                }
+            }
+
+            $cleaned = [];
+            foreach ($currentNotes as $note) {
+                if (($note['user'] === 'Legacy Record' || $note['user'] === 'Previous Record') && is_string($note['note'])) {
+                    $trimNote = trim($note['note']);
+                    if (str_starts_with($trimNote, '[') && str_ends_with($trimNote, ']')) {
+                        $parsedNested = json_decode($trimNote, true);
+                        if (is_array($parsedNested)) {
+                            $cleaned = array_merge($cleaned, $parsedNested);
+                            continue;
+                        }
+                    }
+                }
+                $cleaned[] = $note;
+            }
+            $currentNotes = $cleaned;
+
+            $currentNotes[] = [
+                'user' => auth()->user()->name,
+                'role' => auth()->user()->roles->first()->name ?? 'Staff',
+                'note' => $request->internal_notes,
+                'time' => now()->format('d M Y | H:i'),
+            ];
+
+            $updateData['internal_notes'] = json_encode($currentNotes);
+        }
+
+        $order->update($updateData);
 
         activity('order')
             ->performedOn($order)
             ->causedBy(auth()->user())
             ->log("Order updated (Status: {$request->status})");
 
-        return redirect()->back()->with('success', 'Internal notes updated successfully.');
+        return redirect()->back()->with('success', 'Order update processed successfully.');
     }
 
-    /**
-     * Fulfills Section 5.c: My Claimed Orders (Master List)
-     */
     public function history(Request $request)
     {
         $user = auth()->user();
@@ -358,9 +374,6 @@ class OrderManagementController extends Controller
         return view('cs.orders.history', compact('history', 'status'));
     }
 
-    /**
-     * Fulfills Section 5.d Handover Protocol & Ownership Logic.
-     */
     private function authorizeAction(Order $order): void
     {
         $user = auth()->user();
@@ -374,9 +387,6 @@ class OrderManagementController extends Controller
         }
     }
 
-    /**
-     * Fulfills Leadership Oversight Requirement.
-     */
     public function allOrders(Request $request)
     {
         if (
@@ -407,36 +417,19 @@ class OrderManagementController extends Controller
         return view('cs.orders.all', compact('allOrders', 'status'));
     }
 
-    /**
-     * STREAM the Order PDF (View in browser tab).
-     */
     public function pdf(\App\Models\Order $order)
     {
         $order->load(['user.company', 'items.item', 'items.uom']);
-
-        // Bulletproof Way: Prevents Facade Class Not Found Error
         $pdf = app('dompdf.wrapper')->loadView('cs.orders.pdf', compact('order'));
-
-        // Requested filename change
         $filename = 'Stock_Order_' . $order->order_number . '.pdf';
-
-        // Use stream() to just "view only" in the browser tab
         return $pdf->stream($filename);
     }
 
-    /**
-     * Generate and DOWNLOAD the Stock Order PDF.
-     */
     public function stockOrder(\App\Models\Order $order)
     {
         $order->load(['user.company', 'items.item', 'items.uom']);
-
-        // Bulletproof Way: Prevents Facade Class Not Found Error
         $pdf = app('dompdf.wrapper')->loadView('cs.orders.stock-order', compact('order'));
-
         $filename = 'Stock_Order_' . $order->order_number . '.pdf';
-
-        // Use download() to force the file to save to the user's PC
         return $pdf->download($filename);
     }
 }

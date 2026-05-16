@@ -66,10 +66,6 @@ Route::middleware(['auth'])->group(function () {
             });
         });
 
-    // MY CUSTOMER
-    Route::get('/my-customers', [UserController::class, 'assignedIndex'])
-        ->middleware('permission:view_assigned_customers')
-        ->name('users.assigned');
 
     // SYSTEM SETTINGS (Strict Admin Only)
     /**

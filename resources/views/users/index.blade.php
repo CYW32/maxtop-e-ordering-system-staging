@@ -60,10 +60,27 @@
                 </div>
             @endcan
 
+            {{-- Dynamic Scope Toggles (Only visible to users authorized to see both scopes) --}}
+            @if ($canSwitchScope)
+                <div class="flex items-center gap-2 border-b border-gray-100 pb-2 mb-4">
+                    <a href="{{ route('users.index', array_merge(request()->query(), ['scope' => 'all'])) }}"
+                        class="px-5 py-2.5 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all {{ $currentScope === 'all' ? 'bg-gray-900 text-white shadow-md' : 'bg-white text-gray-500 hover:text-gray-900 border border-gray-100 shadow-sm' }}">
+                        {{ __('All System Logins') }}
+                    </a>
+                    <a href="{{ route('users.index', array_merge(request()->query(), ['scope' => 'assigned'])) }}"
+                        class="px-5 py-2.5 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all {{ $currentScope === 'assigned' ? 'bg-gray-900 text-white shadow-md' : 'bg-white text-gray-500 hover:text-gray-900 border border-gray-100 shadow-sm' }}">
+                        {{ __('My Assigned Customers') }}
+                    </a>
+                </div>
+            @endif
+
             {{-- 2. SEARCH TOOLBAR (MIDDLE) --}}
             <div class="bg-white p-4 md:p-6 rounded-[2rem] border border-gray-100 shadow-sm mb-6"
                 x-data="{ showFilters: {{ request()->hasAny(['role', 'status']) ? 'true' : 'false' }} }">
                 <form method="GET" action="{{ route('users.index') }}" class="flex flex-col gap-4">
+
+                    {{-- Preserve Scope State --}}
+                    <input type="hidden" name="scope" value="{{ request('scope', $currentScope) }}">
 
                     {{-- Top Row: Text Search & Main Actions --}}
                     <div class="flex flex-col md:flex-row items-center gap-3 w-full">
@@ -97,7 +114,7 @@
                             </button>
 
                             @if (request()->hasAny(['search', 'role', 'status']))
-                                <a href="{{ route('users.index') }}"
+                                <a href="{{ route('users.index', ['scope' => $currentScope]) }}"
                                     class="flex items-center justify-center bg-gray-50 hover:bg-red-50 text-gray-400 hover:text-red-500 px-4 py-3 rounded-2xl transition-all shadow-sm border border-gray-200 hover:border-red-200"
                                     title="{{ __('Clear All Filters') }}">
                                     <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -247,7 +264,6 @@
                     </table>
                 </div>
 
-                {{-- Pagination: Preserves search/filter state --}}
                 @if ($users->hasPages())
                     <div class="p-6 bg-gray-50 border-t border-gray-100">
                         {{ $users->links() }}

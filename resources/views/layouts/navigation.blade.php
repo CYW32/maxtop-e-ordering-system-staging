@@ -57,10 +57,6 @@
                         <li><x-nav-link :href="route('users.index')" :active="request()->routeIs('users.index')">{{ __('Login Credentials') }}</x-nav-link></li>
                     @endcan
 
-                    @can('view_assigned_customers')
-                        <li><x-nav-link :href="route('users.assigned')" :active="request()->routeIs('users.assigned')">{{ __('My Customers') }}</x-nav-link></li>
-                    @endcan
-
                     <!-- Unified Dashboard Overview -->
                     <li><x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">{{ __('Order Overview') }}</x-nav-link></li>
                 </ul>

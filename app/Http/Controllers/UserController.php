@@ -5,81 +5,61 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Gate; // FIXED: Added missing facade import
-// Added: Required for transaction safety
+use Illuminate\Support\Facades\Gate;
 use Spatie\Permission\Models\Role;
 
 class UserController extends Controller
 {
     public function index(Request $request)
     {
-        // ARCHITECTURE FIX: Granular Authorization
-        Gate::authorize('view_login_credentials');
+        if (!auth()->user()->can('view_all_users') && !auth()->user()->can('view_my_users')) {
+            abort(403, 'Unauthorized access to login credentials.');
+        }
 
         $roles = Role::pluck('name', 'name');
         $status = ['active', 'deactive'];
 
-        // ARCHITECTURE FIX: Remove ->whereNull('parent_id') [Addendum 2.a]
-        // We now list all Login Credentials, grouped by their linked company.
         $query = User::with(['roles', 'company']);
 
-        if (auth()->user()->hasRole('cs_leader')) {
-            $query->whereDoesntHave('roles', fn($q) => $q->whereIn('name', ['admin', 'cs_leader']));
-        }
+        $canSwitchScope = auth()->user()->can('view_all_users');
+        $currentScope = $request->get('scope', $canSwitchScope ? 'all' : 'assigned');
 
-        if (
-            auth()->user()->hasPermissionTo('view_assigned_customers') &&
-            !auth()
-                ->user()
-                ->hasAnyRole(['admin', 'cs_leader'])
-        ) {
+        if ($canSwitchScope) {
+            if (auth()->user()->hasRole('cs_leader')) {
+                $query->whereDoesntHave('roles', fn($q) => $q->whereIn('name', ['admin', 'cs_leader']));
+            }
+            
+            if ($currentScope === 'assigned') {
+                $query->where('assigned_cs_id', auth()->id());
+            }
+        } else {
+            $currentScope = 'assigned';
             $query->where('assigned_cs_id', auth()->id());
         }
 
-        $users = $query->search($request->search)->filterByDate()->filterByRole()->latest()->paginate(15)->withQueryString();
-
-        return view('users.index', compact('users', 'roles', 'status'));
-    }
-
-    public function assignedIndex(Request $request)
-    {
-        // ARCHITECTURE FIX: Remove ->whereNull('parent_id') [Addendum 2.a]
-        // This fulfills Section 5.a: Viewing assigned customer logins.
-        $users = User::where('assigned_cs_id', auth()->id())
-            ->with(['roles', 'company'])
-            ->search($request->search)
+        $users = $query->search($request->search)
             ->filterByDate()
+            ->filterByRole()
             ->latest()
-            ->paginate(15);
+            ->paginate(15)
+            ->withQueryString();
 
-        $roles = ['customer' => 'customer'];
-
-        return view('users.assigned', compact('users', 'roles'));
+        return view('users.index', compact('users', 'roles', 'status', 'currentScope', 'canSwitchScope'));
     }
 
-    /**
-     * Fulfills Backbone 2.a & 3.b: Onboard Login Credentials.
-     * ARCHITECTURE FIX: Resolved "Undefined variable $parent" by providing context.
-     */
     public function create(Request $request)
     {
         Gate::authorize('create_users');
 
-        // 1. Core Data Collections
         $roles = \Spatie\Permission\Models\Role::where('name', '!=', 'admin')->get();
         $companys = \App\Models\Company::orderBy('company_name')->get();
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
 
-        // 2. ARCHITECTURE FIX: Retrieve parent context if creating a Branch account [Backbone 3.a.2]
-        // This resolves the ErrorException at line 4 of the create blade.
         $parent = $request->has('parent_id') ? User::find($request->parent_id) : null;
 
         return view('users.create', compact('roles', 'csStaffMembers', 'companys', 'parent'));
     }
 
-    /**
-     * ARCHITECTURE FIX: Conditional validation for 'company_id'.
-     */
     public function store(Request $request)
     {
         Gate::authorize('create_users');
@@ -91,7 +71,6 @@ class UserController extends Controller
             'password' => 'required|confirmed|min:8',
             'role' => 'required|exists:roles,name',
             'company_id' => 'required_if:role,customer|nullable|exists:companys,id',
-            // ADD THIS LINE: Safely validate the CS Staff ID
             'assigned_cs_id' => 'nullable|exists:users,id',
         ]);
 
@@ -102,7 +81,6 @@ class UserController extends Controller
                 'email' => $request->email,
                 'password' => \Illuminate\Support\Facades\Hash::make($request->password),
                 'company_id' => $request->company_id,
-                // ADD THIS LINE: Actually save the CS Staff to the database!
                 'assigned_cs_id' => $request->assigned_cs_id,
                 'status' => 'active',
             ]);
@@ -113,7 +91,6 @@ class UserController extends Controller
                 ->route('users.index')
                 ->with('success', "User ({$user->login_id}) has been created successfully.");
         } catch (\Illuminate\Database\QueryException $e) {
-            // ... (keep your existing try-catch error handling here)
             if (str_contains($e->getMessage(), "Column 'company_id' cannot be null")) {
                 return back()->withInput()->with('error', 'Action Failed: A Business Entity (Company) is strictly required to create this account.');
             }
@@ -133,38 +110,29 @@ class UserController extends Controller
         $csStaffMembers = User::role(['admin', 'cs_leader', 'cs_staff'])->get();
         $companys = \App\Models\Company::orderBy('company_name')->get();
 
-        // ARCHITECTURE FIX: Determine if assignment is locked based on order existence [Backbone 9.c.1]
         $isAssignmentLocked = $user->orders()->exists();
 
         return view('users.edit', compact('user', 'roles', 'csStaffMembers', 'companys', 'isAssignmentLocked'));
     }
 
-    /**
-     * Fulfills Addendum 3.b: User Management ONLY for Credentials and Company Link.
-     * ARCHITECTURE FIX: Purged legacy 'details()' relationship call.
-     */
     public function update(Request $request, User $user)
     {
-        // 1. Validation scoped strictly to User Credential attributes [Addendum 3.b]
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email,' . $user->id,
             'role' => 'required|exists:roles,name',
             'status' => 'required|in:active,deactive',
-            // FIX: company_id is ONLY required if the user being updated is a customer
             'company_id' => 'required_if:role,customer|nullable|exists:companys,id',
             'assigned_cs_id' => 'nullable|exists:users,id',
             'password' => 'nullable|min:8|confirmed',
         ]);
 
-        // 2. Prepare Core User Data
         $userData = [
             'name' => $request->name,
             'email' => $request->email,
-            'company_id' => $request->company_id, // Direct link to business entity
+            'company_id' => $request->company_id,
         ];
 
-        // 3. Security Guard: Only allow status/role changes if target is NOT an admin
         if (!$user->hasRole('admin')) {
             $userData['status'] = $request->status;
 
@@ -175,42 +143,29 @@ class UserController extends Controller
             $user->syncRoles([$request->role]);
         }
 
-        // 4. Handle Optional Password Update
         if ($request->filled('password')) {
             $userData['password'] = \Illuminate\Support\Facades\Hash::make($request->password);
         }
 
-        // 5. Atomic Update to Users Table
         $user->update($userData);
 
-        if (
-            auth()
-                ->user()
-                ->hasAnyRole(['admin', 'cs_leader'])
-        ) {
+        if (auth()->user()->hasAnyRole(['admin', 'cs_leader'])) {
             return redirect()
                 ->route('users.index')
                 ->with('success', "User ({$user->login_id}) credentials updated successfully.");
         }
 
-        return redirect()->route('users.assigned')->with('success', 'Customer login updated.');
+        return redirect()->route('users.index')->with('success', 'Customer login updated.');
     }
 
-    /**
-     * Remove the specified user and their branches from storage.
-     * Fulfills Requirement: Cascading delete for HQ and Branches if no order history exists.
-     * Fulfills Section 3.c: Protects DB records if order history is found.
-     */
     public function destroy(User $user)
     {
-        // 1. SAFEGUARD: Check if the user has associated orders
         if (!$user->canBeDeleted()) {
             return redirect()
-                ->route('users.index') // or back()
+                ->route('users.index')
                 ->with('error', "Cannot delete {$user->name} because they have existing order transactions.");
         }
 
-        // 2. Proceed with deletion
         $name = $user->name;
         $user->delete();
 

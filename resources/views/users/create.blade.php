@@ -8,7 +8,7 @@
     <div class="py-12">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-8">
 
-            {{-- FIX: Define restrictions and default role BEFORE the form starts --}}
+            {{-- Define restrictions and default role BEFORE the form starts --}}
             @php
                 $isRestricted = auth()->user()->hasRole('cs_staff') || $parent;
                 $defaultRole = $isRestricted ? 'customer' : '';
@@ -222,7 +222,6 @@
                                     class="block text-[10px] uppercase font-black text-gray-700 mb-2">{{ __('Confirm Password') }}
                                     <span class="text-red-500">*</span></label>
 
-                                {{-- SEPARATED MODEL: Now uses x-model="password_confirmation" to prevent browser auto-typing errors --}}
                                 <input :type="showPassword ? 'text' : 'password'" name="password_confirmation"
                                     x-model="password_confirmation" autocomplete="new-password" data-lpignore="true"
                                     class="w-full py-3 pl-4 pr-12 rounded-xl border-gray-300 focus:border-blue-500 focus:ring focus:ring-blue-200 text-sm font-bold text-gray-800 shadow-sm transition-shadow bg-white"
@@ -237,7 +236,8 @@
                     </div>
 
                     <div class="flex items-center justify-end pt-8 border-t border-gray-100 gap-4">
-                        <a href="{{ auth()->user()->hasAnyRole(['admin', 'cs_leader'])? route('users.index'): route('users.assigned') }}"
+                        {{-- FIXED: Everyone cancels to the unified users.index page --}}
+                        <a href="{{ route('users.index') }}"
                             class="text-xs font-black uppercase text-gray-400 hover:text-gray-600 transition tracking-widest">
                             {{ __('Cancel') }}
                         </a>
@@ -258,7 +258,6 @@
         let companyTomSelect = null;
 
         document.addEventListener('DOMContentLoaded', function() {
-            // Target the specific company_id select element
             if (document.getElementById('company_id')) {
                 companyTomSelect = new TomSelect('#company_id', {
                     create: false,
@@ -272,28 +271,22 @@
             }
         });
 
-        // Background Sync Function
         async function syncCompanies(btn) {
             const originalContent = btn.innerHTML;
 
-            // 1. Show spinning loading state
             btn.innerHTML =
                 `<svg class="animate-spin w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> {{ __('Syncing...') }}`;
 
             try {
-                // 2. Fetch explicitly from the create route, not the current window URL
                 const response = await fetch("{{ route('users.create') }}");
                 const html = await response.text();
 
-                // 3. Extract the updated dropdown list from the fetched HTML
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
                 const newOptions = doc.querySelectorAll('#company_id option');
 
-                // 4. Remember if the user already had a company selected
                 const currentSelection = companyTomSelect.getValue();
 
-                // 5. Clear old options and inject the fresh ones
                 companyTomSelect.clearOptions();
                 newOptions.forEach(opt => {
                     if (opt.value) {
@@ -304,12 +297,10 @@
                     }
                 });
 
-                // 6. Put back their selection (if they had one)
                 if (currentSelection) {
                     companyTomSelect.setValue(currentSelection, true);
                 }
 
-                // 7. Show success checkmark!
                 btn.innerHTML =
                     `<svg class="w-3 h-3 mr-1 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg> <span class="text-green-500">{{ __('Synced!') }}</span>`;
 
@@ -318,7 +309,6 @@
                 btn.innerHTML = `<span class="text-red-500">{{ __('Failed') }}</span>`;
             }
 
-            // 8. Return button to normal after 2 seconds
             setTimeout(() => {
                 btn.innerHTML = originalContent;
             }, 2000);
@@ -328,13 +318,12 @@
     <script>
         document.addEventListener('alpine:init', () => {
             Alpine.data('passwordManager', () => ({
-                showPassword: true, // Default to true so you see the generated password immediately
+                showPassword: true,
                 password: '',
                 password_confirmation: '',
                 copied: false,
 
                 generateAndCopy() {
-                    // Generates a highly secure 12-character random string
                     const charset =
                         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
                     let newPassword = "";
@@ -342,15 +331,12 @@
                         newPassword += charset.charAt(Math.floor(Math.random() * charset.length));
                     }
 
-                    // Update BOTH inputs automatically
                     this.password = newPassword;
                     this.password_confirmation = newPassword;
                     this.showPassword = true;
 
-                    // Copy to clipboard
                     navigator.clipboard.writeText(newPassword).then(() => {
                         this.copied = true;
-                        // Reset button text after 3 seconds
                         setTimeout(() => {
                             this.copied = false;
                         }, 3000);

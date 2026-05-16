@@ -13,11 +13,7 @@ class OrderStatusHistory extends Model
      */
     protected $table = 'order_status_history';
 
-    protected $fillable = [
-        'order_id',
-        'status',
-        'changed_by',
-    ];
+    protected $fillable = ['order_id', 'status', 'reason', 'changed_by'];
 
     /**
      * Relationship: The internal user (Admin/CS) who triggered the status change.

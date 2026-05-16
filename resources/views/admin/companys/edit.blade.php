@@ -139,7 +139,8 @@
                             <x-input-label for="pic_phone" :value="__('PIC Contact Number')"
                                 class="text-[10px] uppercase font-black text-gray-400 mb-2" />
                             <x-text-input id="pic_phone" name="pic_phone" type="text"
-                                class="w-full font-bold text-gray-800 font-mono" :value="old('pic_phone', $company->pic_phone)" />
+                                class="w-full font-bold text-gray-800 font-mono" :value="old('pic_phone', $company->pic_phone)"
+                                oninput="this.value = this.value.replace(/[^0-9+-]/g, '')" />
                         </div>
                     </div>
 
@@ -192,13 +193,12 @@
                 const statusDropdown = document.getElementById('status');
                 const originalStatus = '{{ $company->status ?? 'active' }}';
 
-                // Only trigger if they are changing from Active -> Inactive
                 if (statusDropdown.value === 'inactive' && originalStatus !== 'inactive') {
                     return confirm(
                         '⚠️ WARNING: You are about to set this Headquarters to INACTIVE.\n\nThis action will also automatically set all associated Branch Offices to INACTIVE.\n\nAre you sure you want to proceed?'
-                        );
+                    );
                 }
-                return true; // Allow form submission if no warning is needed
+                return true;
             }
         </script>
     @endif

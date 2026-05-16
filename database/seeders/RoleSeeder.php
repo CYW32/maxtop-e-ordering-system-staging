@@ -10,11 +10,8 @@ class RoleSeeder extends Seeder
 {
     public function run(): void
     {
-        // 1. Reset cached roles and permissions
         app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
 
-        // 2. Create Permissions
-        // We use firstOrCreate to prevent errors if you run seed multiple times
         Permission::firstOrCreate(['name' => 'view_business_entities']);
         Permission::firstOrCreate(['name' => 'view_login_credentials']);
         Permission::firstOrCreate(['name' => 'create_users']);
@@ -29,15 +26,14 @@ class RoleSeeder extends Seeder
         Permission::firstOrCreate(['name' => 'create_items']);
         Permission::firstOrCreate(['name' => 'edit_items']);
 
-        // 3. Create Roles
+        // NEW: Granular visibility permissions for the unified user management dashboard
+        Permission::firstOrCreate(['name' => 'view_all_users']);
+        Permission::firstOrCreate(['name' => 'view_my_users']);
+
         $admin = Role::firstOrCreate(['name' => 'admin']);
         $admin->syncPermissions(Permission::all());
-        $leader = Role::firstOrCreate(['name' => 'cs_leader']);
-        $staff = Role::firstOrCreate(['name' => 'cs_staff']);
-        $customer = Role::firstOrCreate(['name' => 'customer']);
 
-        // CS LEADER: Can view the list (but maybe not create/edit by default)
-        // You can change this later in your "Feature Settings" page.
+        $leader = Role::firstOrCreate(['name' => 'cs_leader']);
         $leader->syncPermissions([
             'view_business_entities',
             'view_login_credentials',
@@ -51,10 +47,10 @@ class RoleSeeder extends Seeder
             'view_items',
             'create_items',
             'edit_items',
+            'view_all_users', 
         ]);
 
-        // CS STAFF: Starts with nothing (or add 'view_users' if you prefer)
-        // $staff->syncPermissions(['view_users']);
+        $staff = Role::firstOrCreate(['name' => 'cs_staff']);
         $staff->syncPermissions([
             'view_business_entities',
             'view_login_credentials',
@@ -66,6 +62,9 @@ class RoleSeeder extends Seeder
             'view_items',
             'create_items',
             'edit_items',
+            'view_my_users', 
         ]);
+
+        $customer = Role::firstOrCreate(['name' => 'customer']);
     }
 }

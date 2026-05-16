@@ -11,7 +11,10 @@ use Spatie\Activitylog\Traits\LogsActivity;
 
 class Order extends Model
 {
-    use LogsActivity,Searchable;
+    use LogsActivity, Searchable;
+
+    // Temporary variable to hold the combined text before saving to database
+    public $status_change_reason = null; 
 
     protected $fillable = [
         'order_number',
@@ -28,26 +31,16 @@ class Order extends Model
         'order_number', 'status',
     ];
 
-    /**
-     * Relationship: The Customer who owns the order/draft.
-     */
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
     }
 
-    /**
-     * Relationship: The CS Staff currently handling the order.
-     * Fulfills Section 5: Ownership logic [6].
-     */
     public function handler(): BelongsTo
     {
         return $this->belongsTo(User::class, 'handler_id');
     }
 
-    /**
-     * Relationship: The items contained within this order.
-     */
     public function items(): HasMany
     {
         return $this->hasMany(OrderItem::class);
@@ -63,7 +56,6 @@ class Order extends Model
 
     public function canBeCancelledDirectly(): bool
     {
-        // Approved orders require a request if the user is CS Staff [Addendum 2.a]
         if ($this->status === 'approved' && auth()->user()->hasRole('cs_staff')) {
             return false;
         }
@@ -71,28 +63,16 @@ class Order extends Model
         return true;
     }
 
-    /**
-     * ARCHITECTURE FIX: Align helper with Controller status updates.
-     * Fulfills Addendum Section 4.b workflow.
-     */
     public function hasPendingCancellationRequest(): bool
     {
-        // Status is changed to 'cancellation_requested' by the controller during the request phase
         return $this->status === 'cancellation_requested' && ! is_null($this->cancellation_requested_by);
     }
 
-    /**
-     * Get the user who requested the cancellation.
-     */
-    public function cancellationRequester(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    public function cancellationRequester(): BelongsTo
     {
         return $this->belongsTo(User::class, 'cancellation_requested_by');
     }
 
-    /**
-     * Fulfills Section 5: Assignment & Handover Logic
-     * Scopes the query to orders relevant to a specific staff member.
-     */
     public function scopeAssignedTo($query, $user)
     {
         return $query->where(function ($q) use ($user) {
@@ -106,17 +86,31 @@ class Order extends Model
         });
     }
 
-    /**
-     * ARCHITECTURE FIX: Automated Internal Audit Trail.
-     * Records every status change and the acting user into order_status_history.
-     */
     protected static function booted()
     {
         static::updated(function ($order) {
+            
+            // 1. Log order status progression
             if ($order->isDirty('status') && auth()->check()) {
                 \Illuminate\Support\Facades\DB::table('order_status_history')->insert([
                     'order_id' => $order->id,
                     'status' => $order->status,
+                    'reason' => $order->status_change_reason, 
+                    'changed_by' => auth()->id(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            // 2. Log handler changes (Claims and Handovers)
+            if ($order->isDirty('handler_id') && auth()->check()) {
+                $oldHandler = $order->getOriginal('handler_id');
+                $action = is_null($oldHandler) ? 'claimed' : 'handed_over';
+
+                \Illuminate\Support\Facades\DB::table('order_status_history')->insert([
+                    'order_id' => $order->id,
+                    'status' => $action,
+                    'reason' => $order->status_change_reason, 
                     'changed_by' => auth()->id(),
                     'created_at' => now(),
                     'updated_at' => now(),
@@ -125,13 +119,8 @@ class Order extends Model
         });
     }
 
-    /**
-     * ARCHITECTURE FIX: Automated Internal Audit Trail.
-     * Records every status change and the acting user into order_status_history.
-     */
-    public function statusHistory(): \Illuminate\Database\Eloquent\Relations\HasMany
+    public function statusHistory(): HasMany
     {
-        // This will now resolve correctly because the Model file exists.
         return $this->hasMany(OrderStatusHistory::class)->latest();
     }
 }
