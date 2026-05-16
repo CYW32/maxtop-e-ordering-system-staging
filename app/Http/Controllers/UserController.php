@@ -90,22 +90,35 @@ class UserController extends Controller
             'email' => 'required|email|unique:users',
             'password' => 'required|confirmed|min:8',
             'role' => 'required|exists:roles,name',
-            // FIX: company_id is ONLY required if the user is a customer [Addendum 2.a]
             'company_id' => 'required_if:role,customer|nullable|exists:companys,id',
+            // ADD THIS LINE: Safely validate the CS Staff ID
+            'assigned_cs_id' => 'nullable|exists:users,id',
         ]);
 
-        $user = User::create([
-            'name' => $request->name,
-            'login_id' => $request->login_id,
-            'email' => $request->email,
-            'password' => \Illuminate\Support\Facades\Hash::make($request->password),
-            'company_id' => $request->company_id, // Null for non-customer roles
-            'status' => 'active',
-        ]);
+        try {
+            $user = User::create([
+                'name' => $request->name,
+                'login_id' => $request->login_id,
+                'email' => $request->email,
+                'password' => \Illuminate\Support\Facades\Hash::make($request->password),
+                'company_id' => $request->company_id,
+                // ADD THIS LINE: Actually save the CS Staff to the database!
+                'assigned_cs_id' => $request->assigned_cs_id,
+                'status' => 'active',
+            ]);
 
-        $user->assignRole($request->role);
+            $user->assignRole($request->role);
 
-        return redirect()->route('users.index')->with('success', 'User login created.');
+            return redirect()
+                ->route('users.index')
+                ->with('success', "User ({$user->login_id}) has been created successfully.");
+        } catch (\Illuminate\Database\QueryException $e) {
+            // ... (keep your existing try-catch error handling here)
+            if (str_contains($e->getMessage(), "Column 'company_id' cannot be null")) {
+                return back()->withInput()->with('error', 'Action Failed: A Business Entity (Company) is strictly required to create this account.');
+            }
+            return back()->withInput()->with('error', 'Action Failed: An unexpected database error occurred while saving the user.');
+        }
     }
 
     public function edit(User $user)
@@ -175,7 +188,9 @@ class UserController extends Controller
                 ->user()
                 ->hasAnyRole(['admin', 'cs_leader'])
         ) {
-            return redirect()->route('users.index')->with('success', 'User credentials updated successfully.');
+            return redirect()
+                ->route('users.index')
+                ->with('success', "User ({$user->login_id}) credentials updated successfully.");
         }
 
         return redirect()->route('users.assigned')->with('success', 'Customer login updated.');

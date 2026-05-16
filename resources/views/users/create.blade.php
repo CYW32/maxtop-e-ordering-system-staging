@@ -20,6 +20,19 @@
             }"
                 class="bg-white overflow-hidden shadow-sm sm:rounded-3xl border border-gray-100 p-8">
 
+                {{-- ALERTS: Success and Error Messages --}}
+                @if (session('error'))
+                    <div class="bg-red-50 border border-red-200 p-4 rounded-2xl flex items-center gap-3 mb-6">
+                        <svg class="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                            stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span
+                            class="text-xs font-black uppercase text-red-800 tracking-wide">{{ session('error') }}</span>
+                    </div>
+                @endif
+
                 <form method="POST" action="{{ route('users.store') }}" class="space-y-8">
                     @csrf
 
@@ -83,8 +96,21 @@
                     <div x-show="role === 'customer'" style="display: none;">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8 border-t border-gray-100 pt-8">
                             <div>
-                                <x-input-label for="company_id" :value="__('Assigned Business Entity')"
-                                    class="text-blue-800 font-black uppercase text-[10px]" />
+                                <div class="flex items-center justify-between">
+                                    <x-input-label for="company_id" :value="__('Assigned Business Entity')"
+                                        class="text-blue-800 font-black uppercase text-[10px]" />
+
+                                    {{-- Live Sync Button --}}
+                                    <button type="button" onclick="syncCompanies(this)"
+                                        class="flex items-center text-[9px] font-black uppercase text-blue-500 hover:text-blue-700 transition-colors">
+                                        <svg class="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor" stroke-width="2.5">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                        </svg>
+                                        {{ __('Sync Latest') }}
+                                    </button>
+                                </div>
                                 <div class="mt-1">
                                     <select name="company_id" id="company_id"
                                         class="w-full border-gray-300 rounded-xl shadow-sm focus:ring-blue-500 text-sm">
@@ -130,18 +156,83 @@
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 pt-8 border-t border-gray-100">
-                        <div>
-                            <x-input-label for="password" :value="__('Initial Password')" class="text-[10px] uppercase font-black" />
-                            <x-text-input id="password" name="password" type="password" class="mt-1 block w-full"
-                                required autocomplete="new-password" />
-                            <x-input-error :messages="$errors->get('password')" class="mt-2" />
+                    {{-- SMART PASSWORD SECTION --}}
+                    <div x-data="passwordManager()"
+                        class="bg-gray-50 p-6 rounded-3xl border border-gray-100 shadow-sm mt-8">
+                        <div class="flex items-center justify-between mb-4">
+                            <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                                {{ __('Security Credentials') }}
+                            </label>
+
+                            {{-- Generate & Copy Button --}}
+                            <button type="button" @click="generateAndCopy()"
+                                class="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 hover:text-indigo-900 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm">
+
+                                {{-- Copy Icon --}}
+                                <svg x-show="!copied" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"
+                                    stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                                {{-- Checkmark Icon --}}
+                                <svg x-show="copied" style="display: none;" class="w-3.5 h-3.5 text-green-600"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                                </svg>
+
+                                <span
+                                    x-text="copied ? '{{ __('Password Copied!') }}' : '{{ __('Generate Auto Password') }}'"></span>
+                            </button>
                         </div>
-                        <div>
-                            <x-input-label for="password_confirmation" :value="__('Confirm Password')"
-                                class="text-[10px] uppercase font-black" />
-                            <x-text-input id="password_confirmation" name="password_confirmation" type="password"
-                                class="mt-1 block w-full" required />
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            {{-- Main Password Input --}}
+                            <div class="relative">
+                                <label
+                                    class="block text-[10px] uppercase font-black text-gray-700 mb-2">{{ __('Initial Password') }}
+                                    <span class="text-red-500">*</span></label>
+                                <input :type="showPassword ? 'text' : 'password'" name="password" x-model="password"
+                                    autocomplete="new-password" data-lpignore="true"
+                                    class="w-full py-3 pl-4 pr-12 rounded-xl border-gray-300 focus:border-blue-500 focus:ring focus:ring-blue-200 text-sm font-bold text-gray-800 shadow-sm transition-shadow bg-white"
+                                    placeholder="{{ __('Minimum 8 characters') }}" required>
+
+                                {{-- Eye Icon Toggle --}}
+                                <button type="button" @click="showPassword = !showPassword" tabindex="-1"
+                                    class="absolute bottom-1 right-1 p-2 flex items-center text-gray-400 hover:text-blue-600 transition-colors">
+                                    {{-- Eye Open Icon --}}
+                                    <svg x-show="showPassword" style="display: none;" class="w-5 h-5" fill="none"
+                                        viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                    </svg>
+                                    {{-- Eye Closed Icon --}}
+                                    <svg x-show="!showPassword" class="w-5 h-5" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                    </svg>
+                                </button>
+                            </div>
+
+                            {{-- Confirm Password Input --}}
+                            <div class="relative">
+                                <label
+                                    class="block text-[10px] uppercase font-black text-gray-700 mb-2">{{ __('Confirm Password') }}
+                                    <span class="text-red-500">*</span></label>
+
+                                {{-- SEPARATED MODEL: Now uses x-model="password_confirmation" to prevent browser auto-typing errors --}}
+                                <input :type="showPassword ? 'text' : 'password'" name="password_confirmation"
+                                    x-model="password_confirmation" autocomplete="new-password" data-lpignore="true"
+                                    class="w-full py-3 pl-4 pr-12 rounded-xl border-gray-300 focus:border-blue-500 focus:ring focus:ring-blue-200 text-sm font-bold text-gray-800 shadow-sm transition-shadow bg-white"
+                                    placeholder="{{ __('Confirm Password') }}" required>
+                            </div>
+                        </div>
+
+                        {{-- Laravel Validation Error --}}
+                        <div class="mt-2">
+                            <x-input-error :messages="$errors->get('password')" />
                         </div>
                     </div>
 
@@ -160,26 +251,114 @@
         </div>
     </div>
 
-    <!-- TomSelect Library and Searchable Dropdown Initialization -->
     <link href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
 
     <script>
+        let companyTomSelect = null;
+
         document.addEventListener('DOMContentLoaded', function() {
             // Target the specific company_id select element
             if (document.getElementById('company_id')) {
-                new TomSelect('#company_id', {
+                companyTomSelect = new TomSelect('#company_id', {
                     create: false,
                     sortField: {
                         field: "text",
                         direction: "asc"
                     },
                     placeholder: "-- Search and Select Business Entity --",
-
-                    // Set to null to remove the limit and let the user scroll all items
                     maxOptions: null
                 });
             }
         });
+
+        // Background Sync Function
+        async function syncCompanies(btn) {
+            const originalContent = btn.innerHTML;
+
+            // 1. Show spinning loading state
+            btn.innerHTML =
+                `<svg class="animate-spin w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> {{ __('Syncing...') }}`;
+
+            try {
+                // 2. Fetch explicitly from the create route, not the current window URL
+                const response = await fetch("{{ route('users.create') }}");
+                const html = await response.text();
+
+                // 3. Extract the updated dropdown list from the fetched HTML
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const newOptions = doc.querySelectorAll('#company_id option');
+
+                // 4. Remember if the user already had a company selected
+                const currentSelection = companyTomSelect.getValue();
+
+                // 5. Clear old options and inject the fresh ones
+                companyTomSelect.clearOptions();
+                newOptions.forEach(opt => {
+                    if (opt.value) {
+                        companyTomSelect.addOption({
+                            value: opt.value,
+                            text: opt.text
+                        });
+                    }
+                });
+
+                // 6. Put back their selection (if they had one)
+                if (currentSelection) {
+                    companyTomSelect.setValue(currentSelection, true);
+                }
+
+                // 7. Show success checkmark!
+                btn.innerHTML =
+                    `<svg class="w-3 h-3 mr-1 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg> <span class="text-green-500">{{ __('Synced!') }}</span>`;
+
+            } catch (error) {
+                console.error(error);
+                btn.innerHTML = `<span class="text-red-500">{{ __('Failed') }}</span>`;
+            }
+
+            // 8. Return button to normal after 2 seconds
+            setTimeout(() => {
+                btn.innerHTML = originalContent;
+            }, 2000);
+        }
+    </script>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('passwordManager', () => ({
+                showPassword: true, // Default to true so you see the generated password immediately
+                password: '',
+                password_confirmation: '',
+                copied: false,
+
+                generateAndCopy() {
+                    // Generates a highly secure 12-character random string
+                    const charset =
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+                    let newPassword = "";
+                    for (let i = 0; i < 12; i++) {
+                        newPassword += charset.charAt(Math.floor(Math.random() * charset.length));
+                    }
+
+                    // Update BOTH inputs automatically
+                    this.password = newPassword;
+                    this.password_confirmation = newPassword;
+                    this.showPassword = true;
+
+                    // Copy to clipboard
+                    navigator.clipboard.writeText(newPassword).then(() => {
+                        this.copied = true;
+                        // Reset button text after 3 seconds
+                        setTimeout(() => {
+                            this.copied = false;
+                        }, 3000);
+                    }).catch(err => {
+                        console.error('Failed to copy: ', err);
+                    });
+                }
+            }))
+        })
     </script>
 </x-app-layout>

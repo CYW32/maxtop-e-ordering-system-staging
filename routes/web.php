@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Route;
 | Public Routes
 |--------------------------------------------------------------------------
 */
+
 Route::get('/', function () {
     return redirect()->route('login');
 });
@@ -166,4 +167,6 @@ Route::middleware(['auth'])->group(function () {
                 Route::get('/{order}', [\App\Http\Controllers\Customer\OrderHistoryController::class, 'show'])->name('show');
             });
     });
+    
 });
+

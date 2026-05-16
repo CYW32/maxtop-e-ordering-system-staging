@@ -55,6 +55,31 @@
         </main>
 
     </div>
+
+    {{-- Global Offline/No Internet Alert --}}
+    <div x-data="{ offline: !navigator.onLine }" @online.window="offline = false" @offline.window="offline = true" x-cloak
+        x-show="offline" x-transition:enter="transition ease-out duration-300"
+        x-transition:enter-start="opacity-0 translate-y-full" x-transition:enter-end="opacity-100 translate-y-0"
+        x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100 translate-y-0"
+        x-transition:leave-end="opacity-0 translate-y-full"
+        class="fixed bottom-0 left-0 right-0 z-[9999] p-4 flex justify-center pointer-events-none">
+
+        <div
+            class="bg-red-600 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-4 max-w-md w-full pointer-events-auto border-2 border-red-500/50">
+            <div class="bg-white/20 p-2 rounded-full">
+                <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                    stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238m7.824 2.167a1 1 0 111.414 1.414m-1.414-1.414L3 3m8.293 8.293l1.414 1.414" />
+                </svg>
+            </div>
+            <div class="flex-1">
+                <h4 class="font-black text-sm uppercase tracking-wider">{{ __('No Internet Connection') }}</h4>
+                <p class="text-xs text-red-100 font-medium">
+                    {{ __('You are currently offline. Please check your network.') }}</p>
+            </div>
+        </div>
+    </div>
 </body>
 
 </html>
