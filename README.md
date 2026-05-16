@@ -77,10 +77,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v51)(zj)
+## Update Details (v52)(zj)
 ** Solve:
-* Added the error pages to let user can contact technician to check if facing error.
-* Added the network failed connection page.
-* Added the hidden password feature and auto generate password while create new user
-* Fixed the error page on create user after set the app_debug:false on.env.
-* Showed the current handler after create new login and edit profile.
+* Added the filter functions also while create new catalog

@@ -42,13 +42,11 @@ class CatalogController extends Controller
 
     public function create()
     {
-        if (!auth()->user()->can('view_catalogs') || !auth()->user()->can('create_catalogs')) {
-            abort(403);
-        }
+        $items = \App\Models\Item::where('status', 'active')->get();
 
-        $items = Item::orderBy('name')->get();
+        $categories = \App\Models\Category::all();
 
-        return view('admin.catalogs.create', compact('items'));
+        return view('admin.catalogs.create', compact('items', 'categories'));
     }
 
     public function store(Request $request)
