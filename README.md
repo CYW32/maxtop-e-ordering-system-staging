@@ -77,6 +77,6 @@ The Laravel framework is open-sourced software licensed under the [MIT license](
 
 ##
 
-## Update Details (v52)(zj)
+## Update Details (v53)(zj)
 ** Solve:
-* Added the filter functions also while create new catalog
+* Combine the my customers on login credentials.
